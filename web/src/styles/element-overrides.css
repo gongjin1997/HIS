@@ -1,0 +1,89 @@
+/* web/src/styles/element-overrides.css — Element Plus theme bridge (DESIGN.md §6.3) */
+html[data-theme] {
+  --el-font-family: var(--ki-font-sans);
+  --el-font-size-base: var(--ki-fs-body);
+  --el-font-size-small: var(--ki-fs-sm);
+  --el-border-radius-base: var(--ki-radius-sm);
+  --el-border-radius-small: var(--ki-radius-xs);
+  --el-component-size: var(--ki-control-h);
+
+  --el-color-primary: var(--ki-brand);
+  --el-color-primary-light-3: var(--ki-brand-hover);
+  --el-color-primary-light-5: var(--ki-brand-border);
+  --el-color-primary-light-7: var(--ki-brand-border);
+  --el-color-primary-light-8: var(--ki-brand-subtle);
+  --el-color-primary-light-9: var(--ki-brand-subtle);
+  --el-color-primary-dark-2: var(--ki-brand-active);
+
+  --el-color-success: var(--ki-status-ok);
+  --el-color-warning: var(--ki-status-warn);
+  --el-color-danger: var(--ki-status-danger);
+  --el-color-info: var(--ki-status-neutral);
+
+  --el-bg-color: var(--ki-bg-surface);
+  --el-bg-color-page: var(--ki-bg-canvas);
+  --el-bg-color-overlay: var(--ki-bg-elevated);
+  --el-fill-color: var(--ki-bg-subtle);
+  --el-fill-color-light: var(--ki-bg-subtle);
+  --el-fill-color-lighter: var(--ki-bg-subtle);
+  --el-fill-color-blank: var(--ki-bg-surface);
+
+  --el-text-color-primary: var(--ki-text-primary);
+  --el-text-color-regular: var(--ki-text-primary);
+  --el-text-color-secondary: var(--ki-text-secondary);
+  --el-text-color-placeholder: var(--ki-text-muted);
+  --el-text-color-disabled: var(--ki-text-disabled);
+
+  --el-border-color: var(--ki-border-default);
+  --el-border-color-light: var(--ki-border-subtle);
+  --el-border-color-lighter: var(--ki-border-subtle);
+  --el-border-color-hover: var(--ki-border-strong);
+}
+
+.el-button--primary:not(.is-plain, .is-text, .is-link) {
+  --el-button-text-color: var(--ki-text-on-solid);
+  --el-button-bg-color: var(--ki-brand-solid);
+  --el-button-border-color: var(--ki-brand-solid);
+  --el-button-hover-bg-color: var(--ki-brand-solid-hover);
+  --el-button-hover-border-color: var(--ki-brand-solid-hover);
+  --el-button-active-bg-color: var(--ki-brand-solid-active);
+}
+
+.el-button--danger:not(.is-plain, .is-text, .is-link) {
+  --el-button-text-color: var(--ki-text-on-solid);
+  --el-button-bg-color: var(--ki-danger-solid);
+  --el-button-border-color: var(--ki-danger-solid);
+  --el-button-hover-bg-color: var(--ki-danger-solid-hover);
+  --el-button-hover-border-color: var(--ki-danger-solid-hover);
+}
+
+.el-table {
+  --el-table-bg-color: var(--ki-bg-surface);
+  --el-table-tr-bg-color: var(--ki-bg-surface);
+  --el-table-header-bg-color: var(--ki-bg-subtle);
+  --el-table-header-text-color: var(--ki-text-secondary);
+  --el-table-text-color: var(--ki-text-primary);
+  --el-table-row-hover-bg-color: var(--ki-bg-subtle);
+  --el-table-border-color: var(--ki-border-subtle);
+  font-size: var(--ki-fs-body);
+}
+
+.el-table th.el-table__cell {
+  height: var(--ki-table-header-h);
+  font-size: var(--ki-fs-sm);
+  font-weight: var(--ki-fw-medium);
+}
+
+.el-table td.el-table__cell {
+  height: var(--ki-row-h);
+  padding-block: var(--ki-space-1);
+}
+
+.el-dialog {
+  --el-dialog-bg-color: var(--ki-bg-elevated);
+  --el-dialog-border-radius: var(--ki-radius-lg);
+}
+
+.el-drawer {
+  --el-drawer-bg-color: var(--ki-bg-elevated);
+}

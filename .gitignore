@@ -20,11 +20,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Node / Web UI
+# Node / Web UI (web/dist is committed so `go build ./cmd/kinstall` works offline without Node)
 web/node_modules/
 web/.vite/
-web/dist/
-!web/dist/.gitkeep
 
 # Local runtime state & databases
 *.db

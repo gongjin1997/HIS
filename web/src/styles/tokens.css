@@ -1,0 +1,349 @@
+/* web/src/styles/tokens.css — kinstall Design System v2.0.0 */
+:root {
+  --ki-p-ink-1000: #080c12;
+  --ki-p-ink-950: #0b0f17;
+  --ki-p-ink-900: #111827;
+  --ki-p-ink-850: #182235;
+  --ki-p-ink-800: #1f2a3e;
+
+  --ki-p-slate-50: #f8fafc;
+  --ki-p-slate-75: #f6f8fa;
+  --ki-p-slate-100: #f1f5f9;
+  --ki-p-slate-200: #e2e8f0;
+  --ki-p-slate-300: #cbd5e1;
+  --ki-p-slate-400: #94a3b8;
+  --ki-p-slate-420: #8794a8;
+  --ki-p-slate-480: #7a8aa1;
+  --ki-p-slate-500: #64748b;
+  --ki-p-slate-560: #5b6b82;
+  --ki-p-slate-600: #475569;
+  --ki-p-slate-650: #56657c;
+  --ki-p-slate-700: #334155;
+  --ki-p-slate-800: #1e293b;
+  --ki-p-slate-900: #0f172a;
+
+  --ki-p-blue-50: #eff6ff;
+  --ki-p-blue-200: #bfdbfe;
+  --ki-p-blue-300: #93c5fd;
+  --ki-p-blue-400: #60a5fa;
+  --ki-p-blue-500: #3b82f6;
+  --ki-p-blue-550: #2f6fe8;
+  --ki-p-blue-600: #2563eb;
+  --ki-p-blue-700: #1d4ed8;
+  --ki-p-blue-800: #1e40af;
+
+  --ki-p-emerald-50: #ecfdf5;
+  --ki-p-green-100: #dcfce7;
+  --ki-p-emerald-200: #a7f3d0;
+  --ki-p-emerald-300: #6ee7b7;
+  --ki-p-emerald-400: #34d399;
+  --ki-p-emerald-500: #10b981;
+  --ki-p-emerald-600: #059669;
+  --ki-p-emerald-700: #047857;
+
+  --ki-p-sky-50: #f0f9ff;
+  --ki-p-sky-200: #bae6fd;
+  --ki-p-sky-400: #38bdf8;
+  --ki-p-sky-500: #0ea5e9;
+  --ki-p-sky-600: #0284c7;
+  --ki-p-sky-700: #0369a1;
+
+  --ki-p-amber-50: #fffbeb;
+  --ki-p-amber-100: #fef3c7;
+  --ki-p-amber-200: #fde68a;
+  --ki-p-amber-400: #fbbf24;
+  --ki-p-amber-500: #f59e0b;
+  --ki-p-amber-600: #d97706;
+  --ki-p-amber-700: #b45309;
+
+  --ki-p-red-50: #fef2f2;
+  --ki-p-red-100: #fee2e2;
+  --ki-p-red-200: #fecaca;
+  --ki-p-red-300: #fca5a5;
+  --ki-p-red-400: #f87171;
+  --ki-p-red-500: #ef4444;
+  --ki-p-red-600: #dc2626;
+  --ki-p-red-700: #b91c1c;
+  --ki-p-red-800: #991b1b;
+
+  --ki-p-cyan-50: #ecfeff;
+  --ki-p-cyan-200: #a5f3fc;
+  --ki-p-cyan-400: #22d3ee;
+  --ki-p-cyan-700: #0e7490;
+
+  --ki-p-teal-50: #f0fdfa;
+  --ki-p-teal-400: #2dd4bf;
+  --ki-p-teal-700: #0f766e;
+
+  --ki-p-fuchsia-200: #f5d0fe;
+  --ki-p-fuchsia-300: #f0abfc;
+  --ki-p-white: #ffffff;
+
+  --ki-font-sans: "Inter", "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Micro Hei", system-ui, sans-serif;
+  --ki-font-mono: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, "Noto Sans Mono CJK SC", ui-monospace, monospace;
+
+  --ki-fs-kpi: 28px;
+  --ki-lh-kpi: 34px;
+  --ki-fs-page: 20px;
+  --ki-lh-page: 28px;
+  --ki-fs-section: 15px;
+  --ki-lh-section: 22px;
+  --ki-fs-sub: 13.5px;
+  --ki-lh-sub: 20px;
+  --ki-fs-body: 13px;
+  --ki-lh-body: 20px;
+  --ki-fs-sm: 12px;
+  --ki-lh-sm: 18px;
+  --ki-fs-xs: 11px;
+  --ki-lh-xs: 16px;
+  --ki-fs-mono: 12.5px;
+  --ki-lh-mono: 19.5px;
+  --ki-fw-regular: 400;
+  --ki-fw-medium: 500;
+  --ki-fw-semibold: 600;
+  --ki-tracking-tight: -0.025em;
+  --ki-tracking-snug: -0.015em;
+  --ki-tracking-wide: 0.02em;
+
+  --ki-space-0: 0;
+  --ki-space-half: 2px;
+  --ki-space-1: 4px;
+  --ki-space-2: 8px;
+  --ki-space-3: 12px;
+  --ki-space-4: 16px;
+  --ki-space-5: 20px;
+  --ki-space-6: 24px;
+  --ki-space-7: 32px;
+  --ki-space-8: 40px;
+
+  --ki-radius-xs: 3px;
+  --ki-radius-sm: 4px;
+  --ki-radius-md: 6px;
+  --ki-radius-lg: 8px;
+  --ki-radius-pill: 999px;
+
+  --ki-z-base: 0;
+  --ki-z-sticky: 10;
+  --ki-z-shell: 100;
+  --ki-z-dropdown: 200;
+  --ki-z-drawer: 300;
+  --ki-z-modal: 400;
+  --ki-z-command: 500;
+  --ki-z-toast: 600;
+
+  --ki-dur-instant: 80ms;
+  --ki-dur-fast: 120ms;
+  --ki-dur-base: 180ms;
+  --ki-dur-slow: 240ms;
+  --ki-ease: cubic-bezier(0.2, 0, 0, 1);
+
+  --ki-topbar-h: 48px;
+  --ki-sidebar-w: 224px;
+  --ki-sidebar-collapsed-w: 56px;
+  --ki-menu-item-h: 34px;
+  --ki-page-header-h: 56px;
+  --ki-row-h: 40px;
+  --ki-table-header-h: 36px;
+  --ki-control-h: 32px;
+  --ki-control-h-sm: 24px;
+  --ki-badge-h: 22px;
+  --ki-panel-pad: 16px;
+  --ki-content-max: 1680px;
+  --ki-btn-px: 12px;
+  --ki-input-px: 10px;
+  --ki-focus-ring-w: 2px;
+}
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --ki-bg-canvas: var(--ki-p-ink-950);
+  --ki-bg-surface: var(--ki-p-ink-900);
+  --ki-bg-elevated: var(--ki-p-ink-850);
+  --ki-bg-subtle: var(--ki-p-ink-800);
+  --ki-bg-terminal: var(--ki-p-ink-1000);
+  --ki-overlay: rgba(3, 6, 12, 0.62);
+  --ki-highlight: rgba(255, 255, 255, 0.035);
+
+  --ki-border-subtle: var(--ki-p-slate-800);
+  --ki-border-default: var(--ki-p-slate-700);
+  --ki-border-strong: var(--ki-p-slate-600);
+  --ki-border-control: var(--ki-p-slate-500);
+  --ki-border-focus: var(--ki-p-blue-500);
+
+  --ki-text-primary: var(--ki-p-slate-100);
+  --ki-text-secondary: var(--ki-p-slate-400);
+  --ki-text-muted: var(--ki-p-slate-420);
+  --ki-text-disabled: var(--ki-p-slate-650);
+  --ki-text-link: var(--ki-p-blue-400);
+  --ki-text-on-solid: var(--ki-p-white);
+  --ki-text-on-brand: var(--ki-p-white);
+
+  --ki-brand: var(--ki-p-blue-500);
+  --ki-brand-hover: var(--ki-p-blue-400);
+  --ki-brand-active: var(--ki-p-blue-600);
+  --ki-brand-subtle: rgba(59, 130, 246, 0.14);
+  --ki-brand-border: rgba(59, 130, 246, 0.35);
+  --ki-brand-solid: var(--ki-p-blue-600);
+  --ki-brand-solid-hover: var(--ki-p-blue-550);
+  --ki-brand-solid-active: var(--ki-p-blue-700);
+
+  --ki-status-ok: var(--ki-p-emerald-500);
+  --ki-status-ok-text: var(--ki-p-emerald-400);
+  --ki-status-ok-subtle: rgba(16, 185, 129, 0.14);
+  --ki-status-ok-border: rgba(16, 185, 129, 0.35);
+
+  --ki-status-running: var(--ki-p-sky-500);
+  --ki-status-running-text: var(--ki-p-sky-400);
+  --ki-status-running-subtle: rgba(14, 165, 233, 0.14);
+  --ki-status-running-border: rgba(14, 165, 233, 0.35);
+
+  --ki-status-warn: var(--ki-p-amber-500);
+  --ki-status-warn-text: var(--ki-p-amber-400);
+  --ki-status-warn-subtle: rgba(245, 158, 11, 0.15);
+  --ki-status-warn-border: rgba(245, 158, 11, 0.4);
+
+  --ki-status-danger: var(--ki-p-red-500);
+  --ki-status-danger-text: var(--ki-p-red-400);
+  --ki-status-danger-subtle: rgba(239, 68, 68, 0.15);
+  --ki-status-danger-border: rgba(239, 68, 68, 0.4);
+
+  --ki-status-neutral: var(--ki-p-slate-500);
+  --ki-status-neutral-text: var(--ki-p-slate-400);
+  --ki-status-neutral-subtle: rgba(100, 116, 139, 0.16);
+  --ki-status-neutral-border: rgba(100, 116, 139, 0.32);
+
+  --ki-danger-solid: var(--ki-p-red-600);
+  --ki-danger-solid-hover: var(--ki-p-red-700);
+  --ki-danger-solid-active: var(--ki-p-red-800);
+
+  --ki-badge-binary-text: var(--ki-p-blue-400);
+  --ki-badge-binary-bg: rgba(59, 130, 246, 0.14);
+  --ki-badge-container-text: var(--ki-p-cyan-400);
+  --ki-badge-container-bg: rgba(6, 182, 212, 0.14);
+  --ki-badge-k8s-text: var(--ki-p-teal-400);
+  --ki-badge-k8s-bg: rgba(20, 184, 166, 0.14);
+  --ki-badge-arch-text: var(--ki-p-slate-300);
+  --ki-badge-arch-bg: rgba(148, 163, 184, 0.12);
+  --ki-badge-arm64k-text: var(--ki-p-amber-400);
+  --ki-badge-arm64k-bg: rgba(245, 158, 11, 0.18);
+
+  --ki-env-prod-text: var(--ki-p-red-400);
+  --ki-env-prod-bg: rgba(239, 68, 68, 0.15);
+  --ki-env-staging-text: var(--ki-p-amber-400);
+  --ki-env-staging-bg: rgba(245, 158, 11, 0.15);
+  --ki-env-dev-text: var(--ki-p-emerald-400);
+  --ki-env-dev-bg: rgba(16, 185, 129, 0.14);
+  --ki-env-sandbox-text: var(--ki-p-slate-400);
+  --ki-env-sandbox-bg: rgba(148, 163, 184, 0.14);
+
+  --ki-diff-add-bg: rgba(16, 185, 129, 0.14);
+  --ki-diff-del-bg: rgba(239, 68, 68, 0.15);
+  --ki-diff-drift-bg: rgba(245, 158, 11, 0.18);
+
+  --ki-term-fg: var(--ki-p-slate-200);
+  --ki-term-cursor: var(--ki-p-blue-400);
+  --ki-term-selection: rgba(96, 165, 250, 0.3);
+
+  --ki-shadow-surface: inset 0 1px 0 var(--ki-highlight);
+  --ki-shadow-popover: 0 8px 24px -4px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--ki-border-default);
+  --ki-shadow-modal: 0 20px 48px -12px rgba(0, 0, 0, 0.65), 0 0 0 1px var(--ki-border-default);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --ki-bg-canvas: var(--ki-p-slate-75);
+  --ki-bg-surface: var(--ki-p-white);
+  --ki-bg-elevated: var(--ki-p-white);
+  --ki-bg-subtle: var(--ki-p-slate-100);
+  --ki-bg-terminal: var(--ki-p-slate-900);
+  --ki-overlay: rgba(15, 23, 42, 0.4);
+  --ki-highlight: rgba(255, 255, 255, 0);
+
+  --ki-border-subtle: var(--ki-p-slate-200);
+  --ki-border-default: var(--ki-p-slate-300);
+  --ki-border-strong: var(--ki-p-slate-400);
+  --ki-border-control: var(--ki-p-slate-480);
+  --ki-border-focus: var(--ki-p-blue-600);
+
+  --ki-text-primary: var(--ki-p-slate-900);
+  --ki-text-secondary: var(--ki-p-slate-600);
+  --ki-text-muted: var(--ki-p-slate-560);
+  --ki-text-disabled: var(--ki-p-slate-400);
+  --ki-text-link: var(--ki-p-blue-600);
+
+  --ki-brand: var(--ki-p-blue-600);
+  --ki-brand-hover: var(--ki-p-blue-700);
+  --ki-brand-active: var(--ki-p-blue-800);
+  --ki-brand-subtle: var(--ki-p-blue-50);
+  --ki-brand-border: var(--ki-p-blue-200);
+  --ki-brand-solid: var(--ki-p-blue-600);
+  --ki-brand-solid-hover: var(--ki-p-blue-700);
+  --ki-brand-solid-active: var(--ki-p-blue-800);
+
+  --ki-status-ok: var(--ki-p-emerald-600);
+  --ki-status-ok-text: var(--ki-p-emerald-700);
+  --ki-status-ok-subtle: var(--ki-p-emerald-50);
+  --ki-status-ok-border: var(--ki-p-emerald-200);
+
+  --ki-status-running: var(--ki-p-sky-600);
+  --ki-status-running-text: var(--ki-p-sky-700);
+  --ki-status-running-subtle: var(--ki-p-sky-50);
+  --ki-status-running-border: var(--ki-p-sky-200);
+
+  --ki-status-warn: var(--ki-p-amber-600);
+  --ki-status-warn-text: var(--ki-p-amber-700);
+  --ki-status-warn-subtle: var(--ki-p-amber-50);
+  --ki-status-warn-border: var(--ki-p-amber-200);
+
+  --ki-status-danger: var(--ki-p-red-600);
+  --ki-status-danger-text: var(--ki-p-red-700);
+  --ki-status-danger-subtle: var(--ki-p-red-50);
+  --ki-status-danger-border: var(--ki-p-red-200);
+
+  --ki-status-neutral: var(--ki-p-slate-500);
+  --ki-status-neutral-text: var(--ki-p-slate-600);
+  --ki-status-neutral-subtle: var(--ki-p-slate-100);
+  --ki-status-neutral-border: var(--ki-p-slate-300);
+
+  --ki-badge-binary-text: var(--ki-p-blue-700);
+  --ki-badge-binary-bg: var(--ki-p-blue-50);
+  --ki-badge-container-text: var(--ki-p-cyan-700);
+  --ki-badge-container-bg: var(--ki-p-cyan-50);
+  --ki-badge-k8s-text: var(--ki-p-teal-700);
+  --ki-badge-k8s-bg: var(--ki-p-teal-50);
+  --ki-badge-arch-text: var(--ki-p-slate-600);
+  --ki-badge-arch-bg: var(--ki-p-slate-100);
+  --ki-badge-arm64k-text: var(--ki-p-amber-700);
+  --ki-badge-arm64k-bg: var(--ki-p-amber-100);
+
+  --ki-env-prod-text: var(--ki-p-red-700);
+  --ki-env-prod-bg: var(--ki-p-red-50);
+  --ki-env-staging-text: var(--ki-p-amber-700);
+  --ki-env-staging-bg: var(--ki-p-amber-50);
+  --ki-env-dev-text: var(--ki-p-emerald-700);
+  --ki-env-dev-bg: var(--ki-p-emerald-50);
+  --ki-env-sandbox-text: var(--ki-p-slate-600);
+  --ki-env-sandbox-bg: var(--ki-p-slate-100);
+
+  --ki-diff-add-bg: var(--ki-p-green-100);
+  --ki-diff-del-bg: var(--ki-p-red-100);
+  --ki-diff-drift-bg: var(--ki-p-amber-100);
+
+  --ki-shadow-surface: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --ki-shadow-popover: 0 8px 24px -4px rgba(15, 23, 42, 0.12), 0 0 0 1px var(--ki-border-default);
+  --ki-shadow-modal: 0 20px 48px -12px rgba(15, 23, 42, 0.2), 0 0 0 1px var(--ki-border-default);
+}
+
+[data-density="compact"] {
+  --ki-menu-item-h: 30px;
+  --ki-page-header-h: 48px;
+  --ki-row-h: 32px;
+  --ki-table-header-h: 32px;
+  --ki-control-h: 28px;
+  --ki-control-h-sm: 22px;
+  --ki-badge-h: 20px;
+  --ki-panel-pad: 12px;
+  --ki-btn-px: 10px;
+  --ki-input-px: 8px;
+}
