@@ -1,0 +1,274 @@
+["KI-API-0001"]
+other = "Invalid request parameters or JSON Schema validation failed"
+["KI-API-0001.suggestion"]
+other = "Verify request fields, types, and schema constraints"
+
+["KI-API-0002"]
+other = "Idempotency-Key reused with a different request payload or endpoint"
+["KI-API-0002.suggestion"]
+other = "Generate a new Idempotency-Key or retry with the exact original payload"
+
+["KI-API-0003"]
+other = "If-Match ETag optimistic concurrency conflict"
+["KI-API-0003.suggestion"]
+other = "Refetch the latest resource representation and retry with the current ETag"
+
+["KI-API-0004"]
+other = "A request with the same Idempotency-Key is currently in progress"
+["KI-API-0004.suggestion"]
+other = "Wait 1 second and retry with the same Idempotency-Key"
+
+["KI-AUTH-0001"]
+other = "Authentication failed or credentials/token expired"
+["KI-AUTH-0001.suggestion"]
+other = "Verify credentials or issue a new scoped API token"
+
+["KI-AUTH-0002"]
+other = "Insufficient RBAC permission or self-approval attempted"
+["KI-AUTH-0002.suggestion"]
+other = "Request authorization or have a different approver decide the operation"
+
+["KI-AUTH-0003"]
+other = "Account temporarily locked due to repeated failed login attempts"
+["KI-AUTH-0003.suggestion"]
+other = "Wait 15 minutes before retrying or contact a platform administrator"
+
+["KI-HOST-0001"]
+other = "Host name violates DNS-1123 rules or duplicates an existing host in project"
+["KI-HOST-0001.suggestion"]
+other = "Use a unique lowercase alphanumeric DNS-1123 host name"
+
+["KI-HOST-0002"]
+other = "Host port, directory, Docker subnet, or disk claim conflicts with another instance"
+["KI-HOST-0002.suggestion"]
+other = "Choose non-overlapping ports, paths, or subnets, or select another host"
+
+["KI-HOST-0003"]
+other = "Target host not found"
+["KI-HOST-0003.suggestion"]
+other = "Confirm the host ID or name exists in the project CMDB"
+
+["KI-EXEC-0001"]
+other = "SSH connection failed or timed out"
+["KI-EXEC-0001.suggestion"]
+other = "Verify host reachability, SSH port, and ProxyJump bastion settings"
+
+["KI-EXEC-0002"]
+other = "SSH host key fingerprint changed; connection blocked"
+["KI-EXEC-0002.suggestion"]
+other = "Verify host authenticity and run 'kinstall host accept-hostkey' if expected"
+
+["KI-EXEC-0003"]
+other = "sudo privilege escalation failed (circuit broken to prevent pam_faillock lockout)"
+["KI-EXEC-0003.suggestion"]
+other = "Inspect sudoers rules, sudo-rs settings, and sudo credentials"
+
+["KI-EXEC-0004"]
+other = "Execution blocked by host security control (KYSEC / fapolicyd / noexec)"
+["KI-EXEC-0004.suggestion"]
+other = "Use an executable workDir or explicitly authorize whitelisting managed binaries"
+
+["KI-OS-0001"]
+other = "Operating system unmatched in osmatch.yaml or past EOL"
+["KI-OS-0001.suggestion"]
+other = "Verify OS support matrix or import an updated signed OS spec bundle"
+
+["KI-OS-0002"]
+other = "Required logical package missing in target OS repositories"
+["KI-OS-0002.suggestion"]
+other = "Provide offline OS packages or configure a local repository mirror"
+
+["KI-OS-0003"]
+other = "Host glibc version is below 2.28 and unsupported for host-binary deployment"
+["KI-OS-0003.suggestion"]
+other = "Switch deployTarget to host-container or upgrade the operating system"
+
+["KI-INIT-0001"]
+other = "Host initialization verification failed"
+["KI-INIT-0001.suggestion"]
+other = "Review host init verify output and remediate failed checks"
+
+["KI-PLAN-0001"]
+other = "Plan expired or input hash drifted"
+["KI-PLAN-0001.suggestion"]
+other = "Re-run plan before applying changes"
+
+["KI-PLAN-0012"]
+other = "Component artifact is incompatible with host CPU architecture or memory page size"
+["KI-PLAN-0012.suggestion"]
+other = "Import a matching 64K-page BOM artifact or switch to a compatible target"
+
+["KI-PLAN-0020"]
+other = "Topology minimum host count not satisfied"
+["KI-PLAN-0020.suggestion"]
+other = "Add enough independent hosts for high-availability quorum"
+
+["KI-PLAN-0021"]
+other = "Topology fault-domain anti-affinity constraint not satisfied"
+["KI-PLAN-0021.suggestion"]
+other = "Spread primary and replica roles across distinct hosts or fault zones"
+
+["KI-LOCK-0001"]
+other = "Resource lock is currently held by another operation"
+["KI-LOCK-0001.suggestion"]
+other = "Wait for the conflicting operation to complete"
+
+["KI-ENG-0001"]
+other = "Operation lease lost (stale fencing token)"
+["KI-ENG-0001.suggestion"]
+other = "Execution halted locally; another replica has taken over with a newer fencing token"
+
+["KI-ENG-0002"]
+other = "Invalid state machine transition"
+["KI-ENG-0002.suggestion"]
+other = "Confirm the resource is in a state that allows the requested action"
+
+["KI-ENG-0003"]
+other = "Unknown built-in task type"
+["KI-ENG-0003.suggestion"]
+other = "Plugins may only emit the 15 canonical platform Task types"
+
+["KI-ENG-0004"]
+other = "Operation cancelled"
+["KI-ENG-0004.suggestion"]
+other = "Use --resume to continue from the last completed step if desired"
+
+["KI-ENG-0005"]
+other = "Remote Async Detached process disappeared without writing rc"
+["KI-ENG-0005.suggestion"]
+other = "The engine will safely retry Check -> Apply idempotently"
+
+["KI-PLG-0001"]
+other = "Plugin version incompatible with platform or SDK"
+["KI-PLG-0001.suggestion"]
+other = "Check plugin SDKVersion and supported product semver range"
+
+["KI-PLG-0002"]
+other = "No matching plugin found"
+["KI-PLG-0002.suggestion"]
+other = "Run 'kinstall plugin list' to view registered plugins"
+
+["KI-TPL-0001"]
+other = "Template rendering failed (missing key or forbidden function)"
+["KI-TPL-0001.suggestion"]
+other = "Ensure all template variables exist and only whitelisted deterministic functions are used"
+
+["KI-ART-0001"]
+other = "Artifact SHA-256 or offline signature verification failed"
+["KI-ART-0001.suggestion"]
+other = "Do not deploy unverified artifacts; re-sync from a trusted source"
+
+["KI-ART-0002"]
+other = "Offline trusted_root.json failed to load or validate"
+["KI-ART-0002.suggestion"]
+other = "Check the integrity and schema of trusted_root.json"
+
+["KI-ART-0003"]
+other = "SM2/SM3 national crypto signature verification failed"
+["KI-ART-0003.suggestion"]
+other = "Verify the SM2 root certificate and detached signature"
+
+["KI-SEC-0001"]
+other = "KEK provider unavailable or sealed"
+["KI-SEC-0001.suggestion"]
+other = "Check 0600 keyring file permissions or OpenBao Transit seal status"
+
+["KI-SEC-0002"]
+other = "Envelope decryption or AAD verification failed"
+["KI-SEC-0002.suggestion"]
+other = "Ciphertext may have been tampered with or transplanted across records"
+
+["KI-PKI-0001"]
+other = "Invalid certificate issuance parameters"
+["KI-PKI-0001.suggestion"]
+other = "Verify SAN entries and avoid Ed25519 keys for Kubernetes certificates"
+
+["KI-DB-0001"]
+other = "Database unavailable or schema version exceeds binary compatibility ceiling"
+["KI-DB-0001.suggestion"]
+other = "Check DB connectivity or upgrade older server replicas"
+
+["KI-DB-0002"]
+other = "Requested record not found"
+["KI-DB-0002.suggestion"]
+other = "Verify resource ID and project scope"
+
+["KI-DIFF-0001"]
+other = "External remote drift detected while desired spec is unchanged"
+["KI-DIFF-0001.suggestion"]
+other = "Inspect unified diff and explicitly choose --adopt or --force-override"
+
+["KI-DIFF-0002"]
+other = "Three-way conflict: both desired spec and remote file changed"
+["KI-DIFF-0002.suggestion"]
+other = "Reconcile manually or confirm --force-override after reviewing the 3-way diff"
+
+["KI-DIFF-0003"]
+other = "Unmanaged file already exists at target path"
+["KI-DIFF-0003.suggestion"]
+other = "Set adoptExisting=true explicitly if you intend to manage the existing file"
+
+["KI-STACK-0001"]
+other = "Cycle detected in Stack dependency DAG"
+["KI-STACK-0001.suggestion"]
+other = "Remove circular references in instances[].dependsOn"
+
+["KI-STACK-0002"]
+other = "Instance is still referenced by another Stack or Instance and cannot be destroyed"
+["KI-STACK-0002.suggestion"]
+other = "Remove dependent references or uninstall in reverse topological order"
+
+["KI-STACK-0003"]
+other = "Invalid Stack cross-instance output reference or externalRef"
+["KI-STACK-0003.suggestion"]
+other = "Ensure referenced instances are in dependsOn closure and keys exist in OutputSchema"
+
+["KI-WAIT-0001"]
+other = "Health probe (TCP/HTTP) timed out"
+["KI-WAIT-0001.suggestion"]
+other = "Check service logs, bind addresses, and firewall rules"
+
+["KI-IMG-0001"]
+other = "Mutable image tag (such as :latest) or missing digest is forbidden"
+["KI-IMG-0001.suggestion"]
+other = "Pin an immutable version tag and multi-arch OCI digest"
+
+["KI-IMG-0002"]
+other = "Forbidden registry or deprecated artifact source detected (e.g. Bitnami / archived MinIO CE)"
+["KI-IMG-0002.suggestion"]
+other = "Switch to BOM-approved open-source artifacts and private mirrors"
+
+["KI-IMG-0003"]
+other = "Invalid global registryMirror rewrite configuration"
+["KI-IMG-0003.suggestion"]
+other = "Check registry mirror host, scheme, and prefix mappings"
+
+["KI-SRC-0001"]
+other = "Artifact not found across all configured media sources"
+["KI-SRC-0001.suggestion"]
+other = "Check local roots, OBS/S3 object paths, or import an offline bundle"
+
+["KI-SRC-0002"]
+other = "Artifact is missing required SHA-256 checksum"
+["KI-SRC-0002.suggestion"]
+other = "Supply a verified SHA-256 digest in the BOM or manifest"
+
+["KI-SRC-0003"]
+other = "Downloaded media SHA-256 does not match expected digest"
+["KI-SRC-0003.suggestion"]
+other = "Purge corrupted cache and re-sync the artifact"
+
+["KI-SRC-0004"]
+other = "Object store (OBS/S3) presign or fetch failed"
+["KI-SRC-0004.suggestion"]
+other = "Verify endpoint, bucket, credentialRef, and network connectivity"
+
+["KI-SRC-0005"]
+other = "offlineStrict policy denied access to online source or non-internal object store"
+["KI-SRC-0005.suggestion"]
+other = "Use a local media source or an internal=true private object store"
+
+["KI-BND-0001"]
+other = "Incremental bundle import failed: required baseRevision not present locally"
+["KI-BND-0001.suggestion"]
+other = "Import the full base bundle before applying the incremental patch"

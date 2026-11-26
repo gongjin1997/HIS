@@ -1,0 +1,274 @@
+["KI-API-0001"]
+other = "请求参数或 JSON Schema 校验失败"
+["KI-API-0001.suggestion"]
+other = "请检查请求字段类型、必填项及取值范围"
+
+["KI-API-0002"]
+other = "Idempotency-Key 复用但请求体不一致"
+["KI-API-0002.suggestion"]
+other = "请更换新的 Idempotency-Key 或保持与原请求体完全一致"
+
+["KI-API-0003"]
+other = "If-Match ETag 乐观锁冲突，资源已被其他操作更新"
+["KI-API-0003.suggestion"]
+other = "请重新拉取最新资源并携带新的 ETag 重试"
+
+["KI-API-0004"]
+other = "相同 Idempotency-Key 的请求仍在处理中"
+["KI-API-0004.suggestion"]
+other = "请等待 1 秒后使用相同 Key 重试查询结果"
+
+["KI-AUTH-0001"]
+other = "认证失败或凭据/Token 已过期"
+["KI-AUTH-0001.suggestion"]
+other = "请检查用户名、密码或重新签发有效 API Token"
+
+["KI-AUTH-0002"]
+other = "RBAC 权限不足或企图自审批"
+["KI-AUTH-0002.suggestion"]
+other = "请联系项目管理员授权或由其他审批人执行审批"
+
+["KI-AUTH-0003"]
+other = "连续登录失败次数过多，账号已临时锁定"
+["KI-AUTH-0003.suggestion"]
+other = "请等待 15 分钟后重试或联系平台管理员解锁"
+
+["KI-HOST-0001"]
+other = "主机名不符合 DNS-1123 规范或在项目内重复"
+["KI-HOST-0001.suggestion"]
+other = "主机名仅允许小写字母、数字和连字符，且须在项目内唯一"
+
+["KI-HOST-0002"]
+other = "主机端口、数据目录、子网或独占盘与已有实例声明冲突"
+["KI-HOST-0002.suggestion"]
+other = "请调整端口/数据目录/Docker 子网或选择其他目标主机"
+
+["KI-HOST-0003"]
+other = "目标主机不存在"
+["KI-HOST-0003.suggestion"]
+other = "请核对主机 ID 或名称是否已纳管"
+
+["KI-EXEC-0001"]
+other = "SSH 远程连接失败或超时"
+["KI-EXEC-0001.suggestion"]
+other = "请检查主机网络连通性、端口与跳板机配置"
+
+["KI-EXEC-0002"]
+other = "SSH 主机密钥指纹变更，已阻断连接"
+["KI-EXEC-0002.suggestion"]
+other = "核验主机真实性后可执行 kinstall host accept-hostkey 更新指纹"
+
+["KI-EXEC-0003"]
+other = "sudo 提权失败（已熔断防 pam_faillock 锁账号）"
+["KI-EXEC-0003.suggestion"]
+other = "请检查 sudoers 策略、sudo-rs 配置与提权密码"
+
+["KI-EXEC-0004"]
+other = "目标主机安全执行控制（KYSEC / fapolicyd / noexec）阻断执行"
+["KI-EXEC-0004.suggestion"]
+other = "请确认工作目录未挂载 noexec 或在显式授权后为受管可执行文件加白"
+
+["KI-OS-0001"]
+other = "未匹配 osmatch.yaml 规则或操作系统已 EOL"
+["KI-OS-0001.suggestion"]
+other = "请确认目标操作系统在支持矩阵内或导入新版 spec 规则包"
+
+["KI-OS-0002"]
+other = "pkgmap.yaml 中逻辑包在当前操作系统源中缺失"
+["KI-OS-0002.suggestion"]
+other = "请补充对应发行版的离线软件包或配置本地软件源"
+
+["KI-OS-0003"]
+other = "主机 glibc 版本低于 2.28，不支持二进制部署"
+["KI-OS-0003.suggestion"]
+other = "请改用 deployTarget=host-container（Docker 容器化部署）或升级操作系统"
+
+["KI-INIT-0001"]
+other = "主机初始化模块校验未通过"
+["KI-INIT-0001.suggestion"]
+other = "请检查主机初始化 verify 报告并修复不合规项"
+
+["KI-PLAN-0001"]
+other = "Plan 已过期或输入摘要已发生漂移"
+["KI-PLAN-0001.suggestion"]
+other = "请重新执行 plan 生成最新执行计划后再 apply"
+
+["KI-PLAN-0012"]
+other = "组件制品与主机 CPU 架构或内存页大小（4K/64K）不兼容"
+["KI-PLAN-0012.suggestion"]
+other = "请导入匹配 64K 页的 BOM 构建（如 --with-lg-page=16）或改用兼容目标形态"
+
+["KI-PLAN-0020"]
+other = "集群拓扑未满足最小主机数量要求"
+["KI-PLAN-0020.suggestion"]
+other = "请按生产高可用拓扑要求补充足够数量的独立主机"
+
+["KI-PLAN-0021"]
+other = "集群拓扑未满足跨故障域反亲和要求"
+["KI-PLAN-0021.suggestion"]
+other = "请确保主从角色分布在不同宿主机或不同可用区/机架"
+
+["KI-LOCK-0001"]
+other = "实例锁或主机资源锁正被其他操作占用"
+["KI-LOCK-0001.suggestion"]
+other = "请等待占锁操作完成或检查是否存在挂起任务"
+
+["KI-ENG-0001"]
+other = "Operation 租约丢失（Fencing Token 已过期）"
+["KI-ENG-0001.suggestion"]
+other = "当前副本已自动中止执行，任务将由持有最新租约的副本接管"
+
+["KI-ENG-0002"]
+other = "非法状态机流转"
+["KI-ENG-0002.suggestion"]
+other = "请确认目标资源当前状态支持该操作"
+
+["KI-ENG-0003"]
+other = "未知的内置任务类型"
+["KI-ENG-0003.suggestion"]
+other = "插件只能调用平台规定的 15 个内置 Task"
+
+["KI-ENG-0004"]
+other = "操作已取消"
+["KI-ENG-0004.suggestion"]
+other = "如需继续可执行 --resume 断点续装"
+
+["KI-ENG-0005"]
+other = "远端 Async Detached 任务进程异常消失且无退出码文件"
+["KI-ENG-0005.suggestion"]
+other = "引擎将按幂等策略重新执行 Check 与 Apply"
+
+["KI-PLG-0001"]
+other = "插件版本与平台或 SDK 不兼容"
+["KI-PLG-0001.suggestion"]
+other = "请核对插件声明的 SDKVersion 与支持产品版本范围"
+
+["KI-PLG-0002"]
+other = "未找到匹配的插件"
+["KI-PLG-0002.suggestion"]
+other = "请通过 kinstall plugin list 检查已注册插件列表"
+
+["KI-TPL-0001"]
+other = "模板渲染失败（变量缺失或调用禁用函数）"
+["KI-TPL-0001.suggestion"]
+other = "请检查模板变量完整性并仅使用平台白名单确定性函数"
+
+["KI-ART-0001"]
+other = "制品 SHA-256 或离线签名校验失败"
+["KI-ART-0001.suggestion"]
+other = "严禁使用被篡改制品，请重新同步并验签离线包"
+
+["KI-ART-0002"]
+other = "离线信任根（trusted_root.json）加载或校验失败"
+["KI-ART-0002.suggestion"]
+other = "请检查本地信任根文件完整性与格式"
+
+["KI-ART-0003"]
+other = "国密 SM2/SM3 签名校验失败"
+["KI-ART-0003.suggestion"]
+other = "请核对 SM2 根证书与签名文件内容"
+
+["KI-SEC-0001"]
+other = "KEK 不可用或信封密钥服务已封存"
+["KI-SEC-0001.suggestion"]
+other = "请检查本地 0600 密钥环文件权限或 OpenBao Transit 连通性与解封状态"
+
+["KI-SEC-0002"]
+other = "凭据信封解密或 AAD 校验失败"
+["KI-SEC-0002.suggestion"]
+other = "密文可能被篡改或跨记录替换，请核查安全审计日志"
+
+["KI-PKI-0001"]
+other = "证书签发参数不合法"
+["KI-PKI-0001.suggestion"]
+other = "请检查 SAN（DNS/IP）配置并避免为 Kubernetes 使用 Ed25519"
+
+["KI-DB-0001"]
+other = "数据库不可用或 Schema 版本高于当前二进制兼容上限"
+["KI-DB-0001.suggestion"]
+other = "请检查数据库连接或将旧副本升级至匹配版本"
+
+["KI-DB-0002"]
+other = "未找到请求的记录"
+["KI-DB-0002.suggestion"]
+other = "请核对资源 ID 与项目作用域"
+
+["KI-DIFF-0001"]
+other = "检测到远端纯外部漂移（平台 Spec 未变但远端已被人工修改）"
+["KI-DIFF-0001.suggestion"]
+other = "请核对三向差异后显式选择 --adopt 吸收或 --force-override 覆盖"
+
+["KI-DIFF-0002"]
+other = "检测到三向双向冲突（平台 Spec 与远端配置均已修改）"
+["KI-DIFF-0002.suggestion"]
+other = "严禁静默覆盖，请人工合并配置或显式确认 --force-override"
+
+["KI-DIFF-0003"]
+other = "目标路径已存在非平台托管文件"
+["KI-DIFF-0003.suggestion"]
+other = "确认接管已有文件时请显式设置 adoptExisting=true"
+
+["KI-STACK-0001"]
+other = "复合应用栈（Stack）依赖图存在循环依赖"
+["KI-STACK-0001.suggestion"]
+other = "请检查 instances[].dependsOn 消除依赖环路"
+
+["KI-STACK-0002"]
+other = "底层实例仍被其他 Stack 或实例引用，拒绝销毁"
+["KI-STACK-0002.suggestion"]
+other = "请先解除上游引用或按逆拓扑序销毁依赖实例"
+
+["KI-STACK-0003"]
+other = "Stack 跨实例输出引用或外部服务引用校验失败"
+["KI-STACK-0003.suggestion"]
+other = "请确保引用的实例在 dependsOn 闭包内且字段在 OutputSchema 中声明"
+
+["KI-WAIT-0001"]
+other = "健康探针（TCP / HTTP）等待超时"
+["KI-WAIT-0001.suggestion"]
+other = "请检查目标服务日志、监听地址与防火墙规则"
+
+["KI-IMG-0001"]
+other = "禁止使用可变镜像标签（如 :latest）或未锁定 digest"
+["KI-IMG-0001.suggestion"]
+other = "请使用精确版本标签并绑定多架构 OCI digest"
+
+["KI-IMG-0002"]
+other = "命中禁止使用的镜像仓库或软件源（如 Bitnami / 已归档 MinIO CE）"
+["KI-IMG-0002.suggestion"]
+other = "请切换至 BOM 规定的受支持开源制品与私有镜像仓库"
+
+["KI-IMG-0003"]
+other = "全局 registryMirror 镜像重写配置非法"
+["KI-IMG-0003.suggestion"]
+other = "请检查镜像仓库主机名、协议与命名空间映射配置"
+
+["KI-SRC-0001"]
+other = "所有已配置介质源均未找到目标制品"
+["KI-SRC-0001.suggestion"]
+other = "请检查本地制品目录、OBS/S3 桶对象路径或导入对应离线包"
+
+["KI-SRC-0002"]
+other = "制品缺少必需的 SHA-256 校验值"
+["KI-SRC-0002.suggestion"]
+other = "请在 BOM 或清单中提供完整 SHA-256 摘要"
+
+["KI-SRC-0003"]
+other = "下载介质 SHA-256 与预期摘要不匹配"
+["KI-SRC-0003.suggestion"]
+other = "请清除损坏缓存并重新同步介质"
+
+["KI-SRC-0004"]
+other = "对象存储（OBS/S3）预签名或拉取失败"
+["KI-SRC-0004.suggestion"]
+other = "请检查对象存储端点、桶名、AK/SK 凭据引用与网络连通性"
+
+["KI-SRC-0005"]
+other = "offlineStrict 严格离线模式拒绝访问在线源或非内网白名单对象存储"
+["KI-SRC-0005.suggestion"]
+other = "请使用本地制品源或标记为 internal=true 的内网对象存储"
+
+["KI-BND-0001"]
+other = "增量补丁包导入失败：本地缺少基础版本（baseRevision）"
+["KI-BND-0001.suggestion"]
+other = "请先导入对应的全量基础 Bundle 后再应用增量补丁包"

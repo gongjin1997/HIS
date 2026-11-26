@@ -1,0 +1,235 @@
+openapi: 3.1.0
+info:
+  title: kinstall Control Plane API
+  version: 1.0.0
+  description: >
+    Single-binary, agentless, offline-first infrastructure installation, lifecycle & CMDB control plane API.
+    Contract-first SSOT (ADR-021, G1 §2).
+servers:
+  - url: /
+paths:
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness probe
+      responses:
+        "200": { description: OK }
+  /readyz:
+    get:
+      operationId: readyz
+      summary: Readiness probe (returns 503 while draining)
+      responses:
+        "200": { description: Ready }
+        "503": { description: Draining or DB unavailable }
+  /api/v1/auth/login:
+    post:
+      operationId: loginLocal
+      summary: Local Argon2id login (5-fail 15m 423 lockout)
+      responses:
+        "200": { description: Authenticated session }
+        "401": { $ref: "#/components/responses/Problem" }
+        "423": { $ref: "#/components/responses/Problem" }
+  /api/v1/auth/tokens:
+    get:
+      operationId: listApiTokens
+      summary: List caller API tokens
+      responses:
+        "200": { description: OK }
+    post:
+      operationId: createApiToken
+      summary: Issue scoped short-lived API token (ki_<8>_<32>)
+      responses:
+        "201": { description: Created }
+  /api/v1/plugins:
+    get:
+      operationId: listPlugins
+      summary: List registered component & extension plugins
+      responses:
+        "200": { description: OK }
+  /api/v1/projects:
+    get:
+      operationId: listProjects
+      summary: List projects
+      responses:
+        "200": { description: OK }
+    post:
+      operationId: createProject
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201": { description: Created }
+        "409": { $ref: "#/components/responses/Problem" }
+  /api/v1/projects/{projectId}/hosts:
+    get:
+      operationId: listHosts
+      summary: List CMDB hosts in project
+      responses:
+        "200": { description: OK }
+    post:
+      operationId: createHost
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201": { description: Created }
+  /api/v1/projects/{projectId}/hosts/{hostId}:probe:
+    post:
+      operationId: probeHostFacts
+      summary: Execute 1-RTT POSIX Facts probe
+      responses:
+        "200": { description: Updated host facts }
+  /api/v1/projects/{projectId}/media-policies:
+    get:
+      operationId: listMediaPolicies
+      summary: List Local / OBS·S3 / Online media policies (ADR-077)
+      responses:
+        "200": { description: OK }
+    post:
+      operationId: createMediaPolicy
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201": { description: Created }
+  /api/v1/projects/{projectId}/media-policies/{policyId}:
+    put:
+      operationId: updateMediaPolicy
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200": { description: Updated }
+        "412": { $ref: "#/components/responses/Problem" }
+  /api/v1/projects/{projectId}/media-policies/{policyId}:test:
+    post:
+      operationId: testMediaPolicyConnectivity
+      summary: Probe Local / Huawei OBS / S3 / Online reachability
+      responses:
+        "200": { description: Connectivity probe report }
+  /api/v1/projects/{projectId}/instances:
+    get:
+      operationId: listInstances
+      summary: List managed product instances
+      responses:
+        "200": { description: OK }
+    post:
+      operationId: createInstance
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201": { description: Created }
+  /api/v1/projects/{projectId}/instances/{instanceId}:plan:
+    post:
+      operationId: planInstance
+      summary: Run plugin Validate + 3-Way Diff + Preflight and persist frozen Plan
+      responses:
+        "200": { description: Plan snapshot }
+  /api/v1/projects/{projectId}/instances/{instanceId}:apply:
+    post:
+      operationId: applyInstance
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "202": { description: Operation queued or awaiting four-eyes approval }
+  /api/v1/projects/{projectId}/stacks:
+    get:
+      operationId: listStacks
+      summary: List composite application stacks (ADR-067)
+      responses:
+        "200": { description: OK }
+    post:
+      operationId: createStack
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201": { description: Created with Kahn DAG }
+  /api/v1/projects/{projectId}/operations:
+    get:
+      operationId: listOperations
+      summary: List operations
+      responses:
+        "200": { description: OK }
+  /api/v1/projects/{projectId}/operations/{opId}:approve:
+    post:
+      operationId: approveOperation
+      summary: Approve pending four-eyes operation (self-approval blocked in Go + SQL)
+      responses:
+        "200": { description: Approved }
+        "403": { $ref: "#/components/responses/Problem" }
+  /api/v1/projects/{projectId}/operations/{opId}:reject:
+    post:
+      operationId: rejectOperation
+      summary: Reject pending four-eyes operation
+      responses:
+        "200": { description: Rejected }
+  /api/v1/projects/{projectId}/operations/{opId}/events:
+    get:
+      operationId: streamOperationEvents
+      summary: Lossless multi-replica SSE stream with Last-Event-ID replay (G1 §3)
+      responses:
+        "200":
+          description: text/event-stream
+  /api/v1/projects/{projectId}/approvals:
+    get:
+      operationId: listPendingApprovals
+      summary: List pending four-eyes approvals
+      responses:
+        "200": { description: OK }
+  /api/v1/projects/{projectId}/clusters/{instanceId}/kubeconfigs:
+    get:
+      operationId: listClusterKubeconfigs
+      responses:
+        "200": { description: OK }
+    post:
+      operationId: issueClusterKubeconfig
+      summary: Issue short-lived RBAC kubeconfig (max 24h; cluster-admin max 4h; never system:masters)
+      responses:
+        "201": { description: Issued kubeconfig }
+  /api/v1/projects/{projectId}/audit:
+    get:
+      operationId: listAuditLogs
+      responses:
+        "200": { description: OK }
+  /api/v1/audit:verify:
+    post:
+      operationId: verifyAuditChain
+      summary: Verify SHA-256 / SM3 audit hash chain integrity
+      responses:
+        "200": { description: Verification report }
+  /api/v1/projects/{projectId}/compliance:report:
+    post:
+      operationId: generateComplianceReport
+      summary: Generate DJCP Level-3 & GM/T-0054 compliance evidence summary
+      responses:
+        "200": { description: Compliance report }
+
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, maxLength: 128 }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      schema: { type: string }
+  responses:
+    Problem:
+      description: RFC 9457 ProblemDetails
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetails"
+  schemas:
+    ProblemDetails:
+      type: object
+      required: [type, title, status, code, traceId]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        code: { type: string, pattern: "^KI-[A-Z]+-[0-9]{4}$" }
+        instance: { type: string }
+        traceId: { type: string }
+        suggestion: { type: [string, "null"] }

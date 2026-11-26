@@ -1,0 +1,31 @@
+version: 2
+
+env:
+  - CGO_ENABLED=0
+
+builds:
+  - id: kinstall
+    main: ./cmd/kinstall
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/kinstall/kinstall/internal/version.Version={{.Version}}
+      - -X github.com/kinstall/kinstall/internal/version.Commit={{.Commit}}
+      - -X github.com/kinstall/kinstall/internal/version.Date={{.Date}}
+    targets:
+      - linux_amd64
+      - linux_arm64
+      - linux_loong64
+      - darwin_amd64
+      - darwin_arm64
+
+archives:
+  - formats:
+      - tar.gz
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
