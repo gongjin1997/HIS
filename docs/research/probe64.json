@@ -1,0 +1,96 @@
+{
+ "rocky9-arm64": {
+  "64k": {
+   "page": "64K",
+   "va_bits": "48",
+   "pgtable_levels": "3",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/kernels/5.14.0-741.27.1.el9_9.aarch64+64k/.config",
+   "pkg": "kernel-64k-devel",
+   "ver": "5.14.0-741.27.1.el9_9"
+  }
+ },
+ "rocky10-arm64": {
+  "64k": {
+   "page": "64K",
+   "va_bits": "48",
+   "pgtable_levels": "3",
+   "thp": "y",
+   "cgroup_v1_memory": "y",
+   "src": "/usr/src/kernels/6.12.0-264.20.1.el10_3.aarch64+64k/.config",
+   "pkg": "kernel-64k-devel",
+   "ver": "6.12.0-264.20.1.el10_3"
+  }
+ },
+ "oe2403-arm64": {
+  "64k": {
+   "page": "64K",
+   "va_bits": "48",
+   "pgtable_levels": "3",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/kernels/6.6.0-159.4.23.177.oe2403sp4+64k.aarch64/.config",
+   "pkg": "kernel-64k-devel",
+   "ver": "6.6.0-159.4.23.177.oe2403sp4+64k"
+  }
+ },
+ "alinux4-arm64": {
+  "64k": {
+   "page": "64K",
+   "va_bits": "48",
+   "pgtable_levels": "3",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/kernels/6.6.102-8.1.alnx4.aarch64+64k/.config",
+   "pkg": "kernel-64k-devel",
+   "ver": "6.6.102-8.1.alnx4"
+  }
+ },
+ "ubuntu2404-arm64": {
+  "64k": {
+   "page": "64K",
+   "va_bits": "48",
+   "pgtable_levels": "3",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/linux-headers-6.8.0-151-generic-64k/.config",
+   "pkg": "linux-headers-6.8.0-151-generic-64k",
+   "ver": "6.8.0-151.151"
+  }
+ },
+ "alinux3-arm64": {
+  "64k": {
+   "page": "64K",
+   "va_bits": "48",
+   "pgtable_levels": "3",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/kernels/5.10.134-16.1.64k.1.al8.aarch64/.config",
+   "pkg": "kernel-64k-devel",
+   "ver": "5.10.134-16.1.64k.1.al8"
+  }
+ },
+ "leap160-arm64": {
+  "64k": {
+   "page": "64K",
+   "va_bits": "48",
+   "pgtable_levels": "3",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/linux-6.12.0-160000.41-obj/arm64/64kb/.config",
+   "pkg": "kernel-64kb-devel",
+   "ver": "6.12.0-160000.41.1"
+  },
+  "default": {
+   "page": "4K",
+   "va_bits": "48",
+   "pgtable_levels": "4",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/linux-6.12.0-160000.41-obj/arm64/default/.config",
+   "pkg": "kernel-default-devel",
+   "ver": "6.12.0-160000.41.1"
+  }
+ }
+}

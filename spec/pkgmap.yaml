@@ -1,0 +1,681 @@
+# kinstall 逻辑包映射（pkgmap）—— 由 spec/gen_pkgmap.py 生成，勿手改；人工调整请改生成脚本或补测数据
+# 运行时：先按 provides 检查命令是否已存在（command -v），存在即满足；否则按解析出的包名安装。
+# pkg: null 表示该系统的官方源中没有此包：required 阻断并提示补离线包，optional 跳过并在报告中注明。
+# conflicts：发行版自带的容器 / K8s 包，只检测冲突、不安装（ADR-026）。
+apiVersion: kinstall.io/v1alpha1
+kind: PkgMap
+metadata: {revision: 2026.11.26-1, dataAsOf: '2026-11-25', generatedFrom: research/pkgmap.json + research/pkgresolve.py LOGICAL + spec/osmatch.yaml}
+resolution: [规则覆盖（when.rule）, 族覆盖（when.family，含父族链）, pkgType 默认（default.rpm / default.deb）]
+packages:
+- name: conntrack
+  class: required
+  purpose: kube-proxy 连接跟踪、连接清理
+  provides: [conntrack]
+  default: {rpm: conntrack-tools, deb: conntrack}
+  candidates:
+    rpm: [conntrack-tools, conntrack]
+    deb: [conntrack]
+- name: ipset
+  class: required
+  purpose: kube-proxy iptables 模式、Calico
+  provides: [ipset]
+  default: {rpm: ipset, deb: ipset}
+  candidates:
+    rpm: [ipset]
+    deb: [ipset]
+- name: ipvsadm
+  class: optional
+  purpose: 存量 ipvs 集群排障
+  provides: [ipvsadm]
+  default: {rpm: ipvsadm, deb: ipvsadm}
+  candidates:
+    rpm: [ipvsadm]
+    deb: [ipvsadm]
+- name: socat
+  class: required
+  purpose: kubectl port-forward
+  provides: [socat]
+  default: {rpm: socat, deb: socat}
+  candidates:
+    rpm: [socat]
+    deb: [socat]
+- name: iproute
+  class: required
+  purpose: 网络配置与排障（ip、tc）
+  provides: [ip]
+  default: {rpm: iproute, deb: iproute2}
+  overrides:
+  - when: {family: suse}
+    pkg: iproute2
+  candidates:
+    rpm: [iproute, iproute2]
+    deb: [iproute2]
+- name: ethtool
+  class: required
+  purpose: 网卡 offload 调整
+  provides: [ethtool]
+  default: {rpm: ethtool, deb: ethtool}
+  candidates:
+    rpm: [ethtool]
+    deb: [ethtool]
+- name: nftables
+  class: required
+  purpose: kube-proxy nftables 模式、防火墙后端
+  provides: [nft]
+  default: {rpm: nftables, deb: nftables}
+  candidates:
+    rpm: [nftables]
+    deb: [nftables]
+- name: iptables
+  class: required
+  purpose: kube-proxy iptables 模式、CNI
+  provides: [iptables]
+  default: {rpm: iptables, deb: iptables}
+  overrides:
+  - when:
+      rule: [centos-stream-9, centos-stream-10, el-9, el-10, ol-9, opencloudos-9, anolis-23, alinux-4]
+    pkg: iptables-nft
+  candidates:
+    rpm: [iptables, iptables-nft]
+    deb: [iptables]
+- name: iptables-legacy
+  class: optional
+  purpose: 检测 legacy 后端（03 Q-17）
+  provides: [iptables-legacy]
+  default: {rpm: null, deb: iptables}
+  overrides:
+  - when: {family: openeuler}
+    pkg: iptables
+  - when:
+      rule: [anolis-8, alinux-3, bclinux-8, leap-15.6]
+    pkg: iptables
+  - when:
+      rule: [opencloudos-9, anolis-23, alinux-4]
+    pkg: iptables-legacy
+  candidates:
+    rpm: [iptables-legacy]
+    deb: [iptables]
+- name: ebtables
+  class: required
+  purpose: 桥接流量规则（部分 CNI）
+  provides: [ebtables]
+  default: {rpm: ebtables, deb: ebtables}
+  overrides:
+  - when:
+      rule: [leap-16.0]
+    pkg: iptables
+  - when:
+      rule: [centos-8, el-8, anolis-8, alinux-3, bclinux-8]
+    pkg: iptables-ebtables
+  - when:
+      rule: [centos-stream-9, centos-stream-10, el-9, el-10, ol-9, opencloudos-9, anolis-23, alinux-4]
+    pkg: iptables-nft
+  candidates:
+    rpm: [ebtables, iptables-ebtables, ebtables-legacy]
+    deb: [ebtables]
+- name: chrony
+  class: required
+  purpose: 时间同步
+  provides: [chronyd]
+  default: {rpm: chrony, deb: chrony}
+  candidates:
+    rpm: [chrony]
+    deb: [chrony]
+- name: nfs-client
+  class: conditional
+  when: 'storage: nfs'
+  purpose: NFS CSI、Longhorn RWX
+  provides: [mount.nfs]
+  default: {rpm: nfs-utils, deb: nfs-common}
+  overrides:
+  - when: {family: suse}
+    pkg: nfs-client
+  candidates:
+    rpm: [nfs-utils, nfs-client]
+    deb: [nfs-common]
+- name: iscsi
+  class: conditional
+  when: 'storage: iscsi'
+  purpose: Longhorn、iSCSI 存储
+  provides: [iscsiadm]
+  default: {rpm: iscsi-initiator-utils, deb: open-iscsi}
+  overrides:
+  - when: {family: openeuler}
+    pkg: open-iscsi
+  - when: {family: suse}
+    pkg: open-iscsi
+  candidates:
+    rpm: [iscsi-initiator-utils, open-iscsi]
+    deb: [open-iscsi]
+- name: multipath
+  class: conditional
+  when: 'storage: multipath'
+  purpose: 多路径存储
+  provides: [multipath, multipathd]
+  default: {rpm: device-mapper-multipath, deb: multipath-tools}
+  overrides:
+  - when: {family: openeuler}
+    pkg: multipath-tools
+  - when: {family: suse}
+    pkg: multipath-tools
+  - when:
+      rule: [anolis-23, alinux-4]
+    pkg: multipath-tools
+  candidates:
+    rpm: [device-mapper-multipath, multipath-tools]
+    deb: [multipath-tools]
+- name: lvm2
+  class: required
+  purpose: 数据盘（disk 模块）
+  provides: [lvm]
+  default: {rpm: lvm2, deb: lvm2}
+  candidates:
+    rpm: [lvm2]
+    deb: [lvm2]
+- name: xfsprogs
+  class: required
+  purpose: 数据盘格式化
+  provides: [mkfs.xfs]
+  default: {rpm: xfsprogs, deb: xfsprogs}
+  candidates:
+    rpm: [xfsprogs]
+    deb: [xfsprogs]
+- name: e2fsprogs
+  class: required
+  purpose: 数据盘格式化
+  provides: [mkfs.ext4]
+  default: {rpm: e2fsprogs, deb: e2fsprogs}
+  candidates:
+    rpm: [e2fsprogs]
+    deb: [e2fsprogs]
+- name: parted
+  class: optional
+  purpose: 分区
+  provides: [parted]
+  default: {rpm: parted, deb: parted}
+  candidates:
+    rpm: [parted]
+    deb: [parted]
+- name: gdisk
+  class: optional
+  purpose: sgdisk 分区（EL10 无，用 parted / sfdisk）
+  provides: [sgdisk]
+  default: {rpm: gdisk, deb: gdisk}
+  overrides:
+  - when: {family: suse}
+    pkg: gptfdisk
+  - when:
+      rule: [centos-stream-10, el-10]
+    pkg: null
+  candidates:
+    rpm: [gdisk, gptfdisk]
+    deb: [gdisk]
+- name: util-linux
+  class: required
+  purpose: lsblk、wipefs、findmnt
+  provides: [lsblk, wipefs, findmnt]
+  default: {rpm: util-linux, deb: util-linux}
+  candidates:
+    rpm: [util-linux, util-linux-core]
+    deb: [util-linux]
+- name: libseccomp
+  class: required
+  purpose: runc
+  default: {rpm: libseccomp, deb: libseccomp2}
+  overrides:
+  - when: {family: suse}
+    pkg: libseccomp2
+  candidates:
+    rpm: [libseccomp, libseccomp2]
+    deb: [libseccomp2]
+- name: container-selinux
+  class: conditional
+  when: 'mac: selinux'
+  purpose: SELinux enforcing 下运行容器
+  default: {rpm: container-selinux, deb: null}
+  overrides:
+  - when:
+      rule: [anolis-7, leap-15.6]
+    pkg: null
+  candidates:
+    rpm: [container-selinux]
+    deb: []
+- name: selinux-utils
+  class: conditional
+  when: 'mac: selinux'
+  purpose: semanage fcontext
+  provides: [semanage]
+  default: {rpm: policycoreutils-python-utils, deb: policycoreutils-python-utils}
+  overrides:
+  - when:
+      rule: [centos-7, anolis-7]
+    pkg: policycoreutils-python
+  candidates:
+    rpm: [policycoreutils-python-utils, policycoreutils-python]
+    deb: [policycoreutils-python-utils, policycoreutils]
+- name: restorecon
+  class: conditional
+  when: 'mac: selinux'
+  purpose: restorecon 恢复文件标签
+  provides: [restorecon]
+  default: {rpm: policycoreutils, deb: policycoreutils}
+  candidates:
+    rpm: [policycoreutils]
+    deb: [policycoreutils]
+- name: apparmor
+  class: conditional
+  when: 'mac: apparmor'
+  purpose: AppArmor 配置加载
+  provides: [apparmor_parser]
+  default: {rpm: null, deb: apparmor}
+  overrides:
+  - when: {family: suse}
+    pkg: apparmor-parser
+  - when:
+      rule: [kylin-v11-2503, kylin-v11-sp1]
+    pkg: apparmor
+  - when:
+      rule: [kylin-v10]
+    pkg: apparmor-parser
+  candidates:
+    rpm: [apparmor-parser]
+    deb: [apparmor]
+- name: fapolicyd
+  class: detect
+  purpose: 检测执行控制（03 §4.6）
+  provides: [fapolicyd]
+  default: {rpm: null, deb: fapolicyd}
+  overrides:
+  - when:
+      rule: [centos-8, centos-stream-9, centos-stream-10, el-8, el-9, el-10, ol-9, opencloudos-9, anolis-8, alinux-3, bclinux-8]
+    pkg: fapolicyd
+  - when:
+      rule: [ubuntu-20.04, ubuntu-22.04, debian-11]
+    pkg: null
+  candidates:
+    rpm: [fapolicyd]
+    deb: [fapolicyd]
+- name: firewalld
+  class: detect
+  purpose: 检测防火墙
+  provides: [firewalld, firewall-cmd]
+  default: {rpm: firewalld, deb: firewalld}
+  candidates:
+    rpm: [firewalld]
+    deb: [firewalld]
+- name: ufw
+  class: detect
+  purpose: 检测防火墙
+  provides: [ufw]
+  default: {rpm: null, deb: ufw}
+  overrides:
+  - when:
+      rule: [leap-16.0]
+    pkg: ufw
+  candidates:
+    rpm: []
+    deb: [ufw]
+- name: audit
+  class: required
+  purpose: 审计（等保）
+  provides: [auditd]
+  default: {rpm: audit, deb: auditd}
+  candidates:
+    rpm: [audit]
+    deb: [auditd]
+- name: jq
+  class: optional
+  purpose: 排障
+  provides: [jq]
+  default: {rpm: jq, deb: jq}
+  overrides:
+  - when:
+      rule: [centos-7, anolis-7]
+    pkg: null
+  candidates:
+    rpm: [jq]
+    deb: [jq]
+- name: rsync
+  class: optional
+  purpose: 文件同步
+  provides: [rsync]
+  default: {rpm: rsync, deb: rsync}
+  candidates:
+    rpm: [rsync]
+    deb: [rsync]
+- name: curl
+  class: required
+  purpose: 下载、健康检查
+  provides: [curl]
+  default: {rpm: curl, deb: curl}
+  candidates:
+    rpm: [curl]
+    deb: [curl]
+- name: wget
+  class: optional
+  purpose: 下载
+  provides: [wget]
+  default: {rpm: wget, deb: wget}
+  candidates:
+    rpm: [wget, wget2-wget, wget2]
+    deb: [wget]
+- name: tar
+  class: required
+  purpose: 解包
+  provides: [tar]
+  default: {rpm: tar, deb: tar}
+  candidates:
+    rpm: [tar]
+    deb: [tar]
+- name: unzip
+  class: optional
+  purpose: 解包
+  provides: [unzip]
+  default: {rpm: unzip, deb: unzip}
+  candidates:
+    rpm: [unzip]
+    deb: [unzip]
+- name: zstd
+  class: optional
+  purpose: 解包
+  provides: [zstd]
+  default: {rpm: zstd, deb: zstd}
+  overrides:
+  - when:
+      rule: [centos-7, anolis-7]
+    pkg: null
+  candidates:
+    rpm: [zstd]
+    deb: [zstd]
+- name: lsof
+  class: optional
+  purpose: 排障
+  provides: [lsof]
+  default: {rpm: lsof, deb: lsof}
+  candidates:
+    rpm: [lsof]
+    deb: [lsof]
+- name: psmisc
+  class: optional
+  purpose: fuser、killall
+  provides: [fuser, killall]
+  default: {rpm: psmisc, deb: psmisc}
+  candidates:
+    rpm: [psmisc]
+    deb: [psmisc]
+- name: sysstat
+  class: optional
+  purpose: iostat 等性能排障
+  provides: [iostat]
+  default: {rpm: sysstat, deb: sysstat}
+  candidates:
+    rpm: [sysstat]
+    deb: [sysstat]
+- name: tcpdump
+  class: optional
+  purpose: 抓包排障
+  provides: [tcpdump]
+  default: {rpm: tcpdump, deb: tcpdump}
+  candidates:
+    rpm: [tcpdump]
+    deb: [tcpdump]
+- name: vim
+  class: optional
+  purpose: 编辑
+  provides: [vim]
+  default: {rpm: vim-enhanced, deb: vim}
+  overrides:
+  - when: {family: suse}
+    pkg: vim
+  candidates:
+    rpm: [vim-enhanced, vim]
+    deb: [vim]
+- name: bash-completion
+  class: optional
+  purpose: 命令补全
+  default: {rpm: bash-completion, deb: bash-completion}
+  candidates:
+    rpm: [bash-completion]
+    deb: [bash-completion]
+- name: net-tools
+  class: optional
+  purpose: netstat、ifconfig
+  provides: [netstat, ifconfig]
+  default: {rpm: net-tools, deb: net-tools}
+  candidates:
+    rpm: [net-tools]
+    deb: [net-tools]
+- name: dns-utils
+  class: optional
+  purpose: dig
+  provides: [dig]
+  default: {rpm: bind-utils, deb: bind9-dnsutils}
+  candidates:
+    rpm: [bind-utils, bind-utils9]
+    deb: [bind9-dnsutils, dnsutils]
+- name: netcat
+  class: optional
+  purpose: 端口连通性检查
+  provides: [nc, ncat, netcat]
+  default: {rpm: nmap-ncat, deb: netcat-openbsd}
+  overrides:
+  - when: {family: openeuler}
+    pkg: nmap
+  - when: {family: suse}
+    pkg: netcat-openbsd
+  candidates:
+    rpm: [nmap-ncat, netcat, nc, netcat-openbsd, ncat, nmap]
+    deb: [netcat-openbsd, netcat-traditional]
+- name: numactl
+  class: optional
+  purpose: database Profile
+  provides: [numactl]
+  default: {rpm: numactl, deb: numactl}
+  candidates:
+    rpm: [numactl]
+    deb: [numactl]
+- name: tuned
+  class: optional
+  purpose: database Profile
+  provides: [tuned, tuned-adm]
+  default: {rpm: tuned, deb: tuned}
+  candidates:
+    rpm: [tuned]
+    deb: [tuned]
+- name: irqbalance
+  class: optional
+  purpose: 中断均衡
+  provides: [irqbalance]
+  default: {rpm: irqbalance, deb: irqbalance}
+  candidates:
+    rpm: [irqbalance]
+    deb: [irqbalance]
+- name: keepalived
+  class: optional
+  purpose: VIP（K8s API 高可用等）
+  provides: [keepalived]
+  default: {rpm: keepalived, deb: keepalived}
+  candidates:
+    rpm: [keepalived]
+    deb: [keepalived]
+- name: haproxy
+  class: optional
+  purpose: 负载均衡（K8s API 高可用等）
+  provides: [haproxy]
+  default: {rpm: haproxy, deb: haproxy}
+  candidates:
+    rpm: [haproxy]
+    deb: [haproxy]
+- name: nvme-cli
+  class: optional
+  purpose: NVMe 盘识别
+  provides: [nvme]
+  default: {rpm: nvme-cli, deb: nvme-cli}
+  candidates:
+    rpm: [nvme-cli]
+    deb: [nvme-cli]
+- name: grubby
+  class: optional
+  purpose: 内核启动参数（rhel-like）
+  provides: [grubby]
+  default: {rpm: grubby, deb: null}
+  overrides:
+  - when:
+      rule: [leap-16.0]
+    pkg: null
+  candidates:
+    rpm: [grubby]
+    deb: []
+- name: sudo
+  class: required
+  purpose: 提权执行
+  provides: [sudo]
+  default: {rpm: sudo, deb: sudo}
+  candidates:
+    rpm: [sudo]
+    deb: [sudo]
+- name: sudo-rs
+  class: detect
+  purpose: 检测 sudo 实现（03 Q-18）
+  default: {rpm: null, deb: null}
+  overrides:
+  - when:
+      rule: [ubuntu-24.04, ubuntu-26.04, debian-13]
+    pkg: sudo-rs
+  candidates:
+    rpm: [sudo-rs]
+    deb: [sudo-rs]
+- name: rust-coreutils
+  class: detect
+  purpose: 检测 coreutils 实现（03 Q-18）
+  default: {rpm: null, deb: rust-coreutils}
+  overrides:
+  - when:
+      rule: [ubuntu-20.04, ubuntu-22.04, debian-11]
+    pkg: null
+  candidates:
+    rpm: [uutils-coreutils, rust-coreutils]
+    deb: [rust-coreutils]
+- name: openssl
+  class: required
+  purpose: 证书处理
+  provides: [openssl]
+  default: {rpm: openssl, deb: openssl}
+  candidates:
+    rpm: [openssl]
+    deb: [openssl]
+- name: python3
+  class: optional
+  purpose: 排障工具；kinstall 不依赖（ADR-025）
+  provides: [python3, /usr/libexec/platform-python]
+  default: {rpm: python3, deb: python3}
+  overrides:
+  - when:
+      rule: [anolis-8, alinux-3]
+    pkg: python3.11
+  - when:
+      rule: [el-8]
+    pkg: python3.12
+  - when:
+      rule: [centos-8, bclinux-8]
+    pkg: python39
+  candidates:
+    rpm: [python3, python3.12, python3.11, python39, python38, python36, platform-python]
+    deb: [python3]
+- name: NetworkManager
+  class: detect
+  purpose: 检测网络管理器
+  provides: [NetworkManager, nmcli]
+  default: {rpm: NetworkManager, deb: network-manager}
+  candidates:
+    rpm: [NetworkManager]
+    deb: [network-manager]
+- name: netplan
+  class: detect
+  purpose: 检测网络配置方式
+  provides: [netplan]
+  default: {rpm: null, deb: netplan.io}
+  candidates:
+    rpm: []
+    deb: [netplan.io]
+- name: ca-certificates
+  class: required
+  purpose: TLS 根证书
+  default: {rpm: ca-certificates, deb: ca-certificates}
+  candidates:
+    rpm: [ca-certificates]
+    deb: [ca-certificates]
+- name: kmod
+  class: required
+  purpose: modprobe 加载内核模块
+  provides: [modprobe]
+  default: {rpm: kmod, deb: kmod}
+  candidates:
+    rpm: [kmod]
+    deb: [kmod]
+- name: procps
+  class: required
+  purpose: sysctl、ps
+  provides: [sysctl]
+  default: {rpm: procps-ng, deb: procps}
+  overrides:
+  - when: {family: suse}
+    pkg: procps
+  candidates:
+    rpm: [procps-ng, procps]
+    deb: [procps]
+- name: iputils
+  class: required
+  purpose: ping
+  provides: [ping]
+  default: {rpm: iputils, deb: iputils-ping}
+  candidates:
+    rpm: [iputils]
+    deb: [iputils-ping]
+- name: zram-generator
+  class: detect
+  purpose: 检测 zram swap
+  default: {rpm: null, deb: systemd-zram-generator}
+  overrides:
+  - when: {family: suse}
+    pkg: zram-generator
+  - when:
+      rule: [centos-stream-9, centos-stream-10, el-9, el-10, ol-9, opencloudos-9, anolis-23, alinux-4]
+    pkg: zram-generator
+  - when:
+      rule: [ubuntu-20.04, debian-11]
+    pkg: zram-tools
+  candidates:
+    rpm: [zram-generator, zram-generator-defaults]
+    deb: [systemd-zram-generator, zram-tools]
+conflicts:
+- name: containerd
+  provides: [containerd]
+  candidates:
+    rpm: [containerd, containerd.io]
+    deb: [containerd]
+- name: docker
+  provides: [dockerd]
+  candidates:
+    rpm: [docker, docker-engine, moby-engine, docker-ce]
+    deb: [docker.io]
+- name: runc
+  provides: [runc]
+  candidates:
+    rpm: [runc]
+    deb: [runc]
+- name: podman
+  provides: [podman]
+  candidates:
+    rpm: [podman]
+    deb: [podman]
+- name: kubelet
+  provides: [kubelet]
+  candidates:
+    rpm: [kubernetes-kubelet, kubernetes-node, kubernetes]
+    deb: [kubernetes]
+- name: cri-o
+  provides: [crio]
+  candidates:
+    rpm: [cri-o]
+    deb: [cri-o]

@@ -1,0 +1,37 @@
+# Binaries & build outputs
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.out
+
+# Archives (original input bundle kept local)
+*.zip
+*.tar.gz
+*.tgz
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Node / Web UI
+web/node_modules/
+web/.vite/
+web/dist/
+!web/dist/.gitkeep
+
+# Local runtime state & databases
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.local
+.DS_Store
+.idea/
+.vscode/

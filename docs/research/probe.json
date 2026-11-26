@@ -1,0 +1,454 @@
+{
+ "alinux4-arm64": {
+  "key": "alinux4-arm64",
+  "systemd_default_hierarchy": [
+   "unified"
+  ],
+  "systemd_pkg": "systemd-255-16.6.alnx4.aarch64.rpm",
+  "kconfig": {
+   "page": "4K",
+   "va_bits": "48",
+   "pgtable_levels": "4",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/kernels/6.6.102-8.1.alnx4.aarch64/.config"
+  },
+  "kconfig_pkg": "kernel-devel-6.6.102-8.1.alnx4.aarch64.rpm"
+ },
+ "oc9-arm64": {
+  "key": "oc9-arm64",
+  "systemd_default_hierarchy": [
+   "unified",
+   "(取自 systemd-shared 子包)"
+  ],
+  "systemd_pkg": "systemd-255-20.oc9.ap.9.aarch64.rpm",
+  "kconfig": {
+   "page": "4K",
+   "va_bits": "48",
+   "pgtable_levels": "4",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/kernels/6.6.119-53.10.oc9.aarch64/.config"
+  },
+  "kconfig_pkg": "kernel-devel-6.6.119-53.10.oc9.aarch64.rpm"
+ },
+ "ubuntu2404-arm64": {
+  "key": "ubuntu2404-arm64",
+  "systemd_default_hierarchy": [
+   "unified"
+  ],
+  "systemd_pkg": "libsystemd-shared_255.4-1ubuntu8.19_arm64.deb",
+  "kconfig": {
+   "page": "4K",
+   "va_bits": "48",
+   "pgtable_levels": "4",
+   "thp": "y",
+   "cgroup_v1_memory": "y",
+   "src": "/usr/src/linux-headers-7.0.0-44-generic/.config"
+  },
+  "kconfig_pkg": "linux-headers-7.0.0-44-generic_7.0.0-44.44~24.04.1_arm64.deb"
+ },
+ "debian12-arm64": {
+  "key": "debian12-arm64",
+  "systemd_default_hierarchy": [
+   "unified"
+  ],
+  "systemd_pkg": "libsystemd-shared_252.39-1~deb12u2_arm64.deb",
+  "kconfig": {
+   "page": "4K",
+   "va_bits": "48",
+   "pgtable_levels": "4",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/linux-headers-6.1.0-50-arm64/.config"
+  },
+  "kconfig_pkg": "linux-headers-6.1.0-50-arm64_6.1.176-1_arm64.deb"
+ },
+ "ol9": {
+  "key": "ol9",
+  "systemd_default_hierarchy": [
+   "unified"
+  ],
+  "systemd_pkg": "systemd-252-79.0.1.el9_9.1.i686.rpm"
+ },
+ "leap160": {
+  "key": "leap160",
+  "systemd_default_hierarchy": [
+   "(systemd>=256：无该选项，仅 unified)"
+  ],
+  "systemd_pkg": "systemd-257.13-160000.4.1.aarch64.rpm"
+ },
+ "alinux3": {
+  "key": "alinux3",
+  "systemd_default_hierarchy": [
+   "legacy"
+  ],
+  "systemd_pkg": "systemd-239-82.0.4.5.al8.5.x86_64.rpm"
+ },
+ "centos7": {
+  "key": "centos7",
+  "systemd_default_hierarchy": [
+   "(systemd<233：不支持 unified 选项，仅 v1)"
+  ],
+  "systemd_pkg": "systemd-219-78.el7_9.9.x86_64.rpm"
+ },
+ "centos8": {
+  "key": "centos8",
+  "systemd_default_hierarchy": [
+   "legacy"
+  ],
+  "systemd_pkg": "systemd-239-51.el8_5.2.i686.rpm"
+ },
+ "stream9": {
+  "key": "stream9",
+  "systemd_default_hierarchy": [
+   "unified"
+  ],
+  "systemd_pkg": "systemd-252-78.el9.i686.rpm"
+ },
+ "stream10": {
+  "key": "stream10",
+  "systemd_default_hierarchy": [
+   "(systemd>=256：无该选项，仅 unified)"
+  ],
+  "systemd_pkg": "systemd-257-35.el10.x86_64.rpm"
+ },
+ "rocky8": {
+  "key": "rocky8",
+  "systemd_default_hierarchy": [
+   "legacy"
+  ],
+  "systemd_pkg": "systemd-239-82.el8_10.20.i686.rpm"
+ },
+ "rocky9": {
+  "key": "rocky9",
+  "systemd_default_hierarchy": [
+   "unified"
+  ],
+  "systemd_pkg": "systemd-252-79.el9_9.1.rocky.0.1.i686.rpm"
+ },
+ "rocky10": {
+  "key": "rocky10",
+  "systemd_default_hierarchy": [
+   "(systemd>=256：无该选项，仅 unified)"
+  ],
+  "systemd_pkg": "systemd-257-33.el10.rocky.0.1.x86_64.rpm"
+ },
+ "anolis7": {
+  "key": "anolis7",
+  "systemd_default_hierarchy": [
+   "(systemd<233：不支持 unified 选项，仅 v1)"
+  ],
+  "systemd_pkg": "systemd-219-78.5.an7.3.x86_64.rpm"
+ },
+ "anolis8": {
+  "key": "anolis8",
+  "systemd_default_hierarchy": [
+   "legacy"
+  ],
+  "systemd_pkg": "systemd-239-82.0.4.an8.5.x86_64.rpm"
+ },
+ "anolis23": {
+  "key": "anolis23",
+  "systemd_default_hierarchy": [
+   "unified"
+  ],
+  "systemd_pkg": "systemd-255-18.an23.x86_64.rpm"
+ },
+ "oe2203": {
+  "key": "oe2203",
+  "systemd_default_hierarchy": [
+   "legacy"
+  ],
+  "systemd_pkg": "systemd-249-116.oe2203sp4.x86_64.rpm"
+ },
+ "oe2403": {
+  "key": "oe2403",
+  "systemd_default_hierarchy": [
+   "legacy"
+  ],
+  "systemd_pkg": "systemd-255-61.oe2403sp4.x86_64.rpm"
+ },
+ "kylinv10": {
+  "key": "kylinv10",
+  "systemd_default_hierarchy": [
+   "legacy"
+  ],
+  "systemd_pkg": "systemd-243-67.p16.ky10.x86_64.rpm"
+ },
+ "kylinv11": {
+  "key": "kylinv11",
+  "systemd_default_hierarchy": [
+   "legacy"
+  ],
+  "systemd_pkg": "systemd-255-34.p08.ky11.x86_64.rpm"
+ },
+ "kylinv11sp1": {
+  "key": "kylinv11sp1",
+  "systemd_default_hierarchy": [
+   "unified"
+  ],
+  "systemd_pkg": "systemd-255-44.p09.ky11.x86_64.rpm"
+ },
+ "oc9": {
+  "key": "oc9",
+  "systemd_default_hierarchy": [
+   "unified",
+   "(取自 systemd-shared 子包)"
+  ],
+  "systemd_pkg": "systemd-255-20.oc9.ap.9.x86_64.rpm"
+ },
+ "alinux4": {
+  "key": "alinux4",
+  "systemd_default_hierarchy": [
+   "unified"
+  ],
+  "systemd_pkg": "systemd-255-16.6.alnx4.x86_64.rpm"
+ },
+ "bclinux8": {
+  "key": "bclinux8",
+  "systemd_default_hierarchy": [
+   "legacy"
+  ],
+  "systemd_pkg": "systemd-239-74.0.2.an8.3.x86_64.rpm"
+ },
+ "bclinux-oe": {
+  "key": "bclinux-oe",
+  "systemd_default_hierarchy": [
+   "legacy"
+  ],
+  "systemd_pkg": "systemd-249-52.oe2203sp2.x86_64.rpm"
+ },
+ "leap156": {
+  "key": "leap156",
+  "systemd_default_hierarchy": [
+   "unified"
+  ],
+  "systemd_pkg": "systemd-254.10-150600.2.3.aarch64.rpm"
+ },
+ "ubuntu2004": {
+  "key": "ubuntu2004",
+  "systemd_default_hierarchy": [
+   "hybrid"
+  ],
+  "systemd_pkg": "systemd_245.4-4ubuntu3.24_amd64.deb"
+ },
+ "ubuntu2204": {
+  "key": "ubuntu2204",
+  "systemd_default_hierarchy": [
+   "unified"
+  ],
+  "systemd_pkg": "systemd_249.11-0ubuntu3.23_amd64.deb"
+ },
+ "ubuntu2404": {
+  "key": "ubuntu2404",
+  "systemd_default_hierarchy": [
+   "unified"
+  ],
+  "systemd_pkg": "libsystemd-shared_255.4-1ubuntu8.19_amd64.deb"
+ },
+ "ubuntu2604": {
+  "key": "ubuntu2604",
+  "systemd_default_hierarchy": [
+   "(systemd>=256：无该选项，仅 unified)"
+  ],
+  "systemd_pkg": "libsystemd-shared_259.9-0ubuntu0.1_amd64.deb"
+ },
+ "debian11": {
+  "key": "debian11",
+  "systemd_default_hierarchy": [
+   "unified"
+  ],
+  "systemd_pkg": "systemd_247.3-7+deb11u5_amd64.deb"
+ },
+ "debian12": {
+  "key": "debian12",
+  "systemd_default_hierarchy": [
+   "unified"
+  ],
+  "systemd_pkg": "libsystemd-shared_252.39-1~deb12u2_amd64.deb"
+ },
+ "debian13": {
+  "key": "debian13",
+  "systemd_default_hierarchy": [
+   "(systemd>=256：无该选项，仅 unified)"
+  ],
+  "systemd_pkg": "libsystemd-shared_257.13-1~deb13u1_amd64.deb"
+ },
+ "rocky8-arm64": {
+  "key": "rocky8-arm64",
+  "systemd_default_hierarchy": [
+   "legacy"
+  ],
+  "systemd_pkg": "systemd-239-82.el8_10.20.aarch64.rpm",
+  "kconfig": {
+   "page": "64K",
+   "va_bits": "48",
+   "pgtable_levels": "3",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/kernels/4.18.0-553.189.1.el8_10.aarch64/.config"
+  },
+  "kconfig_pkg": "kernel-devel-4.18.0-553.189.1.el8_10.aarch64.rpm"
+ },
+ "rocky9-arm64": {
+  "key": "rocky9-arm64",
+  "systemd_default_hierarchy": [
+   "unified"
+  ],
+  "systemd_pkg": "systemd-252-79.el9_9.1.rocky.0.1.aarch64.rpm",
+  "kconfig": {
+   "page": "4K",
+   "va_bits": "48",
+   "pgtable_levels": "4",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/kernels/5.14.0-741.27.1.el9_9.aarch64/.config"
+  },
+  "kconfig_pkg": "kernel-devel-5.14.0-741.27.1.el9_9.aarch64.rpm"
+ },
+ "rocky10-arm64": {
+  "key": "rocky10-arm64",
+  "systemd_default_hierarchy": [
+   "(systemd>=256：无该选项，仅 unified)"
+  ],
+  "systemd_pkg": "systemd-257-33.el10.rocky.0.1.aarch64.rpm",
+  "kconfig": {
+   "page": "4K",
+   "va_bits": "48",
+   "pgtable_levels": "4",
+   "thp": "y",
+   "cgroup_v1_memory": "y",
+   "src": "/usr/src/kernels/6.12.0-264.20.1.el10_3.aarch64/.config"
+  },
+  "kconfig_pkg": "kernel-devel-6.12.0-264.20.1.el10_3.aarch64.rpm"
+ },
+ "anolis8-arm64": {
+  "key": "anolis8-arm64",
+  "systemd_default_hierarchy": [
+   "legacy"
+  ],
+  "systemd_pkg": "systemd-239-82.0.4.an8.5.aarch64.rpm",
+  "kconfig": {
+   "page": "4K",
+   "va_bits": "48",
+   "pgtable_levels": "4",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/kernels/5.10.134-20.2.an8.aarch64/.config"
+  },
+  "kconfig_pkg": "kernel-devel-5.10.134-20.2.an8.aarch64.rpm"
+ },
+ "anolis23-arm64": {
+  "key": "anolis23-arm64",
+  "systemd_default_hierarchy": [
+   "unified"
+  ],
+  "systemd_pkg": "systemd-255-18.an23.aarch64.rpm",
+  "kconfig": {
+   "page": "4K",
+   "va_bits": "48",
+   "pgtable_levels": "4",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/kernels/6.6.102-8.0.4.an23.aarch64/.config"
+  },
+  "kconfig_pkg": "kernel-devel-6.6.102-8.0.4.an23.aarch64.rpm"
+ },
+ "oe2203-arm64": {
+  "key": "oe2203-arm64",
+  "systemd_default_hierarchy": [
+   "legacy"
+  ],
+  "systemd_pkg": "systemd-249-116.oe2203sp4.aarch64.rpm",
+  "kconfig": {
+   "page": "4K",
+   "va_bits": "48",
+   "pgtable_levels": "4",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/kernels/5.10.0-342.0.0.243.oe2203sp4.aarch64/.config"
+  },
+  "kconfig_pkg": "kernel-devel-5.10.0-342.0.0.243.oe2203sp4.aarch64.rpm"
+ },
+ "oe2403-arm64": {
+  "key": "oe2403-arm64",
+  "systemd_default_hierarchy": [
+   "legacy"
+  ],
+  "systemd_pkg": "systemd-255-61.oe2403sp4.aarch64.rpm",
+  "kconfig": {
+   "page": "4K",
+   "va_bits": "48",
+   "pgtable_levels": "4",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/kernels/6.6.0-159.4.23.177.oe2403sp4.aarch64/.config"
+  },
+  "kconfig_pkg": "kernel-devel-6.6.0-159.4.23.177.oe2403sp4.aarch64.rpm"
+ },
+ "alinux3-arm64": {
+  "key": "alinux3-arm64",
+  "systemd_default_hierarchy": [
+   "legacy"
+  ],
+  "systemd_pkg": "systemd-239-82.0.4.5.al8.5.aarch64.rpm",
+  "kconfig": {
+   "page": "4K",
+   "va_bits": "48",
+   "pgtable_levels": "4",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/kernels/5.10.134-20.2.al8.aarch64/.config"
+  },
+  "kconfig_pkg": "kernel-devel-5.10.134-20.2.al8.aarch64.rpm"
+ },
+ "kylinv11-arm64": {
+  "key": "kylinv11-arm64",
+  "systemd_default_hierarchy": [
+   "legacy"
+  ],
+  "systemd_pkg": "systemd-255-34.p08.ky11.aarch64.rpm",
+  "kconfig": {
+   "page": "4K",
+   "va_bits": "48",
+   "pgtable_levels": "4",
+   "thp": "y",
+   "cgroup_v1_memory": "y",
+   "src": "/usr/src/kernels/6.6.0-32.31.v2505.ky11.aarch64/.config"
+  },
+  "kconfig_pkg": "kernel-devel-6.6.0-32.31.v2505.ky11.aarch64.rpm"
+ },
+ "kylinv10-arm64": {
+  "key": "kylinv10-arm64",
+  "systemd_default_hierarchy": [
+   "legacy"
+  ],
+  "systemd_pkg": "systemd-243-67.p16.ky10.aarch64.rpm",
+  "kconfig": {
+   "page": "64K",
+   "va_bits": "48",
+   "pgtable_levels": "3",
+   "thp": "y",
+   "cgroup_v1_memory": null,
+   "src": "/usr/src/kernels/4.19.90-89.49.v2401.ky10.aarch64/.config"
+  },
+  "kconfig_pkg": "kernel-devel-4.19.90-89.49.v2401.ky10.aarch64.rpm"
+ },
+ "kylinv11sp1-arm64": {
+  "key": "kylinv11sp1-arm64",
+  "systemd_default_hierarchy": [
+   "unified"
+  ],
+  "systemd_pkg": "systemd-255-44.p09.ky11.aarch64.rpm",
+  "kconfig": {
+   "page": "4K",
+   "va_bits": "48",
+   "pgtable_levels": "4",
+   "thp": "y",
+   "cgroup_v1_memory": "y",
+   "src": "/usr/src/kernels/6.6.0-40.17.v2601.ky11.aarch64/.config"
+  },
+  "kconfig_pkg": "kernel-devel-6.6.0-40.17.v2601.ky11.aarch64.rpm"
+ }
+}

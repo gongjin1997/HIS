@@ -1,0 +1,803 @@
+# kinstall OS 识别规则与支持矩阵（osmatch）—— S2 定稿
+#
+# 用途（ADR-024、ADR-029）：
+#   1. 运行时：采集 /etc/os-release 等文件后按本文件匹配规则，得到规则 ID、适配器族、支持等级和变体；
+#   2. 文档与测试：spec/gen_os_docs.py 校验本文件，用 research/repo_scan.json 中的实测 os-release
+#      和 spec/osmatch_golden.yaml 中的文档样本做 golden 测试，并生成 03 §3.2 / §3.3 / §4.2 的表格。
+#      文档里的这些表格不手改，改本文件后重新生成。
+#
+# 取值约定：
+#   - 字符串：大小写不敏感的精确匹配；以 "re:" 开头为正则（RE2 语法子集，Go regexp 与 Python re 均可用）。
+#   - 列表：任一元素命中即可（OR）；同一 match 内多个键之间为 AND。
+#   - idLike：ID_LIKE 按空格拆分后任一词命中即可。
+#   - 日期一律加引号；lifecycle 日期可写到年、月或日，按该期间的最后一天计算状态。
+#   - 版本号（kernel、nft 等）加引号，避免被解析成浮点数。
+apiVersion: kinstall.io/v1alpha1
+kind: OSMatch
+metadata:
+  revision: "2026.11.26-1"          # 可独立于 kinstall 二进制发布（ADR-029）
+  dataAsOf: "2026-11-25"            # 生命周期与基线数据的截止日期
+  evidence: "03-A（2026-11-25 官方软件源实测）"
+  eolSoonDays: 180                  # 距 EOL 不足该天数时状态为 eol-soon
+
+# 全局底线：不满足时直接判为 unsupported，不再匹配规则
+floor:
+  arch: [amd64, arm64]
+  kernelMin: "3.10"
+  init: systemd                     # PID 1 必须是 systemd
+
+# 适配器族：只描述“族”的默认行为；规则可用 overrides 覆盖
+families:
+  rhel-like:
+    pkgType: rpm
+    pkgManager: dnf
+    lock: dnf-versionlock
+    firewall: firewalld
+    mac: selinux
+    network: NetworkManager
+    bootloader: grubby
+    timeSync: chrony
+  anolis:
+    parent: rhel-like
+  openeuler:
+    parent: rhel-like
+  kylin:
+    parent: openeuler
+    security: [kysec]
+  uos:
+    parent: per-rule                # 由规则的 parent 指定：a 版 → anolis，e 版 → openeuler
+  suse:
+    pkgType: rpm
+    pkgManager: zypper
+    lock: zypper-addlock
+    firewall: firewalld
+    mac: apparmor
+    network: wicked
+    bootloader: grub2-mkconfig
+    timeSync: chrony
+  debian-like:
+    pkgType: deb
+    pkgManager: apt
+    lock: apt-mark-hold
+    firewall: ufw
+    mac: apparmor
+    network: netplan
+    bootloader: update-grub
+    timeSync: chrony
+
+# 规则字段：
+#   id / display / family（/ parent）/ priority / match / variants / overrides
+#   support: tier（P0 / P1 / P2 / unverified）、evidence（measured 实测 / represented 以同源发行版代表 /
+#            documented 仅文档 / none）、samples（research/repo_scan.json 的键）、arch、cpu、pkgSource
+#            （online / online-frozen 源仍在但已停更 / vault / licensed 需授权 / offline）、lifecycle
+#   baseline: 默认源中的内核、systemd、编译默认 cgroup（v1 / v2 / hybrid / v1-only / v2-only）、nft、glibc、arm64 页大小；
+#            kernelAlt（同源其他内核，仅展示）、kernelHwe（Ubuntu HWE）、kernelUpgrade（升级路径：official 厂商 / third-party 第三方）
+#   quirks: 03 §4.7 的编号
+# priority：精确规则 100（同 ID 下更细的变体 110）；兜底规则 10–30。同一优先级同时命中多条规则视为错误。
+rules:
+  # ===================== rhel-like：CentOS / RHEL 系 =====================
+  - id: centos-7
+    display: CentOS Linux 7
+    family: rhel-like
+    priority: 100
+    match: {id: centos, versionId: "7"}
+    overrides: {pkgManager: yum, lock: yum-versionlock}
+    support:
+      tier: P2
+      evidence: measured
+      samples: [centos7]
+      pkgSource: vault
+      lifecycle: {eol: "2024-06-30", source: "R-OS-01"}
+    baseline: {kernel: "3.10.0-1160", systemd: 219, cgroup: v1-only, nft: "0.8", glibc: "2.17"}
+    quirks: [Q-01, Q-22]
+
+  - id: centos-8
+    display: CentOS Linux 8
+    family: rhel-like
+    priority: 100
+    match: {id: centos, versionId: "8", name: "CentOS Linux"}
+    support:
+      tier: P2
+      evidence: measured
+      samples: [centos8]
+      pkgSource: vault
+      lifecycle: {eol: "2021-12-31", source: "R-OS-01"}
+    baseline: {kernel: "4.18.0-348", systemd: 239, cgroup: v1, nft: "0.9.3", glibc: "2.28"}
+    quirks: [Q-01, Q-02, Q-19]
+
+  - id: centos-stream-8
+    display: CentOS Stream 8
+    family: rhel-like
+    priority: 100
+    match: {id: centos, versionId: "8", name: "CentOS Stream"}
+    support:
+      tier: P2
+      evidence: documented
+      samples: []
+      pkgSource: vault
+      lifecycle: {eol: "2024-05-31", source: "CentOS 官网"}
+    baseline: {kernel: "4.18.0", systemd: 239, cgroup: v1}
+    quirks: [Q-01, Q-02]
+
+  - id: centos-stream-9
+    display: CentOS Stream 9
+    family: rhel-like
+    priority: 100
+    match: {id: centos, versionId: "9", name: "CentOS Stream"}
+    support:
+      tier: P1
+      evidence: measured
+      samples: [stream9]
+      pkgSource: online
+      lifecycle: {eol: "2027-05-31", source: "R-OS-02"}
+    baseline: {kernel: "5.14.0-765", systemd: 252, cgroup: v2, nft: "1.0.9", glibc: "2.34"}
+
+  - id: centos-stream-10
+    display: CentOS Stream 10
+    family: rhel-like
+    priority: 100
+    match: {id: centos, versionId: "10", name: "CentOS Stream"}
+    support:
+      tier: P2
+      evidence: measured
+      samples: [stream10]
+      cpu: {amd64: x86-64-v3}
+      pkgSource: online
+      lifecycle: {eol: "2030-05-31", source: "R-OS-02"}
+    baseline: {kernel: "6.12.0-284", systemd: 257, cgroup: v2-only, nft: "1.1.7", glibc: "2.39"}
+    quirks: [Q-12, Q-20]
+
+  - id: el-8
+    display: RHEL / Rocky / AlmaLinux 8
+    family: rhel-like
+    priority: 100
+    match: {id: [rhel, rocky, almalinux], versionId: 're:^8(\.|$)'}
+    support:
+      tier: P1
+      evidence: measured
+      evidenceNote: RHEL / AlmaLinux 以 Rocky 代表
+      samples: [rocky8, rocky8-arm64]
+      pkgSource: online
+      lifecycle: {eol: "2029-05-31", source: "R-OS-03；Rocky os-release SUPPORT_END"}
+    baseline:
+      kernel: "4.18.0-553"
+      systemd: 239
+      cgroup: v1
+      nft: "1.0.4"
+      glibc: "2.28"
+      kernelUpgrade: {source: third-party, note: "第三方 LTS 内核（ELRepo kernel-lt 等，S3 复核）"}
+      arm64: {pageSize: 64K}
+    quirks: [Q-19, Q-23]
+
+  - id: el-9
+    display: RHEL / Rocky / AlmaLinux 9
+    family: rhel-like
+    priority: 100
+    match: {id: [rhel, rocky, almalinux], versionId: 're:^9(\.|$)'}
+    support:
+      tier: P0
+      evidence: measured
+      evidenceNote: RHEL / AlmaLinux 以 Rocky 代表
+      samples: [rocky9, rocky9-arm64]
+      pkgSource: online
+      lifecycle: {eol: "2032-05-31", source: "R-OS-03；Rocky os-release SUPPORT_END"}
+    baseline:
+      kernel: "5.14.0-741"
+      systemd: 252
+      cgroup: v2
+      nft: "1.0.9"
+      glibc: "2.34"
+      arm64: {pageSize: 4K, optional64k: kernel-64k}
+
+  - id: el-10
+    display: RHEL / Rocky / AlmaLinux 10
+    family: rhel-like
+    priority: 100
+    match: {id: [rhel, rocky, almalinux], versionId: 're:^10(\.|$)'}
+    support:
+      tier: P1
+      evidence: measured
+      evidenceNote: RHEL / AlmaLinux 以 Rocky 代表
+      samples: [rocky10, rocky10-arm64]
+      cpu: {amd64: x86-64-v3}       # AlmaLinux 10 另有 x86_64_v2 构建（Q-27）
+      pkgSource: online
+      lifecycle: {eol: "2035-05-31", source: "R-OS-03；Rocky os-release SUPPORT_END；AlmaLinux 10 active 至 2030-05-31"}
+    baseline:
+      kernel: "6.12.0-264"
+      systemd: 257
+      cgroup: v2-only
+      nft: "1.1.5"
+      glibc: "2.39"
+      arm64: {pageSize: 4K, optional64k: kernel-64k}
+    quirks: [Q-12, Q-20, Q-27]
+
+  - id: ol-9
+    display: Oracle Linux 9
+    family: rhel-like
+    priority: 100
+    match: {id: ol, versionId: 're:^9(\.|$)'}
+    support:
+      tier: P2
+      evidence: measured
+      samples: [ol9]
+      pkgSource: online
+      lifecycle: {eol: "2032-06", extended: "2035-06", note: "Premier；Extended 至 2035-06", source: "Oracle Lifetime Support Policy"}
+    baseline:
+      kernel: "5.14.0-741"          # RHCK；9.7 起新装默认 UEK 8（6.12）
+      kernelAlt: "UEK 8 6.12 / UEK 7 5.15"
+      systemd: 252
+      cgroup: v2
+      nft: "1.0.9"
+      glibc: "2.34"
+    quirks: [Q-09]
+
+  - id: opencloudos-9
+    display: OpenCloudOS 9
+    family: rhel-like
+    priority: 100
+    match: {id: opencloudos, versionId: 're:^9(\.|$)'}
+    support:
+      tier: P2
+      evidence: measured
+      samples: [oc9, oc9-arm64]
+      pkgSource: online
+      lifecycle: {eol: "2033-04-30", note: "完整支持至 2030-04-30", source: "OpenCloudOS 版本介绍"}
+    baseline:
+      kernel: "6.6.119-53"
+      systemd: 255
+      cgroup: v2
+      nft: "1.0.8"
+      glibc: "2.38"
+      arm64: {pageSize: 4K}
+    quirks: [Q-04, Q-13]
+
+  # ===================== anolis：龙蜥系 =====================
+  - id: anolis-7
+    display: Anolis OS 7
+    family: anolis
+    priority: 100
+    match: {id: anolis, versionId: 're:^7(\.|$)'}
+    overrides: {pkgManager: yum, lock: yum-versionlock}
+    support:
+      tier: P2
+      evidence: measured
+      samples: [anolis7]
+      pkgSource: online-frozen
+      lifecycle: {eol: "2024-06-30", note: "社区另有 ELS 延保", source: "R-OS-04"}
+    baseline: {kernel: "3.10.0-1160", systemd: 219, cgroup: v1-only, nft: "0.8", glibc: "2.17"}
+    quirks: [Q-21, Q-22]
+
+  - id: anolis-8
+    display: Anolis OS 8
+    family: anolis
+    priority: 100
+    match: {id: anolis, versionId: 're:^8(\.|$)'}
+    support:
+      tier: P1
+      evidence: measured
+      samples: [anolis8, anolis8-arm64]
+      pkgSource: online
+      lifecycle: {eol: "2031-03-31", source: "R-OS-04"}
+    baseline:
+      kernel: "5.10.134-20"         # ANCK；RHCK 4.18 同在源中（Q-06）
+      kernelAlt: "RHCK 4.18.0"
+      systemd: 239
+      cgroup: v1
+      nft: "1.0.4"
+      glibc: "2.28"
+      arm64: {pageSize: 4K}
+    quirks: [Q-06, Q-19]
+
+  - id: anolis-23
+    display: Anolis OS 23
+    family: anolis
+    priority: 100
+    match: {id: anolis, versionId: 're:^23(\.|$)'}
+    support:
+      tier: P1
+      evidence: measured
+      samples: [anolis23, anolis23-arm64]
+      pkgSource: online
+      lifecycle: {eol: "2033", source: "R-OS-04"}
+    baseline:
+      kernel: "6.6.102-8"
+      systemd: 255
+      cgroup: v2
+      nft: "1.0.8"
+      glibc: "2.38"
+      arm64: {pageSize: 4K}
+    quirks: [Q-03, Q-13]
+
+  - id: alinux-3
+    display: Alibaba Cloud Linux 3
+    family: anolis
+    priority: 100
+    match: {id: alinux, versionId: 're:^3(\.|$)'}
+    variants:
+      update: {from: osrelease, key: ALINUX_UPDATE_ID}
+    support:
+      tier: P1
+      evidence: measured
+      samples: [alinux3, alinux3-arm64]
+      pkgSource: online
+      lifecycle: {eol: "2031-03", extended: "2034-03-31", note: "维护期；扩展支持至 2034-03-31", source: "Alibaba Cloud Linux 概述"}
+    baseline:
+      kernel: "5.10.134-20"
+      systemd: 239
+      cgroup: v1
+      nft: "1.0.4"
+      glibc: "2.32"
+      arm64: {pageSize: 4K, optional64k: "kernel-64k（plus-64k 仓库）"}
+    quirks: [Q-07, Q-19]
+
+  - id: alinux-4
+    display: Alibaba Cloud Linux 4
+    family: anolis
+    priority: 100
+    match: {id: alinux, versionId: 're:^4(\.|$)'}
+    support:
+      tier: P1
+      evidence: measured
+      samples: [alinux4, alinux4-arm64]
+      pkgSource: online
+      lifecycle: {eol: "2035-06", extended: "2038-06-30", note: "维护期；扩展支持至 2038-06-30", source: "Alibaba Cloud Linux 概述"}
+    baseline:
+      kernel: "6.6.102-8"
+      systemd: 255
+      cgroup: v2
+      nft: "1.0.8"
+      glibc: "2.38"
+      arm64: {pageSize: 4K, optional64k: "kernel（kernel-64k 仓库）"}
+    quirks: [Q-08, Q-13]
+
+  - id: bclinux-8
+    display: BCLinux 8
+    family: anolis
+    priority: 100
+    match: {id: bclinux, versionId: 're:^8(\.|$)'}
+    support:
+      tier: P2
+      evidence: measured
+      samples: [bclinux8]
+      pkgSource: online
+      lifecycle: {eol: null, note: "未找到公开数据", source: "移动云镜像站"}
+    baseline: {kernel: "4.19.0-553", systemd: 239, cgroup: v1, nft: "0.9.3", glibc: "2.28"}
+    quirks: [Q-19]
+
+  # ===================== openeuler =====================
+  - id: openeuler-22.03-lts
+    display: openEuler 22.03 LTS
+    family: openeuler
+    priority: 100
+    match: {id: openEuler, versionId: "22.03", version: 're:LTS'}
+    variants:
+      sp: {from: version, pattern: 'LTS-SP(?P<v>\d+)', default: "0", labels: {"0": 基础版}}
+    support:
+      tier: P2
+      evidence: measured
+      samples: [oe2203, oe2203-arm64]
+      pkgSource: online-frozen
+      lifecycle: {eol: "2026-03-30", source: "openEuler 生命周期"}
+    baseline:
+      kernel: "5.10.0-342"
+      systemd: 249
+      cgroup: v1
+      nft: "1.0.0"
+      glibc: "2.34"
+      arm64: {pageSize: 4K}
+    quirks: [Q-03, Q-10, Q-25]
+
+  - id: openeuler-24.03-lts
+    display: openEuler 24.03 LTS
+    family: openeuler
+    priority: 100
+    match: {id: openEuler, versionId: "24.03", version: 're:LTS'}
+    variants:
+      sp: {from: version, pattern: 'LTS-SP(?P<v>\d+)', default: "0", labels: {"0": 基础版}}
+    support:
+      tier: P0
+      evidence: measured
+      evidenceNote: 样本为 SP4
+      samples: [oe2403, oe2403-arm64]
+      pkgSource: online
+      lifecycle:
+        eol: null                   # 按 SP 判定
+        byVariant:
+          sp: {"0": "2026-05", "1": "2026-12", "2": "2026-04-24", "3": "2027-12", "4": "2027-03"}
+        note: "按 SP 判定；SP4 之后可能转 SP5"
+        source: "openEuler 生命周期、停维公告、论坛答复"
+    baseline:
+      kernel: "6.6.0-159"
+      systemd: 255
+      cgroup: v1
+      nft: "1.0.8"
+      glibc: "2.38"
+      arm64: {pageSize: 4K, optional64k: kernel-64k}
+    quirks: [Q-03, Q-10, Q-13, Q-25]
+
+  - id: openeuler-innovation
+    display: openEuler 创新版
+    family: openeuler
+    priority: 100
+    match: {id: openEuler, not: {version: 're:LTS'}}
+    support:
+      tier: P2
+      evidence: documented
+      samples: []
+      pkgSource: online
+      lifecycle: {eol: null, note: "按版本：每个创新版支持 6 个月，如 26.09 至 2027-03", source: "openEuler 生命周期"}
+    baseline: {}
+    quirks: [Q-03, Q-25]
+
+  - id: bclinux-euler
+    display: BCLinux for Euler
+    family: openeuler
+    priority: 100
+    match:
+      id: bclinux
+      anyOf:
+        - {prettyName: 're:(?i)for euler'}
+        - {versionId: 're:^2[0-9]\.[0-9]+'}
+    support:
+      tier: P2
+      evidence: measured
+      samples: [bclinux-oe]
+      pkgSource: online
+      lifecycle: {eol: null, note: "未找到公开数据", source: "移动云镜像站"}
+    baseline: {kernel: "5.10.0-153", systemd: 249, cgroup: v1, nft: "1.0.0", glibc: "2.34"}
+    quirks: [Q-03, Q-10]
+
+  # ===================== kylin：银河麒麟高级服务器 =====================
+  - id: kylin-v10
+    display: 麒麟 V10（SP1–SP3）
+    family: kylin
+    priority: 100
+    match: {id: kylin, versionId: V10}
+    variants:
+      sp:
+        from: version
+        pattern: '\((?P<v>[A-Za-z]+)\)'
+        map: {tercel: SP1, sword: SP2, lance: SP3, halberd: SP3-2403}
+      milestone: {from: file, path: /etc/.kyinfo, pattern: '^milestone=(?P<v>.+)$'}
+    support:
+      tier: P1
+      evidence: measured
+      evidenceNote: 样本为 SP3 2403；SP1 / SP2 未实测
+      samples: [kylinv10, kylinv10-arm64]
+      pkgSource: online
+      lifecycle: {eol: null, note: "产品线 5+5+3 共 13 年；各 SP 停服日期未公开", source: "麒麟 V10 白皮书"}
+    baseline:
+      kernel: "4.19.90-89"
+      systemd: 243
+      cgroup: v1
+      nft: "0.9.6"
+      glibc: "2.28"
+      arm64: {pageSize: 64K}
+    quirks: [Q-03, Q-10, Q-15, Q-23, Q-26]
+
+  - id: kylin-v11-2503
+    display: 麒麟 V11 2503
+    family: kylin
+    priority: 100
+    match: {id: kylin, versionId: V11, version: 're:(?i)\(swan25\)'}
+    support:
+      tier: P1
+      evidence: measured
+      samples: [kylinv11, kylinv11-arm64]
+      pkgSource: online
+      lifecycle: {eol: null, note: "5+5+3 年；具体日期未公开", source: "麒麟 V11 发布说明"}
+    baseline:
+      kernel: "6.6.0-32"
+      systemd: 255
+      cgroup: v1
+      nft: "1.0.8"
+      glibc: "2.38"
+      arm64: {pageSize: 4K}
+    quirks: [Q-03, Q-10, Q-13, Q-15, Q-24]
+
+  - id: kylin-v11-sp1
+    display: 麒麟 V11 SP1 2603
+    family: kylin
+    priority: 100
+    match:
+      id: kylin
+      versionId: V11
+      anyOf:
+        - {osrelease: {KYLIN_RELEASE_ID: "2603"}}
+        - {version: 're:(?i)\(swan26\)'}
+    variants:
+      release: {from: osrelease, key: KYLIN_RELEASE_ID}
+    support:
+      tier: P0
+      evidence: measured
+      samples: [kylinv11sp1, kylinv11sp1-arm64]
+      pkgSource: online
+      lifecycle: {eol: null, note: "5+5+3 年；具体日期未公开", source: "麒麟 V11 发布说明"}
+    baseline:
+      kernel: "6.6.0-40"
+      systemd: 255
+      cgroup: v2
+      nft: "1.0.8"
+      glibc: "2.38"
+      arm64: {pageSize: 4K}
+    quirks: [Q-03, Q-10, Q-13, Q-15, Q-24]
+
+  # ===================== uos：统信 UOS 服务器（源需授权，未实测） =====================
+  - id: uos-20-a
+    display: 统信 UOS V20 a 版（1070a）
+    family: uos
+    parent: anolis
+    priority: 100
+    match:
+      id: uos
+      versionId: "20"
+      anyOf:
+        - {platformId: "platform:uelc20"}
+        - {versionCodename: kongzi}
+    variants:
+      minor: {from: file, path: /etc/os-version, pattern: '^MinorVersion=(?P<v>\S+)'}
+      edition: {from: file, path: /etc/os-version, pattern: '^EditionName(\[zh_CN\])?=(?P<v>.+)$'}
+    support:
+      tier: P1                      # 目标等级；未实测前按 unverified 执行
+      evidence: documented
+      samples: []
+      pkgSource: licensed
+      lifecycle: {eol: "2032", source: "天翼云文档（UnionTechOS 停止支持 2032 年）"}
+    baseline:
+      kernel: "4.19.0"
+      kernelAlt: "5.10.0（ISO 可选）"
+      kernelUpgrade: {version: "5.10.0", source: official, note: "ISO 自带的可选 5.10 内核"}
+      systemd: 243
+      glibc: "2.28"
+    quirks: [Q-03, Q-05]
+
+  - id: uos-20-e
+    display: 统信 UOS V20 e 版（1070e）
+    family: uos
+    parent: openeuler
+    priority: 100
+    match:
+      id: uos
+      versionId: "20"
+      anyOf:
+        - {platformId: "platform:uel20"}
+        - {versionCodename: fuyu}
+    variants:
+      minor: {from: file, path: /etc/os-version, pattern: '^MinorVersion=(?P<v>\S+)'}
+      edition: {from: file, path: /etc/os-version, pattern: '^EditionName(\[zh_CN\])?=(?P<v>.+)$'}
+    support:
+      tier: P1
+      evidence: documented
+      samples: []
+      pkgSource: licensed
+      lifecycle: {eol: "2032", source: "天翼云文档（UnionTechOS 停止支持 2032 年）"}
+    baseline:
+      kernel: "4.19.90"
+      kernelAlt: "5.10.0（ISO 可选）"
+      kernelUpgrade: {version: "5.10.0", source: official, note: "ISO 自带的可选 5.10 内核"}
+      systemd: 243
+      glibc: "2.28"
+    quirks: [Q-03, Q-05]
+
+  # ===================== suse =====================
+  - id: leap-15.6
+    display: openSUSE Leap 15.6
+    family: suse
+    priority: 100
+    match: {id: opensuse-leap, versionId: "15.6"}
+    support:
+      tier: P2
+      evidence: measured
+      samples: [leap156]
+      pkgSource: online-frozen
+      lifecycle: {eol: "2026-04-30", source: "news.opensuse.org"}
+    baseline: {kernel: "6.4.0", systemd: 254, cgroup: v2, nft: "0.9.8", glibc: "2.38"}
+    quirks: [Q-11]
+
+  - id: leap-16.0
+    display: openSUSE Leap 16.0
+    family: suse
+    priority: 100
+    match: {id: opensuse-leap, versionId: "16.0"}
+    overrides: {mac: selinux, network: NetworkManager}
+    support:
+      tier: P2
+      evidence: measured
+      evidenceNote: arm64 只做了内核配置探测
+      samples: [leap160]
+      pkgSource: online
+      lifecycle: {eol: "2027-10", note: "约；每个小版本支持 24 个月", source: "openSUSE Lifetime"}
+    baseline:
+      kernel: "6.12.0"
+      systemd: 257
+      cgroup: v2-only
+      nft: "1.1.3"
+      glibc: "2.40"
+      arm64: {pageSize: 4K, optional64k: kernel-64kb}
+    quirks: [Q-11]
+
+  # ===================== debian-like =====================
+  - id: ubuntu-20.04
+    display: Ubuntu 20.04
+    family: debian-like
+    priority: 100
+    match: {id: ubuntu, versionId: "20.04"}
+    support:
+      tier: P2
+      evidence: measured
+      samples: [ubuntu2004]
+      pkgSource: online-frozen
+      lifecycle: {eol: "2025-05-31", note: "标准支持已结束，仅 Ubuntu Pro ESM", source: "R-OS-09"}
+    baseline: {kernel: "5.4.0-216", kernelHwe: "5.15.0", systemd: 245, cgroup: hybrid, nft: "0.9.3", glibc: "2.31"}
+
+  - id: ubuntu-22.04
+    display: Ubuntu 22.04
+    family: debian-like
+    priority: 100
+    match: {id: ubuntu, versionId: "22.04"}
+    support:
+      tier: P0
+      evidence: measured
+      samples: [ubuntu2204]
+      pkgSource: online
+      lifecycle: {eol: "2027-06", note: "标准支持", source: "Ubuntu List of releases"}
+    baseline: {kernel: "5.15.0-204", kernelHwe: "6.8.0", systemd: 249, cgroup: v2, nft: "1.0.2", glibc: "2.35"}
+
+  - id: ubuntu-24.04
+    display: Ubuntu 24.04
+    family: debian-like
+    priority: 100
+    match: {id: ubuntu, versionId: "24.04"}
+    support:
+      tier: P0
+      evidence: measured
+      samples: [ubuntu2404, ubuntu2404-arm64]
+      pkgSource: online
+      lifecycle: {eol: "2029-05", note: "标准支持；List of releases 页为 2029-06，取较早者", source: "Ubuntu release cycle"}
+    baseline:
+      kernel: "6.8.0-151"
+      kernelHwe: "7.0.0"
+      systemd: 255
+      cgroup: v2
+      nft: "1.0.9"
+      glibc: "2.39"
+      arm64: {pageSize: 4K, optional64k: linux-image-generic-64k}
+    quirks: [Q-18]
+
+  - id: ubuntu-26.04
+    display: Ubuntu 26.04
+    family: debian-like
+    priority: 100
+    match: {id: ubuntu, versionId: "26.04"}
+    support:
+      tier: P1
+      evidence: measured
+      samples: [ubuntu2604]
+      pkgSource: online
+      lifecycle: {eol: "2031-05", note: "标准支持", source: "Ubuntu List of releases"}
+    baseline: {kernel: "7.0.0-44", systemd: 259, cgroup: v2-only, nft: "1.1.6", glibc: "2.43"}
+    quirks: [Q-18]
+
+  - id: debian-11
+    display: Debian 11
+    family: debian-like
+    priority: 100
+    match: {id: debian, versionId: "11"}
+    overrides: {network: ifupdown}
+    support:
+      tier: P2
+      evidence: measured
+      samples: [debian11]
+      pkgSource: online-frozen
+      lifecycle: {eol: "2026-08-31", note: "LTS 已结束；ELTS 为付费服务", source: "R-OS-10"}
+    baseline: {kernel: "5.10.223-1", systemd: 247, cgroup: v2, nft: "0.9.8", glibc: "2.31"}
+
+  - id: debian-12
+    display: Debian 12
+    family: debian-like
+    priority: 100
+    match: {id: debian, versionId: "12"}
+    overrides: {network: ifupdown}
+    support:
+      tier: P1
+      evidence: measured
+      samples: [debian12, debian12-arm64]
+      pkgSource: online
+      lifecycle: {eol: "2028-06-30", note: "安全支持已于 2026-06 结束，现为 LTS", source: "R-OS-10"}
+    baseline:
+      kernel: "6.1.176-1"
+      systemd: 252
+      cgroup: v2
+      nft: "1.0.6"
+      glibc: "2.36"
+      arm64: {pageSize: 4K}
+
+  - id: debian-13
+    display: Debian 13
+    family: debian-like
+    priority: 100
+    match: {id: debian, versionId: "13"}
+    overrides: {network: ifupdown}
+    variants:
+      point: {from: osrelease, key: DEBIAN_VERSION_FULL}
+    support:
+      tier: P1
+      evidence: measured
+      samples: [debian13]
+      pkgSource: online
+      lifecycle: {eol: "2030-06-30", extended: "2035-06-30", note: "安全支持至 2028-08-09，之后为 LTS；ELTS 至 2035-06-30", source: "endoflife.date、Freexian"}
+    baseline: {kernel: "6.12.117-1", systemd: 257, cgroup: v2-only, nft: "1.1.3", glibc: "2.41"}
+    quirks: [Q-18]
+
+  # ===================== 兜底规则：命中后一律 unverified，需用户确认 =====================
+  - id: fb-anolis
+    display: 龙蜥衍生版（ID_LIKE 含 anolis）
+    family: anolis
+    priority: 30
+    match: {idLike: anolis}
+    support: {tier: unverified, evidence: none}
+
+  - id: fb-openeuler
+    display: openEuler 衍生版或未知版本
+    family: openeuler
+    priority: 30
+    match:
+      anyOf:
+        - {id: openEuler}
+        - {file: {path: /etc/openEuler-release, exists: true}}
+    support: {tier: unverified, evidence: none}
+
+  - id: fb-kylin
+    display: 麒麟其他版本
+    family: kylin
+    priority: 30
+    match: {id: kylin}
+    support: {tier: unverified, evidence: none}
+
+  - id: fb-uos
+    display: 统信 UOS 其他版本（含 V25）
+    family: detect                  # 按包管理器探测底座
+    priority: 30
+    match: {id: uos}
+    support: {tier: unverified, evidence: none}
+
+  - id: fb-opencloudos
+    display: OpenCloudOS 其他版本
+    family: rhel-like
+    priority: 20
+    match:
+      anyOf:
+        - {id: opencloudos}
+        - {idLike: opencloudos}
+    support: {tier: unverified, evidence: none}
+
+  - id: fb-suse
+    display: SUSE 系其他版本
+    family: suse
+    priority: 20
+    match:
+      anyOf:
+        - {idLike: suse}
+        - {id: 're:^(sles|sled|opensuse.*)$'}
+    support: {tier: unverified, evidence: none}
+
+  - id: fb-debian
+    display: Debian / Ubuntu 系其他版本
+    family: debian-like
+    priority: 20
+    match:
+      anyOf:
+        - {idLike: [debian, ubuntu]}
+        - {id: [debian, ubuntu]}
+    support: {tier: unverified, evidence: none}
+
+  - id: fb-rhel
+    display: RHEL 系其他版本
+    family: rhel-like
+    priority: 10
+    match:
+      anyOf:
+        - {idLike: [rhel, centos, fedora]}
+        - {id: [rhel, centos, rocky, almalinux, ol]}
+        - {file: {path: /etc/redhat-release, exists: true}}
+    support: {tier: unverified, evidence: none}
