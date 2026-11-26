@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kinstall/kinstall/internal/apiproxy"
 	"github.com/kinstall/kinstall/internal/app"
 	"github.com/kinstall/kinstall/internal/artifact/source"
 	"github.com/kinstall/kinstall/internal/audit"
@@ -249,6 +250,36 @@ func (a *Application) NewRootCommand() *cli.Deps {
 	return &cli.Deps{
 		Facade:      a.Facade,
 		StartServer: a.RunServer,
+		RunAPIProxy: a.RunAPIProxy,
 		Out:         os.Stdout,
 	}
+}
+
+// RunAPIProxy launches the node-local K8s APIServer L4 proxy with SIGHUP zero-downtime hot reload (T-M1-20, P1 §3.1).
+func (a *Application) RunAPIProxy(parentCtx context.Context, listenAddr, configPath string) error {
+	ctx, stop := signal.NotifyContext(parentCtx, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	p := apiproxy.New(apiproxy.Options{ListenAddr: listenAddr, Logger: a.Logger})
+	if err := p.ReloadConfigFile(configPath); err != nil {
+		return err
+	}
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hup:
+				if err := p.ReloadConfigFile(configPath); err != nil {
+					a.Logger.Error("apiserver-proxy SIGHUP reload failed", slog.String("error", err.Error()))
+				} else {
+					a.Logger.Info("apiserver-proxy reloaded backends via SIGHUP")
+				}
+			}
+		}
+	}()
+	return p.Start(ctx)
 }

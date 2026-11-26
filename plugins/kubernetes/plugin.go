@@ -130,6 +130,19 @@ func ResolveProxyAndCalicoMode(hosts []sdk.HostView) (proxyMode, calicoDataplane
 	return "nftables", "NFT"
 }
 
+// SelectKubeletTemplate picks the exact semver-branched KubeletConfiguration template (T-M1-19 / T-M2-14, P1 §2):
+// >=1.38.0 -> kubelet-v1.38.yaml.tmpl, >=1.37.0 -> kubelet-v1.37.yaml.tmpl, else kubelet-v1.35.yaml.tmpl.
+func SelectKubeletTemplate(ver string) string {
+	switch {
+	case !sdk.DottedVersionLess(ver, "1.38.0"):
+		return "templates/kubelet-v1.38.yaml.tmpl"
+	case !sdk.DottedVersionLess(ver, "1.37.0"):
+		return "templates/kubelet-v1.37.yaml.tmpl"
+	default:
+		return "templates/kubelet-v1.35.yaml.tmpl"
+	}
+}
+
 // ValidateUpgradePath enforces sequential minor upgrades (forbids 1.35 -> 1.37 jumps, P1 §4.2).
 func ValidateUpgradePath(fromVer, toVer string) error {
 	cur, err := semver.NewVersion(strings.TrimPrefix(fromVer, "v"))
@@ -480,7 +493,7 @@ func (p *Plugin) buildInstall(_ context.Context, req *sdk.OpRequest) (*sdk.Pipel
 		Name: "worker",
 		Tasks: []sdk.TaskSpec{
 			sdk.BinaryInstall("kubelet", ver, sdk.ArtifactRef{Name: "kubernetes-node", MatchPageSize: true}).WithKey("worker-bin"),
-			sdk.TemplateRender("/var/lib/kubelet/config.yaml", sdk.TemplateRef{FS: assetsFS, Path: "templates/kubelet-config.yaml.tmpl"}, 0o640, "root:root").
+			sdk.TemplateRender("/var/lib/kubelet/config.yaml", sdk.TemplateRef{FS: assetsFS, Path: SelectKubeletTemplate(ver)}, 0o640, "root:root").
 				WithVars(map[string]any{
 					"ClusterDNS":       "10.96.0.10",
 					"MaxPods":          spec.MaxPods,

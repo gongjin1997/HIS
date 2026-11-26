@@ -15,6 +15,7 @@ import (
 	"github.com/kinstall/kinstall/internal/compliance"
 	"github.com/kinstall/kinstall/internal/domain"
 	"github.com/kinstall/kinstall/internal/engine"
+	"github.com/kinstall/kinstall/internal/gitops"
 	"github.com/kinstall/kinstall/internal/hostinit"
 	"github.com/kinstall/kinstall/internal/inventory"
 	"github.com/kinstall/kinstall/internal/multicluster"
@@ -22,6 +23,7 @@ import (
 	"github.com/kinstall/kinstall/internal/ports"
 	"github.com/kinstall/kinstall/internal/registry"
 	"github.com/kinstall/kinstall/internal/stack"
+	"github.com/kinstall/kinstall/internal/supportbundle"
 	sdk "github.com/kinstall/kinstall/pkg/sdk/v1alpha1"
 )
 
@@ -670,6 +672,133 @@ func (f *Facade) GenerateComplianceReport(ctx context.Context, actor domain.Acto
 		return nil, nil, "", err
 	}
 	return compliance.BuildEvidencePackage(ctx, f.store, projectID, f.cipherAlg, f.kekKind, f.enableGM)
+}
+
+// RewrapAllCredentials rotates every credential DEK under the latest KEK version (T-M1-02, O-11).
+func (f *Facade) RewrapAllCredentials(ctx context.Context, actor domain.Actor, projectID string) (int, error) {
+	if err := authz.Authorize(actor, projectID, "project.write"); err != nil {
+		return 0, err
+	}
+	if f.secrets == nil {
+		return 0, fmt.Errorf("secret store unavailable")
+	}
+	creds, err := f.store.Credentials().ListByProject(ctx, projectID)
+	if err != nil {
+		return 0, err
+	}
+	rewrapped := 0
+	for _, c := range creds {
+		plain, err := f.secrets.Decrypt(ctx, "credentials", c.ID, c.KeyVersion, c.EnvelopeJSON)
+		if err != nil {
+			return rewrapped, err
+		}
+		nextVer := c.KeyVersion + 1
+		nextEnv, err := f.secrets.Encrypt(ctx, "credentials", c.ID, nextVer, plain)
+		clear(plain)
+		if err != nil {
+			return rewrapped, err
+		}
+		if err := f.store.Credentials().UpdateEnvelope(ctx, c.ID, c.Version, nextEnv, nextVer, domain.CredentialActive); err != nil {
+			return rewrapped, err
+		}
+		rewrapped++
+	}
+	f.recordAudit(ctx, actor, projectID, "secrets.rewrap", "project", projectID, "success", "", map[string]any{"count": rewrapped})
+	return rewrapped, nil
+}
+
+// CollectSupportBundle produces a redacted diagnostic .tar.gz archive (T-M2-05).
+func (f *Facade) CollectSupportBundle(ctx context.Context, actor domain.Actor, projectID string) ([]byte, *supportbundle.BundleReport, error) {
+	if err := authz.Authorize(actor, projectID, "audit.read"); err != nil {
+		return nil, nil, err
+	}
+	return supportbundle.Collect(ctx, f.store, projectID, "", nil)
+}
+
+// ExportOperationReport renders a Markdown or JSON summary for an Operation (T-M2-05).
+func (f *Facade) ExportOperationReport(ctx context.Context, actor domain.Actor, opID, format string) ([]byte, error) {
+	op, err := f.GetOperation(ctx, actor, opID)
+	if err != nil {
+		return nil, err
+	}
+	runs, err := f.store.TaskRuns().ListByOperation(ctx, opID)
+	if err != nil {
+		return nil, err
+	}
+	return supportbundle.RenderOperationReport(op, runs, format)
+}
+
+// ExportGitOpsYAML exports a project's instances into deterministic GitOps YAML (T-M3-11, G2 §2).
+func (f *Facade) ExportGitOpsYAML(ctx context.Context, actor domain.Actor, projectID string) ([]byte, error) {
+	if err := authz.Authorize(actor, projectID, "resource.read"); err != nil {
+		return nil, err
+	}
+	p, err := f.store.Projects().Get(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	insts, err := f.store.Instances().ListByProject(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	return gitops.ExportYAML(p.Name, insts)
+}
+
+// DiffGitOpsYAML diffs a desired GitOps YAML bundle against live project instances (T-M3-11).
+func (f *Facade) DiffGitOpsYAML(ctx context.Context, actor domain.Actor, projectID string, desiredYAML []byte) ([]gitops.DiffEntry, int, error) {
+	if err := authz.Authorize(actor, projectID, "resource.read"); err != nil {
+		return nil, 1, err
+	}
+	insts, err := f.store.Instances().ListByProject(ctx, projectID)
+	if err != nil {
+		return nil, 1, err
+	}
+	return gitops.Diff(desiredYAML, insts)
+}
+
+// SyncExternalCMDBHosts upserts hosts pushed from an external CMDB webhook (T-M3-11, G2 §2).
+func (f *Facade) SyncExternalCMDBHosts(ctx context.Context, actor domain.Actor, projectID string, incoming []domain.Host) (created, updated int, err error) {
+	if err := authz.Authorize(actor, projectID, "host.write"); err != nil {
+		return 0, 0, err
+	}
+	for i := range incoming {
+		h := incoming[i]
+		h.ProjectID = projectID
+		if existing, gerr := f.store.Hosts().GetByName(ctx, projectID, h.Name); gerr == nil && existing != nil {
+			updated++
+			continue
+		}
+		if cerr := f.store.Hosts().Create(ctx, &h); cerr != nil {
+			return created, updated, cerr
+		}
+		created++
+	}
+	f.recordAudit(ctx, actor, projectID, "cmdb.sync", "project", projectID, "success", "", map[string]any{"created": created, "updated": updated})
+	return created, updated, nil
+}
+
+// CheckHostBaseline inspects a CMDB host against its configured hostinit profile (T-M1-08).
+func (f *Facade) CheckHostBaseline(ctx context.Context, actor domain.Actor, projectID, hostID string) ([]hostinit.DriftFinding, error) {
+	if err := authz.Authorize(actor, projectID, "resource.read"); err != nil {
+		return nil, err
+	}
+	h, err := f.store.Hosts().Get(ctx, hostID)
+	if err != nil {
+		return nil, err
+	}
+	profileName := h.InitProfile
+	if profileName == "" {
+		profileName = "base"
+	}
+	prof, err := hostinit.MergeProfiles([]string{profileName})
+	if err != nil {
+		return nil, err
+	}
+	var fv sdk.FactsView
+	if h.Facts != nil {
+		fv = *h.Facts
+	}
+	return hostinit.CheckHostDrift(prof, fv, nil, ""), nil
 }
 
 func (f *Facade) recordAudit(ctx context.Context, actor domain.Actor, projectID, action, targetType, targetID, result, errCode string, payload map[string]any) {

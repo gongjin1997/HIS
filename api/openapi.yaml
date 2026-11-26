@@ -188,6 +188,62 @@ paths:
       operationId: listAuditLogs
       responses:
         "200": { description: OK }
+  /api/v1/projects/{projectId}/secrets:rewrap:
+    post:
+      operationId: rewrapProjectSecrets
+      summary: Re-wrap all project credential DEKs under latest KEK version
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Rewrapped count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rewrapped: { type: integer }
+  /api/v1/projects/{projectId}/cmdb:sync:
+    post:
+      operationId: syncExternalCMDB
+      summary: Push/sync external CMDB hosts into project
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Sync summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created: { type: integer }
+                  updated: { type: integer }
+  /api/v1/projects/{projectId}/operations/{opId}/report:
+    get:
+      operationId: exportOperationReport
+      summary: Export Markdown or JSON operation execution report
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: opId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: format
+          in: query
+          schema: { type: string, enum: [markdown, json] }
+      responses:
+        '200':
+          description: Operation report
   /api/v1/audit:verify:
     post:
       operationId: verifyAuditChain

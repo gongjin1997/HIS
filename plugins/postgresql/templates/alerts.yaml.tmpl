@@ -1,0 +1,23 @@
+groups:
+  - name: kinstall-postgresql-alerts
+    rules:
+      - alert: PostgreSQLDown
+        expr: pg_up == 0
+        for: 30s
+        labels: { severity: critical, product: postgresql }
+        annotations: { summary: "PostgreSQL instance unreachable" }
+      - alert: PostgreSQLReplicationLagHigh
+        expr: pg_replication_lag > 30
+        for: 2m
+        labels: { severity: warning, product: postgresql }
+        annotations: { summary: "PostgreSQL replication lag > 30s" }
+      - alert: PostgreSQLArchiveFailed
+        expr: increase(pg_stat_archiver_failed_count[15m]) > 0
+        for: 5m
+        labels: { severity: critical, product: postgresql }
+        annotations: { summary: "pgBackRest WAL archive-push failures detected" }
+      - alert: PostgreSQLChecksumsFailure
+        expr: pg_stat_database_checksum_failures > 0
+        for: 1m
+        labels: { severity: critical, product: postgresql }
+        annotations: { summary: "Data checksum failure detected on PostgreSQL block storage" }

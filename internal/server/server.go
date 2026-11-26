@@ -120,13 +120,15 @@ func NewRouter(shutdownCtx context.Context, facade *app.Facade, authSvc *authz.S
 		ar.Post("/audit:verify", s.handleVerifyAudit)
 
 		ar.Route("/projects/{projectId}", func(pr chi.Router) {
-			// Credentials
+			// Credentials & Secrets Rewrap (T-M1-02)
 			pr.Post("/credentials", s.handleCreateCredential)
+			pr.Post("/secrets:rewrap", s.handleRewrapSecrets)
 
-			// Hosts
+			// Hosts & External CMDB Sync (T-M3-11)
 			pr.Get("/hosts", s.handleListHosts)
 			pr.Post("/hosts", s.handleCreateHost)
 			pr.Post("/hosts/{hostId}:probe", s.handleProbeHost)
+			pr.Post("/cmdb:sync", s.handleCMDBSync)
 
 			// Media Policies (Local / Huawei OBS·S3 / Online, ADR-077)
 			pr.Get("/media-policies", s.handleListMediaPolicies)
@@ -144,9 +146,10 @@ func NewRouter(shutdownCtx context.Context, facade *app.Facade, authSvc *authz.S
 			pr.Get("/stacks", s.handleListStacks)
 			pr.Post("/stacks", s.handleCreateStack)
 
-			// Operations, SSE & Four-Eyes Approvals
+			// Operations, SSE, Reports & Four-Eyes Approvals
 			pr.Get("/operations", s.handleListOperations)
 			pr.Get("/operations/{opId}", s.handleGetOperation)
+			pr.Get("/operations/{opId}/report", s.handleOperationReport)
 			pr.Get("/operations/{opId}/events", func(w http.ResponseWriter, r *http.Request) {
 				s.handleOperationEventsSSE(w, r, chi.URLParam(r, "opId"))
 			})
@@ -621,4 +624,47 @@ func (s *Server) handleComplianceReport(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"report": rep, "evidenceTarGzSha256": digest})
+}
+
+func (s *Server) handleRewrapSecrets(w http.ResponseWriter, r *http.Request) {
+	n, err := s.app.RewrapAllCredentials(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"))
+	if err != nil {
+		writeProblem(w, r, s.i18n, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rewrapped": n})
+}
+
+func (s *Server) handleCMDBSync(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Hosts []domain.Host `json:"hosts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err))
+		return
+	}
+	created, updated, err := s.app.SyncExternalCMDBHosts(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), body.Hosts)
+	if err != nil {
+		writeProblem(w, r, s.i18n, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"created": created, "updated": updated})
+}
+
+func (s *Server) handleOperationReport(w http.ResponseWriter, r *http.Request) {
+	format := r.URL.Query().Get("format")
+	raw, err := s.app.ExportOperationReport(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "opId"), format)
+	if err != nil {
+		writeProblem(w, r, s.i18n, err)
+		return
+	}
+	if strings.EqualFold(format, "json") {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	} else {
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	// #nosec G705 -- response is text/markdown or application/json with nosniff header
+	_, _ = w.Write(raw)
 }

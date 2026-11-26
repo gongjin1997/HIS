@@ -1,15 +1,27 @@
 {
   "name": "kinstall-web",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "openapi-ts": "openapi-ts",
     "typecheck": "vue-tsc --noEmit",
+    "lint:css": "stylelint \"src/**/*.css\" \"src/**/*.vue\" && node scripts/no-primitive-tokens.mjs",
+    "contrast-check": "node scripts/contrast-check.mjs",
+    "tokens:export": "node scripts/tokens-export.mjs",
+    "test": "vitest run",
     "build": "vue-tsc --noEmit && vite build"
   },
   "dependencies": {
+    "@codemirror/lang-yaml": "^6.1.2",
+    "@codemirror/merge": "^6.7.4",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.36.5",
+    "@fontsource/inter": "^5.2.5",
+    "@fontsource/jetbrains-mono": "^5.2.5",
     "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-search": "^0.15.0",
     "@xterm/xterm": "^5.5.0",
     "@xyflow/vue": "^2.0.3",
     "element-plus": "^2.10.0",
@@ -20,9 +32,18 @@
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
+    "@hey-api/openapi-ts": "^0.66.6",
     "@vitejs/plugin-vue": "^5.2.3",
+    "postcss": "^8.5.3",
+    "postcss-html": "^1.8.0",
+    "stylelint": "^16.19.1",
+    "stylelint-config-standard": "^38.0.0",
+    "stylelint-declaration-strict-value": "^1.10.12",
     "typescript": "^5.8.3",
+    "unplugin-auto-import": "^19.1.2",
+    "unplugin-vue-components": "^28.5.0",
     "vite": "^6.3.5",
+    "vitest": "^3.1.2",
     "vue-tsc": "^2.2.10"
   }
 }

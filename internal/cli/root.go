@@ -22,10 +22,14 @@ import (
 // ServerStarter is injected by cmd/kinstall so internal/cli never imports internal/server or internal/store.
 type ServerStarter func(ctx context.Context, listenAddr string, devNoAuth bool) error
 
+// APIProxyRunner is injected by cmd/kinstall for `kinstall apiserver-proxy` (T-M1-20, P1 §3.1).
+type APIProxyRunner func(ctx context.Context, listenAddr, configPath string) error
+
 // Deps supplies dependencies from the composition root cmd/kinstall/app.go (O-04).
 type Deps struct {
 	Facade      *app.Facade
 	StartServer ServerStarter
+	RunAPIProxy APIProxyRunner
 	Out         io.Writer
 }
 
@@ -211,6 +215,21 @@ func NewRootCmd(deps Deps) *cobra.Command {
 				facts.Hostname, facts.OS.RuleID, facts.Arch, fmt.Sprintf("%d", facts.PageSize), facts.GlibcVersion, fmt.Sprintf("v%d", facts.CgroupVer),
 			}})
 		},
+	}, &cobra.Command{
+		Use:   "check <hostId>",
+		Short: "Check CMDB host against its hostinit baseline profile (T-M1-08)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			drifts, err := deps.Facade.CheckHostBaseline(cmd.Context(), cliActor, projectID, args[0])
+			if err != nil {
+				return err
+			}
+			rows := make([][]string, 0, len(drifts))
+			for _, d := range drifts {
+				rows = append(rows, []string{d.Key, d.Expected, d.Observed})
+			}
+			return render(drifts, []string{"KEY", "EXPECTED", "OBSERVED"}, rows)
+		},
 	})
 	root.AddCommand(hostCmd)
 
@@ -250,7 +269,129 @@ func NewRootCmd(deps Deps) *cobra.Command {
 			return render(items, []string{"ID", "TARGET", "ACTION", "STATE", "FENCING"}, rows)
 		},
 	})
+	var repFmt string
+	opReport := &cobra.Command{
+		Use:   "report <opId>",
+		Short: "Export Markdown or JSON operation report (T-M2-05)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			raw, err := deps.Facade.ExportOperationReport(cmd.Context(), cliActor, args[0], repFmt)
+			if err != nil {
+				return err
+			}
+			_, err = out.Write(raw)
+			return err
+		},
+	}
+	opReport.Flags().StringVar(&repFmt, "format", "markdown", "Report format: markdown | json")
+	opCmd.AddCommand(opReport)
 	root.AddCommand(opCmd)
+
+	// secrets rewrap (T-M1-02 / O-11)
+	secretsCmd := &cobra.Command{Use: "secrets", Short: "Manage envelope encryption keys & rotation"}
+	secretsCmd.AddCommand(&cobra.Command{
+		Use:   "rewrap",
+		Short: "Re-wrap all credential DEKs in project under latest KEK version",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			n, err := deps.Facade.RewrapAllCredentials(cmd.Context(), cliActor, projectID)
+			if err != nil {
+				return err
+			}
+			return render(map[string]int{"rewrapped": n}, []string{"REWRAPPED"}, [][]string{{fmt.Sprintf("%d", n)}})
+		},
+	})
+	root.AddCommand(secretsCmd)
+
+	// support-bundle (T-M2-05)
+	var sbOut string
+	sbCmd := &cobra.Command{
+		Use:   "support-bundle",
+		Short: "Collect a redacted diagnostic .tar.gz bundle (Redline 6)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			raw, rep, err := deps.Facade.CollectSupportBundle(cmd.Context(), cliActor, projectID)
+			if err != nil {
+				return err
+			}
+			if sbOut != "" {
+				if err := os.WriteFile(sbOut, raw, 0o600); err != nil {
+					return err
+				}
+			}
+			return render(rep, []string{"HOSTS", "INSTANCES", "OPS", "BYTES"}, [][]string{{
+				fmt.Sprintf("%d", rep.HostCount), fmt.Sprintf("%d", rep.InstanceCount), fmt.Sprintf("%d", rep.OperationCount), fmt.Sprintf("%d", rep.SizeBytes),
+			}})
+		},
+	}
+	sbCmd.Flags().StringVar(&sbOut, "out", "", "Write support-bundle .tar.gz to path")
+	root.AddCommand(sbCmd)
+
+	// spec export / diff (T-M3-11 GitOps)
+	specCmd := &cobra.Command{Use: "spec", Short: "GitOps declarative export & diff (G2 §2)"}
+	specCmd.AddCommand(&cobra.Command{
+		Use:   "export",
+		Short: "Export live project instances as deterministic GitOps YAML",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			raw, err := deps.Facade.ExportGitOpsYAML(cmd.Context(), cliActor, projectID)
+			if err != nil {
+				return err
+			}
+			_, err = out.Write(raw)
+			return err
+		},
+	}, &cobra.Command{
+		Use:   "diff <file.yaml>",
+		Short: "Diff desired GitOps YAML against live instances",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			desired, err := os.ReadFile(args[0])
+			if err != nil {
+				return err
+			}
+			entries, code, err := deps.Facade.DiffGitOpsYAML(cmd.Context(), cliActor, projectID, desired)
+			if err != nil {
+				return err
+			}
+			rows := make([][]string, 0, len(entries))
+			for _, e := range entries {
+				rows = append(rows, []string{e.InstanceName, e.Action, e.BeforeHash, e.AfterHash})
+			}
+			_ = render(map[string]any{"exitCode": code, "entries": entries}, []string{"INSTANCE", "ACTION", "BEFORE", "AFTER"}, rows)
+			return nil
+		},
+	})
+	root.AddCommand(specCmd)
+
+	// artifact verify-sources (T-M1-13)
+	artCmd := &cobra.Command{Use: "artifact", Short: "Verify ternary media sources (Local / OBS·S3 / Online)"}
+	artCmd.AddCommand(&cobra.Command{
+		Use:   "verify-sources <policyId>",
+		Short: "Probe all configured sources in a MediaPolicy",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			rep, err := deps.Facade.TestMediaPolicy(cmd.Context(), cliActor, projectID, args[0])
+			if err != nil {
+				return err
+			}
+			return render(rep, nil, nil)
+		},
+	})
+	root.AddCommand(artCmd)
+
+	// apiserver-proxy (T-M1-20, P1 §3.1)
+	var proxyListen, proxyCfg string
+	proxyCmd := &cobra.Command{
+		Use:   "apiserver-proxy",
+		Short: "Run node-local K8s APIServer L4 HA proxy (127.0.0.1:8443, SIGHUP hot-reload)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if deps.RunAPIProxy == nil {
+				return fmt.Errorf("apiserver-proxy runner not configured")
+			}
+			return deps.RunAPIProxy(cmd.Context(), proxyListen, proxyCfg)
+		},
+	}
+	proxyCmd.Flags().StringVar(&proxyListen, "listen", "127.0.0.1:8443", "Local TCP listen address")
+	proxyCmd.Flags().StringVar(&proxyCfg, "config", "/etc/kinstall/apiserver-proxy/backends.json", "Path to backends.json")
+	root.AddCommand(proxyCmd)
 
 	// audit verify
 	auditCmd := &cobra.Command{Use: "audit", Short: "Audit hash-chain verification"}

@@ -19,7 +19,7 @@ var (
 	reBearerToken   = regexp.MustCompile(`(?i)(Bearer\s+)[A-Za-z0-9\-._~+/]+=*`)
 	reKinstallToken = regexp.MustCompile(`ki_[A-Za-z0-9]{6,16}_[A-Za-z0-9]{16,64}`)
 	reURLCreds      = regexp.MustCompile(`(://[^/\s:@]+:)([^/\s@]+)(@)`)
-	rePresignedSig  = regexp.MustCompile(`(?i)([?&](?:X-Amz-Signature|Signature|X-Amz-Security-Token|AWSAccessKeyId|AccessKeyId)=)([^&\s"']+)`)
+	rePresignedSig  = regexp.MustCompile(`(?i)((?:[?&]|\b)(?:X-Amz-Signature|Signature|X-Amz-Security-Token|AWSAccessKeyId|AccessKeyId)=)([^&\s"']+)`)
 
 	sensitiveAttrKeys = []string{
 		"password", "passwd", "secret", "token", "private_key", "privatekey",

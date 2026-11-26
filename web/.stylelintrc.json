@@ -1,0 +1,29 @@
+{
+  "extends": ["stylelint-config-standard"],
+  "plugins": ["stylelint-declaration-strict-value"],
+  "ignoreFiles": ["src/styles/tokens.css", "src/styles/fonts.css", "dist/**", "node_modules/**"],
+  "overrides": [
+    {
+      "files": ["**/*.vue"],
+      "customSyntax": "postcss-html"
+    }
+  ],
+  "rules": {
+    "color-no-hex": true,
+    "color-named": "never",
+    "function-disallowed-list": ["rgb", "rgba", "hsl", "hsla"],
+    "scale-unlimited/declaration-strict-value": [
+      ["/color$/", "fill", "stroke", "background", "z-index", "font-family", "box-shadow"],
+      { "ignoreValues": ["transparent", "currentColor", "inherit", "none", "0", "CanvasText", "Highlight"] }
+    ],
+    "declaration-property-value-disallowed-list": {
+      "outline": ["none", "0"],
+      "border-radius": ["/^(1[2-9]|[2-9][0-9])px$/"]
+    },
+    "custom-property-pattern": "^(ki|el|node|panel)-[a-z0-9-]+$",
+    "declaration-no-important": true,
+    "selector-class-pattern": null,
+    "no-empty-source": null,
+    "media-feature-range-notation": null
+  }
+}
