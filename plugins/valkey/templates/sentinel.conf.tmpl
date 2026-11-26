@@ -1,0 +1,8 @@
+# kinstall create-only template: Sentinel mutates this file at runtime!
+port {{ .SentinelPort }}
+dir /data/valkey/{{ .InstanceName }}/sentinel
+sentinel monitor {{ .MasterName }} {{ .PrimaryIP }} {{ .Port }} 2
+sentinel down-after-milliseconds {{ .MasterName }} 5000
+sentinel failover-timeout {{ .MasterName }} 60000
+sentinel parallel-syncs {{ .MasterName }} 1
+aclfile /etc/kinstall/valkey/{{ .InstanceName }}/users.acl

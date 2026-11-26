@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Kubernetes Cluster Configuration",
+  "type": "object",
+  "required": ["clusterName", "controlPlaneEndpoint", "podCIDR", "serviceCIDR"],
+  "properties": {
+    "clusterName": {
+      "type": "string",
+      "default": "k8s-prod",
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+      "x-kinstall-ui": { "group": "basic", "order": 1, "label": "集群名称" }
+    },
+    "controlPlaneEndpoint": {
+      "type": "string",
+      "default": "10.0.0.10:6443",
+      "x-kinstall-ui": { "group": "network", "order": 10, "label": "控制面 VIP / LB 入口" }
+    },
+    "podCIDR": {
+      "type": "string",
+      "default": "10.244.0.0/16",
+      "x-kinstall-ui": { "group": "network", "order": 11, "label": "Pod 网段 (CIDR)" }
+    },
+    "serviceCIDR": {
+      "type": "string",
+      "default": "10.96.0.0/12",
+      "x-kinstall-ui": { "group": "network", "order": 12, "label": "Service 网段 (CIDR)" }
+    },
+    "cri": {
+      "type": "string",
+      "enum": ["containerd", "cri-dockerd"],
+      "default": "containerd",
+      "x-kinstall-ui": { "group": "runtime", "order": 20, "label": "容器运行时 (CRI)" }
+    },
+    "cni": {
+      "type": "string",
+      "enum": ["calico", "cilium", "flannel", "kubeovn"],
+      "default": "calico",
+      "x-kinstall-ui": { "group": "network", "order": 21, "label": "网络插件 (CNI)" }
+    },
+    "csi": {
+      "type": "string",
+      "enum": ["local-path", "nfs", "longhorn", "rook-ceph"],
+      "default": "local-path",
+      "x-kinstall-ui": { "group": "storage", "order": 30, "label": "存储驱动 (CSI)" }
+    },
+    "csiSelinuxMount": {
+      "type": "boolean",
+      "default": false,
+      "x-kinstall-ui": { "group": "storage", "order": 31, "label": "CSI 支持 SELinuxMount (ADR-032)" }
+    },
+    "maxPods": {
+      "type": "integer",
+      "minimum": 32,
+      "maximum": 250,
+      "default": 110,
+      "x-kinstall-ui": { "group": "advanced", "order": 40, "label": "单节点最大 Pod 数" }
+    },
+    "hardenEDR": {
+      "type": "boolean",
+      "default": false,
+      "x-kinstall-ui": { "group": "security", "order": 50, "label": "已部署 EDR/等保加固 (+512Mi 预留)" }
+    },
+    "etcdBackupBucket": {
+      "type": "string",
+      "default": "s3://kinstall-etcd-backups",
+      "x-kinstall-ui": { "group": "backup", "order": 60, "label": "etcd 快照对象存储 URI" }
+    },
+    "etcdBackupCredRef": {
+      "type": "string",
+      "x-kinstall-ui": { "group": "backup", "order": 61, "widget": "credential-select", "label": "对象存储凭据" }
+    }
+  }
+}

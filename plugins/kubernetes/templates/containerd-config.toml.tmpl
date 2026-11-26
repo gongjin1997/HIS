@@ -1,0 +1,14 @@
+version = 3
+root = "/var/lib/containerd"
+state = "/run/containerd"
+
+[plugins.'io.containerd.cri.v1.images']
+  sandbox_image = "{{ .SandboxImage }}"
+  [plugins.'io.containerd.cri.v1.images'.registry]
+    config_path = "/etc/containerd/certs.d"
+
+[plugins.'io.containerd.cri.v1.runtime']
+  [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]
+    runtime_type = "io.containerd.runc.v2"
+    [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]
+      SystemdCgroup = true

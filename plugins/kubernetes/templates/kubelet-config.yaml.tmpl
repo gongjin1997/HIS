@@ -1,0 +1,19 @@
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+clusterDNS:
+  - {{ .ClusterDNS }}
+clusterDomain: cluster.local
+failSwapOn: true
+failCgroupV1: true
+maxPods: {{ .MaxPods }}
+kubeReserved:
+  memory: "{{ .KubeReservedMi }}Mi"
+systemReserved:
+  memory: "{{ .SystemReservedMi }}Mi"
+evictionHard:
+  memory.available: "{{ .EvictionHardMi }}Mi"
+  nodefs.available: "10%"
+rotateCertificates: true
+serverTLSBootstrap: true
+staticPodPath: /etc/kubernetes/manifests

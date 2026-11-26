@@ -1,0 +1,23 @@
+apiVersion: kinstall.io/v1alpha1
+kind: PluginManifest
+name: postgresql
+version: 1.2.0
+sdkVersion: v1alpha1
+type: Component
+minPlatformVersion: 0.1.0
+description: "PostgreSQL 18.7 / 19.0 GA HA (Patroni 4.1.5 + etcd v3.7.4 + PgBouncer + HAProxy 5000/5001), pgBackRest >= 2.60.0 PITR, least-privilege bootstrapDatabases, and CloudNativePG 1.30.1 on Kubernetes."
+products:
+  - product: postgresql
+    versions: ">=18.0.0, <20.0.0"
+    defaultVersion: "18.7.0"
+    targets: [host-binary, host-container, kubernetes]
+    licenseTier: green
+platforms:
+  arch: [amd64, arm64]
+  pageSizes: [4096, 65536]
+outputSchema:
+  primaryEndpoint: "string (HAProxy read-write :5000)"
+  replicaEndpoint: "string (HAProxy read-only :5001)"
+  databases: "object (map of dbName -> {dsnSecretRef, owner})"
+driftIgnore:
+  - "/var/lib/postgresql/*/data/postgresql.auto.conf"

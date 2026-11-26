@@ -1,0 +1,15 @@
+[Unit]
+Description=kinstall Local APIServer L4 HA Proxy (127.0.0.1:8443)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/kinstall apiserver-proxy --listen 127.0.0.1:8443 --config /etc/kinstall/apiserver-proxy/backends.json --health-interval 2s
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=2
+LimitNOFILE=65536
+OOMScoreAdjust=-999
+
+[Install]
+WantedBy=multi-user.target

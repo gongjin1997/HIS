@@ -118,8 +118,11 @@ func NewWorker(
 	return w
 }
 
-// IsDraining returns true once the worker detects DB schema > MaxCompatibleSchemaVersion (G1 §6.2).
+// IsDraining returns true once the worker detects DB schema > MaxCompatibleSchemaVersion or enters shutdown drain (G1 §6.2/§7.3).
 func (w *Worker) IsDraining() bool { return w.draining.Load() }
+
+// SetDraining transitions the worker into/out of draining mode so /readyz immediately returns 503 during shutdown.
+func (w *Worker) SetDraining(v bool) { w.draining.Store(v) }
 
 // RunClaimLoop continuously claims pending/expired operations until ctx is cancelled or schema ceiling triggers draining.
 func (w *Worker) RunClaimLoop(ctx context.Context) error {
