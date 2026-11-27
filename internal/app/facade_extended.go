@@ -302,6 +302,51 @@ func (f *Facade) ImportHosts(ctx context.Context, actor domain.Actor, projectID,
 	if err != nil {
 		return nil, 0, sdk.NewError(sdk.CodeAPIInvalidRequest, "HOST", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err)
 	}
+
+	// Pre-validate against existing project hosts (name + address:port) and explicit credential references even during Dry-Run!
+	existingHosts, _ := f.store.Hosts().ListByProject(ctx, projectID)
+	existingByName := make(map[string]bool, len(existingHosts))
+	existingByAddrPort := make(map[string]string, len(existingHosts))
+	for _, eh := range existingHosts {
+		existingByName[eh.Name] = true
+		p := eh.SSHPort
+		if p <= 0 {
+			p = 22
+		}
+		existingByAddrPort[fmt.Sprintf("%s:%d", eh.Address, p)] = eh.Name
+	}
+	validRows := make([]inventory.HostImportRow, 0, len(res.Rows))
+	for _, r := range res.Rows {
+		rowOK := true
+		if existingByName[r.Name] {
+			res.Errors = append(res.Errors, inventory.ImportRowError{
+				RowNumber: r.RowNumber, Field: "name", Code: sdk.CodeHostClaimConflict,
+				Message: fmt.Sprintf("host %q already exists in project", r.Name),
+			})
+			rowOK = false
+		}
+		apKey := fmt.Sprintf("%s:%d", r.Address, r.Port)
+		if owner, dupAddr := existingByAddrPort[apKey]; dupAddr {
+			res.Errors = append(res.Errors, inventory.ImportRowError{
+				RowNumber: r.RowNumber, Field: "address", Code: sdk.CodeHostClaimConflict,
+				Message: fmt.Sprintf("SSH endpoint %s is already registered by host %q", apKey, owner),
+			})
+			rowOK = false
+		}
+		if strings.TrimSpace(r.Credential) != "" {
+			if _, cerr := f.resolveHostCredentialID(ctx, projectID, r.Credential); cerr != nil {
+				res.Errors = append(res.Errors, inventory.ImportRowError{
+					RowNumber: r.RowNumber, Field: "credential", Code: sdk.CodeAPIInvalidRequest, Message: cerr.Error(),
+				})
+				rowOK = false
+			}
+		}
+		if rowOK {
+			validRows = append(validRows, r)
+		}
+	}
+	res.Rows = validRows
+
 	if dryRun || len(res.Errors) > 0 {
 		return res, 0, nil
 	}
@@ -327,13 +372,6 @@ func (f *Facade) ImportHosts(ctx context.Context, actor domain.Actor, projectID,
 			HostKeyFP:    r.HostKeyFP,
 			Arch:         "amd64",
 			PageSize:     4096,
-		}
-		if existing, gerr := f.store.Hosts().GetByName(ctx, projectID, h.Name); gerr == nil && existing != nil {
-			res.Errors = append(res.Errors, inventory.ImportRowError{
-				RowNumber: r.RowNumber, Field: "name", Code: sdk.CodeHostClaimConflict,
-				Message: fmt.Sprintf("host %q already exists in project", h.Name),
-			})
-			continue
 		}
 		if cerr := f.store.Hosts().Create(ctx, h); cerr != nil {
 			res.Errors = append(res.Errors, inventory.ImportRowError{
@@ -557,30 +595,173 @@ func (f *Facade) ApplyStack(ctx context.Context, actor domain.Actor, projectID, 
 	if action == "" {
 		action = "install"
 	}
+
+	doc, parseErr := stack.Parse([]byte(st.SpecYAML))
 	var dag stack.ResolvedDAG
 	if len(st.ResolvedDAGJSON) > 0 {
 		_ = json.Unmarshal(st.ResolvedDAGJSON, &dag)
+	}
+	if len(dag.InstallLayers) == 0 && parseErr == nil && doc != nil {
+		if resolved, rerr := stack.ResolveAndValidate(doc, f.reg, nil); rerr == nil && resolved != nil {
+			dag = *resolved
+		}
 	}
 	layers := dag.InstallLayers
 	if action == "uninstall" {
 		layers = dag.UninstallLayers
 	}
 
-	pb := sdk.NewPipelineBuilder()
-	for i, layer := range layers {
-		var tasks []sdk.TaskSpec
-		for _, nodeID := range layer {
-			tasks = append(tasks, sdk.CmdRun(fmt.Sprintf("echo '[stack:%s][layer-%d] %s %s (externalRefs untouched)'", st.Name, i, action, nodeID), "").WithKey(fmt.Sprintf("l%d-%s", i, nodeID)))
+	// Build node spec lookup & existing stack member instances for real layered plugin pipeline compilation
+	nodeSpecs := make(map[string]stack.InstanceNode)
+	var extRefs []stack.ExternalRef
+	if parseErr == nil && doc != nil {
+		extRefs = doc.Spec.ExternalRefs
+		for _, n := range doc.Spec.Instances {
+			nodeSpecs[n.ID] = n
 		}
-		pb.Phase(sdk.PhaseSpec{
-			Name:       fmt.Sprintf("stack-layer-%d-%s", i, action),
-			Disruptive: action == "uninstall",
-			Tasks:      tasks,
-		})
+	}
+	existingMembers, _ := f.store.Instances().ListByStack(ctx, st.ID)
+	memberByName := make(map[string]*domain.Instance, len(existingMembers))
+	for i := range existingMembers {
+		memberByName[existingMembers[i].Name] = &existingMembers[i]
+	}
+	allHosts, _ := f.store.Hosts().ListByProject(ctx, projectID)
+	hostViews := make([]sdk.HostView, 0, len(allHosts))
+	for _, h := range allHosts {
+		hostViews = append(hostViews, h.ToHostView(nil))
+	}
+
+	needsApproval := authz.RequiresApproval(st.Env, action, false, false)
+	accumulatedOutputs := make(map[string]map[string]any)
+	pb := sdk.NewPipelineBuilder()
+
+	for i, layer := range layers {
+		for _, nodeID := range layer {
+			nodeSpec, hasSpec := nodeSpecs[nodeID]
+			if !hasSpec {
+				pb.Phase(sdk.PhaseSpec{
+					Name:       fmt.Sprintf("L%d/%s/%s", i, nodeID, action),
+					Disruptive: action == "uninstall",
+					Tasks: []sdk.TaskSpec{
+						sdk.CmdRun(fmt.Sprintf("echo '[stack:%s][L%d] %s %s (externalRefs untouched)'", st.Name, i, action, nodeID), "").WithKey(fmt.Sprintf("l%d-%s", i, nodeID)),
+					},
+				})
+				continue
+			}
+
+			// Interpolate ${instances.<upstream>.outputs.<key>} & ${externalRefs.<id>.<field>}
+			resolvedSpec := stack.InterpolateSpec(nodeSpec.Spec, accumulatedOutputs, extRefs)
+			specJSON, _ := json.Marshal(resolvedSpec)
+			target := nodeSpec.DeployTarget
+			if target == "" {
+				target = sdk.TargetHostBinary
+			}
+			memberName := fmt.Sprintf("%s-%s", st.Name, nodeSpec.ID)
+
+			// Reconcile member Instance record bound to StackID (never mutates externalRefs!)
+			member := memberByName[memberName]
+			if member == nil && action != "uninstall" {
+				stID := st.ID
+				member = &domain.Instance{
+					ID:              domain.NewID(domain.PrefixInstance),
+					ProjectID:       projectID,
+					StackID:         &stID,
+					Env:             st.Env,
+					Name:            memberName,
+					Product:         nodeSpec.Product,
+					DeployTarget:    target,
+					ProductVersion:  nodeSpec.ProductVersion,
+					DesiredSpecJSON: specJSON,
+					State:           "planned",
+				}
+				if cerr := f.store.Instances().Create(ctx, member); cerr == nil {
+					memberByName[memberName] = member
+				}
+			} else if member != nil && action != "uninstall" {
+				member.DesiredSpecJSON = specJSON
+				if nodeSpec.ProductVersion != "" {
+					member.ProductVersion = nodeSpec.ProductVersion
+				}
+				_ = f.store.Instances().Update(ctx, member)
+			}
+
+			// Compile real plugin phases for this member node
+			compiledPhases := 0
+			if f.reg != nil {
+				if comp, rerr := f.reg.Resolve(nodeSpec.Product, target, nodeSpec.ProductVersion); rerr == nil && comp != nil {
+					var instView sdk.InstanceView
+					if member != nil {
+						instView = member.ToInstanceView()
+					} else {
+						instView = sdk.InstanceView{
+							ID:             nodeSpec.ID,
+							ProjectID:      projectID,
+							StackID:        st.ID,
+							Env:            st.Env,
+							Name:           memberName,
+							Product:        nodeSpec.Product,
+							DeployTarget:   target,
+							ProductVersion: nodeSpec.ProductVersion,
+							Spec:           specJSON,
+						}
+					}
+					if planRes, perr := comp.Plan(ctx, &sdk.PlanRequest{
+						Instance:  instView,
+						Hosts:     hostViews,
+						Operation: action,
+					}); perr == nil && planRes != nil {
+						if len(planRes.Outputs) > 0 {
+							accumulatedOutputs[nodeSpec.ID] = planRes.Outputs
+							if member != nil && action != "uninstall" && !needsApproval {
+								if ob, merr := json.Marshal(planRes.Outputs); merr == nil {
+									member.OutputsJSON = ob
+									_ = f.store.Instances().Update(ctx, member)
+								}
+							}
+						}
+					}
+					var childPipe *sdk.Pipeline
+					if opBuilder, ok := comp.Operation(action); ok {
+						if cp, berr := opBuilder.Build(ctx, &sdk.OpRequest{Instance: instView, Hosts: hostViews}); berr == nil && cp != nil {
+							childPipe = cp
+						}
+					}
+					if childPipe != nil {
+						for pIdx, ph := range childPipe.Phases {
+							scPh := ph
+							scPh.Name = fmt.Sprintf("L%d/%s/%s", i, nodeID, ph.Name)
+							if action == "uninstall" {
+								scPh.Disruptive = true
+							}
+							scTasks := make([]sdk.TaskSpec, len(ph.Tasks))
+							for tIdx, t := range ph.Tasks {
+								tk := t.Key
+								if tk == "" {
+									tk = fmt.Sprintf("%d-%s", tIdx, t.Type)
+								}
+								scTasks[tIdx] = t.WithKey(fmt.Sprintf("l%d-%s-p%d-%s", i, nodeID, pIdx, tk))
+							}
+							scPh.Tasks = scTasks
+							pb.Phase(scPh)
+							compiledPhases++
+						}
+					}
+				}
+			}
+
+			if compiledPhases == 0 {
+				pb.Phase(sdk.PhaseSpec{
+					Name:       fmt.Sprintf("L%d/%s/%s", i, nodeID, action),
+					Disruptive: action == "uninstall",
+					Tasks: []sdk.TaskSpec{
+						sdk.CmdRun(fmt.Sprintf("echo '[stack:%s][L%d] %s %s (%s)'", st.Name, i, action, nodeID, nodeSpec.Product), "").WithKey(fmt.Sprintf("l%d-%s", i, nodeID)),
+					},
+				})
+			}
+		}
 	}
 	pipeJSON, _ := json.Marshal(pb.Build())
 
-	needsApproval := authz.RequiresApproval(st.Env, action, false, false)
 	initState := domain.OpPending
 	if needsApproval {
 		initState = domain.OpAwaitingApproval
@@ -611,7 +792,7 @@ func (f *Facade) ApplyStack(ctx context.Context, actor domain.Actor, projectID, 
 		_ = f.store.Approvals().Create(ctx, ap)
 		f.dispatchNotification(ctx, projectID, "approval.requested", "warn", "approval:"+op.ID, ap.Reason)
 	}
-	f.recordAudit(ctx, actor, projectID, "stack."+action, "stack", st.ID, "success", "", map[string]any{"opId": op.ID, "state": op.State})
+	f.recordAudit(ctx, actor, projectID, "stack."+action, "stack", st.ID, "success", "", map[string]any{"opId": op.ID, "state": op.State, "layers": len(layers)})
 	return op, nil
 }
 

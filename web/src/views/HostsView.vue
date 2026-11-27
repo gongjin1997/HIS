@@ -627,7 +627,7 @@ onMounted(loadAll)
           variant="info"
           text="巡检通过：该主机 Swap / THP / Sysctl 全部符合生产基线，0 项漂移。"
         />
-        <el-table v-else-if="baselineDrifts && baselineDrifts.length > 0" :data="baselineDrifts" size="small">
+        <el-table v-else-if="baselineDrifts && baselineDrifts.length > 0" :data="baselineDrifts" size="small" class="ki-mb-4">
           <el-table-column prop="category" label="类别" width="85" />
           <el-table-column prop="key" label="基线键" min-width="150">
             <template #default="{ row }"><span class="ki-mono">{{ row.key }}</span></template>
@@ -638,6 +638,25 @@ onMounted(loadAll)
             <template #default="{ row }"><KiStatusBadge :status="row.severity" /></template>
           </el-table-column>
         </el-table>
+
+        <template v-if="((selectedHost.facts as Record<string, unknown>)?.listeningPorts as Array<Record<string, unknown>>)?.length">
+          <div class="section-title">实时监听端口与进程<span class="sub">1-RTT Facts 采集 · 用于 Plan 端口冲突预检</span></div>
+          <el-table
+            :data="((selectedHost.facts as Record<string, unknown>)?.listeningPorts as Array<Record<string, unknown>>)"
+            size="small"
+            max-height="220"
+          >
+            <el-table-column prop="proto" label="协议" width="70">
+              <template #default="{ row }"><span class="ki-mono">{{ row.proto }}</span></template>
+            </el-table-column>
+            <el-table-column label="监听地址" min-width="150">
+              <template #default="{ row }"><span class="ki-mono">{{ row.address }}:{{ row.port }}</span></template>
+            </el-table-column>
+            <el-table-column label="进程名称" min-width="120">
+              <template #default="{ row }"><span class="ki-mono ki-secondary">{{ row.process || '—' }}</span></template>
+            </el-table-column>
+          </el-table>
+        </template>
       </template>
       <template #footer>
         <el-button

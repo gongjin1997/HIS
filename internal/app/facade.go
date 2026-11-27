@@ -460,6 +460,75 @@ func (f *Facade) PlanInstanceWithParams(
 		pl = &sdk.Pipeline{}
 	}
 
+	// Pre-flight readiness checks inspired by LiveOps (unprobed hosts, cloned machine-id, live unmanaged port occupancy)
+	if planRes == nil {
+		planRes = &sdk.PlanResult{}
+	}
+	for _, h := range allHosts {
+		if len(effectiveRoles) > 0 {
+			if _, byID := effectiveRoles[h.ID]; !byID {
+				if _, byName := effectiveRoles[h.Name]; !byName {
+					continue
+				}
+			}
+		}
+		if h.Facts == nil {
+			planRes.Warnings = append(planRes.Warnings, sdk.Finding{
+				Severity: sdk.SeverityWarn,
+				Code:     "KI-PREFLIGHT-HOST-UNPROBED",
+				HostID:   h.ID,
+				Message:  fmt.Sprintf("host %s (%s) has not been probed yet; run Facts probe before Apply", h.Name, h.Address),
+			})
+			continue
+		}
+		if proposed, ok := planRes.Claims[h.ID]; ok && len(h.Facts.ListeningPorts) > 0 {
+			existingClaims, _ := f.store.Instances().ListClaimsByHost(ctx, h.ID)
+			ownedPort := func(p int, proto string) bool {
+				for _, ec := range existingClaims {
+					if ec.InstanceID == inst.ID {
+						for _, ep := range ec.Ports {
+							if ep.Port == p && (ep.Proto == "" || strings.EqualFold(ep.Proto, proto)) {
+								return true
+							}
+						}
+					}
+				}
+				return false
+			}
+			for _, pp := range proposed.Ports {
+				wantProto := pp.Proto
+				if wantProto == "" {
+					wantProto = "tcp"
+				}
+				if ownedPort(pp.Port, wantProto) {
+					continue
+				}
+				for _, lp := range h.Facts.ListeningPorts {
+					if lp.Port == pp.Port && strings.EqualFold(lp.Proto, wantProto) {
+						procInfo := lp.Process
+						if procInfo == "" {
+							procInfo = "unknown process"
+						}
+						planRes.Warnings = append(planRes.Warnings, sdk.Finding{
+							Severity: sdk.SeverityWarn,
+							Code:     "KI-PREFLIGHT-PORT-IN-USE",
+							HostID:   h.ID,
+							Message:  fmt.Sprintf("host %s port %d/%s is already bound by live process %q (%s:%d)", h.Name, pp.Port, wantProto, procInfo, lp.Address, lp.Port),
+						})
+						break
+					}
+				}
+			}
+		}
+	}
+	for mid, dupNames := range osadapter.FindDuplicateMachineIDs(views) {
+		planRes.Warnings = append(planRes.Warnings, sdk.Finding{
+			Severity: sdk.SeverityWarn,
+			Code:     "KI-PREFLIGHT-DUPLICATE-MACHINE-ID",
+			Message:  fmt.Sprintf("cloned VM machine-id %s shared by hosts: %s; run hostinit hostname module first", mid, strings.Join(dupNames, ", ")),
+		})
+	}
+
 	configDiffs, hasDrift := buildPlanConfigDiffs(ctx, inst, pl, comp.Meta().DriftIgnore, views)
 	diffEnv := PlanDiffEnvelope{
 		Summary:     planRes.Summary,
@@ -523,6 +592,18 @@ func (f *Facade) ApplyInstance(ctx context.Context, actor domain.Actor, projectI
 		initState = domain.OpAwaitingApproval
 	}
 
+	// Propagate forceOverride flag into Operation PipelineJSON so Worker RunContext honors approved overrides!
+	opPipeJSON := plan.PipelineJSON
+	if forceOverride && len(opPipeJSON) > 0 {
+		var pl sdk.Pipeline
+		if uerr := json.Unmarshal(opPipeJSON, &pl); uerr == nil {
+			pl.ForceOverride = true
+			if b, merr := json.Marshal(&pl); merr == nil {
+				opPipeJSON = b
+			}
+		}
+	}
+
 	op := &domain.Operation{
 		ID:             domain.NewID(domain.PrefixOperation),
 		ProjectID:      projectID,
@@ -532,42 +613,46 @@ func (f *Facade) ApplyInstance(ctx context.Context, actor domain.Actor, projectI
 		State:          initState,
 		IdempotencyKey: idempotencyKey,
 		RequestedBy:    actor.ID,
-		PipelineJSON:   plan.PipelineJSON,
+		PipelineJSON:   opPipeJSON,
 	}
 	if err := f.store.Operations().Create(ctx, op); err != nil {
 		return nil, err
 	}
 	_ = f.store.Plans().MarkConsumed(ctx, plan.ID, op.ID)
 
-	// Persist or clear host resource claims (Ports / Dirs / Subnets) so cross-instance collision checks are live!
-	if action == "uninstall" {
-		_ = f.store.Instances().ReplaceClaims(ctx, inst.ID, nil)
-	} else if len(plan.DiffJSON) > 0 {
+	// Claim & output persistence safety:
+	// - NEVER clear claims prematurely on uninstall (if four-eyes approval rejects or uninstall fails, production claims MUST stay intact;
+	//   Worker.persistOutcome atomically clears claims ONLY once uninstall reaches OpSucceeded).
+	// - For non-uninstall actions, reserve claims immediately (so concurrent prod operations awaiting approval cannot collide on the same port/dir);
+	//   if a brand-new install is later rejected in DecideApproval, its provisional claims are cleanly released.
+	if action != "uninstall" && len(plan.DiffJSON) > 0 {
 		var diffEnv PlanDiffEnvelope
-		if uerr := json.Unmarshal(plan.DiffJSON, &diffEnv); uerr == nil && len(diffEnv.Claims) > 0 {
-			claims := make([]domain.HostClaim, 0, len(diffEnv.Claims))
-			for hostID, c := range diffEnv.Claims {
-				if hostID == "" || hostID == "local" {
-					continue
+		if uerr := json.Unmarshal(plan.DiffJSON, &diffEnv); uerr == nil {
+			if len(diffEnv.Claims) > 0 {
+				claims := make([]domain.HostClaim, 0, len(diffEnv.Claims))
+				for hostID, c := range diffEnv.Claims {
+					if hostID == "" || hostID == "local" {
+						continue
+					}
+					claims = append(claims, domain.HostClaim{
+						InstanceID: inst.ID,
+						HostID:     hostID,
+						Role:       "member",
+						Ports:      c.Ports,
+						Paths:      c.Dirs,
+						Subnets:    c.Subnets,
+						MemMB:      c.MemoryMB,
+					})
 				}
-				claims = append(claims, domain.HostClaim{
-					InstanceID: inst.ID,
-					HostID:     hostID,
-					Role:       "member",
-					Ports:      c.Ports,
-					Paths:      c.Dirs,
-					Subnets:    c.Subnets,
-					MemMB:      c.MemoryMB,
-				})
+				if len(claims) > 0 {
+					_ = f.store.Instances().ReplaceClaims(ctx, inst.ID, claims)
+				}
 			}
-			if len(claims) > 0 {
-				_ = f.store.Instances().ReplaceClaims(ctx, inst.ID, claims)
-			}
-		}
-		if len(diffEnv.Outputs) > 0 {
-			if ob, merr := json.Marshal(diffEnv.Outputs); merr == nil {
-				inst.OutputsJSON = ob
-				_ = f.store.Instances().Update(ctx, inst)
+			if len(diffEnv.Outputs) > 0 {
+				if ob, merr := json.Marshal(diffEnv.Outputs); merr == nil {
+					inst.OutputsJSON = ob
+					_ = f.store.Instances().Update(ctx, inst)
+				}
 			}
 		}
 	}
@@ -685,6 +770,14 @@ func (f *Facade) DecideApproval(ctx context.Context, actor domain.Actor, project
 	}
 	if err := f.store.Approvals().Decide(ctx, opID, actor.ID, approve, note); err != nil {
 		return err
+	}
+	// If a brand-new install (never previously applied) is rejected, release its provisionally reserved host claims.
+	if !approve {
+		if op, oerr := f.store.Operations().Get(ctx, opID); oerr == nil && op != nil && op.TargetType == "instance" && op.Action == "install" {
+			if inst, ierr := f.store.Instances().Get(ctx, op.TargetID); ierr == nil && inst != nil && len(inst.LastAppliedJSON) == 0 {
+				_ = f.store.Instances().ReplaceClaims(ctx, inst.ID, nil)
+			}
+		}
 	}
 	action := "approval.reject"
 	evType := "operation.rejected"
@@ -945,11 +1038,19 @@ func (f *Facade) CheckHostBaseline(ctx context.Context, actor domain.Actor, proj
 	if err != nil {
 		return nil, err
 	}
-	var fv sdk.FactsView
-	if h.Facts != nil {
-		fv = *h.Facts
+	if h.Facts == nil {
+		return []hostinit.DriftFinding{
+			{
+				Category: "facts",
+				Key:      "facts_probe",
+				Expected: "probed",
+				Observed: "unprobed",
+				Severity: "warn",
+			},
+		}, nil
 	}
-	return hostinit.CheckHostDrift(prof, fv, nil, ""), nil
+	fv := *h.Facts
+	return hostinit.CheckHostDrift(prof, fv, fv.Sysctls, fv.THPEnabled), nil
 }
 
 func (f *Facade) recordAudit(ctx context.Context, actor domain.Actor, projectID, action, targetType, targetID, result, errCode string, payload map[string]any) {

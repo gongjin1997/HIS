@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"sort"
@@ -145,6 +146,9 @@ func (t *TemplateRenderTask) Rollback(ctx context.Context, rc *RunContext, spec 
 
 func checkFileContent(ctx context.Context, rc *RunContext, spec sdk.TaskSpec, render bool) (CheckResult, error) {
 	dst := strParam(spec.Params, "dst")
+	if err := ValidateTargetPath(dst); err != nil {
+		return CheckResult{}, err
+	}
 	desired, err := resolveContent(ctx, rc, spec, render)
 	if err != nil {
 		return CheckResult{}, err
@@ -194,6 +198,9 @@ func checkFileContent(ctx context.Context, rc *RunContext, spec sdk.TaskSpec, re
 
 func applyFileContent(ctx context.Context, rc *RunContext, spec sdk.TaskSpec, render bool) (ApplyResult, error) {
 	dst := strParam(spec.Params, "dst")
+	if err := ValidateTargetPath(dst); err != nil {
+		return ApplyResult{}, err
+	}
 	mode := modeParam(spec.Params, "mode", 0o644)
 	owner := strParam(spec.Params, "owner")
 	desired, err := resolveContent(ctx, rc, spec, render)
@@ -212,8 +219,8 @@ func applyFileContent(ctx context.Context, rc *RunContext, spec sdk.TaskSpec, re
 				desired = []byte(planner.MergeManagedBlock(cur.String(), spec.BlockID, string(desired)))
 			}
 		}
-		// Snapshot existing file before mutation (Class A rollback anchor, 18 §2.7)
-		bkPath := path.Join("/var/lib/kinstall/backups", rc.OpID, path.Base(dst)+".bak")
+		// Snapshot existing file before mutation with collision-free full path hierarchy (Class A rollback anchor, 18 §2.7)
+		bkPath := collisionFreeBackupPath(rc.OpID, dst)
 		cpCmd := fmt.Sprintf("mkdir -p %s && cp -a %s %s", shellescape.Quote(path.Dir(bkPath)), shellescape.Quote(dst), shellescape.Quote(bkPath))
 		if _, cerr := rc.Session.Run(ctx, ports.Command{Script: cpCmd, Sudo: true}); cerr == nil {
 			backupRef["backupPath"] = bkPath
@@ -652,6 +659,9 @@ func (t *CmdRunTask) Check(ctx context.Context, rc *RunContext, spec sdk.TaskSpe
 
 func (t *CmdRunTask) Apply(ctx context.Context, rc *RunContext, spec sdk.TaskSpec) (ApplyResult, error) {
 	script := strParam(spec.Params, "script")
+	if err := ValidateCommandSafety(script); err != nil {
+		return ApplyResult{}, err
+	}
 	res, err := rc.Session.Run(ctx, ports.Command{
 		Script:    script,
 		Sudo:      true,
@@ -675,41 +685,132 @@ func (t *CmdRunTask) Rollback(ctx context.Context, rc *RunContext, spec sdk.Task
 	return err
 }
 
-// --- #9 wait.tcp ---
+// --- #9 wait.tcp (target-host SSH probe for loopback/viaHost + LiveOps-style delay/interval/threshold controls) ---
+
+func intParam(m map[string]any, k string, def int) int {
+	if m == nil {
+		return def
+	}
+	switch v := m[k].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return def
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	h := strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	if h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "0.0.0.0" {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return false
+}
+
+func shouldProbeViaSession(rc *RunContext, targetHost string, spec sdk.TaskSpec) bool {
+	if rc == nil || rc.Session == nil {
+		return false
+	}
+	if boolParam(spec.Params, "viaHost") {
+		return true
+	}
+	if rc.Host.ID != "" && rc.Host.ID != "local" && isLoopbackHost(targetHost) {
+		return true
+	}
+	return false
+}
+
+func probeTiming(spec sdk.TaskSpec) (initialDelay, interval, timeout time.Duration, threshold int) {
+	timeout = spec.Timeout
+	if timeout <= 0 {
+		if ms := intParam(spec.Params, "timeoutMs", 0); ms > 0 {
+			timeout = time.Duration(ms) * time.Millisecond
+		} else {
+			timeout = 30 * time.Second
+		}
+	}
+	if dMs := intParam(spec.Params, "initialDelayMs", 0); dMs > 0 {
+		initialDelay = time.Duration(dMs) * time.Millisecond
+	}
+	interval = 500 * time.Millisecond
+	if iMs := intParam(spec.Params, "intervalMs", 0); iMs > 0 {
+		interval = time.Duration(iMs) * time.Millisecond
+	}
+	threshold = intParam(spec.Params, "successThreshold", 1)
+	if threshold < 1 {
+		threshold = 1
+	}
+	return initialDelay, interval, timeout, threshold
+}
 
 type WaitTCPTask struct{}
 
 func (t *WaitTCPTask) Name() string { return "wait.tcp" }
 
-func (t *WaitTCPTask) Check(ctx context.Context, _ *RunContext, spec sdk.TaskSpec) (CheckResult, error) {
-	addr := strParam(spec.Params, "hostPort")
-	d := net.Dialer{Timeout: 1 * time.Second}
-	conn, err := d.DialContext(ctx, "tcp", addr)
-	if err == nil {
+func (t *WaitTCPTask) probeOnce(ctx context.Context, rc *RunContext, spec sdk.TaskSpec, addr string) bool {
+	host, port, err := net.SplitHostPort(addr)
+	if err == nil && shouldProbeViaSession(rc, host, spec) {
+		probeCmd := fmt.Sprintf(
+			`if command -v nc >/dev/null 2>&1; then nc -z -w 2 %s %s >/dev/null 2>&1; `+
+				`elif command -v bash >/dev/null 2>&1; then timeout 2 bash -c 'exec 3<>/dev/tcp/'%s'/'%s 2>/dev/null; `+
+				`elif command -v ss >/dev/null 2>&1; then ss -lntH | awk '{print $4}' | grep -Eq ':%s$'; `+
+				`else exit 1; fi`,
+			shellescape.Quote(host), shellescape.Quote(port),
+			shellescape.Quote(host), shellescape.Quote(port),
+			shellescape.Quote(port),
+		)
+		res, rerr := rc.Session.Run(ctx, ports.Command{Script: probeCmd, Timeout: 4 * time.Second})
+		return rerr == nil && res.ExitCode == 0
+	}
+	d := net.Dialer{Timeout: 2 * time.Second}
+	conn, derr := d.DialContext(ctx, "tcp", addr)
+	if derr == nil {
 		_ = conn.Close()
+		return true
+	}
+	return false
+}
+
+func (t *WaitTCPTask) Check(ctx context.Context, rc *RunContext, spec sdk.TaskSpec) (CheckResult, error) {
+	addr := strParam(spec.Params, "hostPort")
+	if t.probeOnce(ctx, rc, spec, addr) {
 		return CheckResult{Converged: true, Summary: "tcp reachable"}, nil
 	}
 	return CheckResult{Converged: false, Summary: "waiting for tcp " + addr}, nil
 }
 
-func (t *WaitTCPTask) Apply(ctx context.Context, _ *RunContext, spec sdk.TaskSpec) (ApplyResult, error) {
+func (t *WaitTCPTask) Apply(ctx context.Context, rc *RunContext, spec sdk.TaskSpec) (ApplyResult, error) {
 	addr := strParam(spec.Params, "hostPort")
-	timeout := spec.Timeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
+	initialDelay, interval, timeout, threshold := probeTiming(spec)
+	if initialDelay > 0 {
+		select {
+		case <-ctx.Done():
+			return ApplyResult{}, ctx.Err()
+		case <-time.After(initialDelay):
+		}
 	}
 	deadline := time.Now().Add(timeout)
-	d := net.Dialer{Timeout: 2 * time.Second}
+	consecutive := 0
 	for time.Now().Before(deadline) {
-		conn, err := d.DialContext(ctx, "tcp", addr)
-		if err == nil {
-			_ = conn.Close()
-			return ApplyResult{Changed: false, Output: "reachable"}, nil
+		if t.probeOnce(ctx, rc, spec, addr) {
+			consecutive++
+			if consecutive >= threshold {
+				return ApplyResult{Changed: false, Output: "reachable"}, nil
+			}
+		} else {
+			consecutive = 0
 		}
 		select {
 		case <-ctx.Done():
 			return ApplyResult{}, ctx.Err()
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(interval):
 		}
 	}
 	return ApplyResult{}, sdk.NewError(sdk.CodeWaitTimeout, "WAIT", http.StatusGatewayTimeout, sdk.CodeWaitTimeout, true,
@@ -720,13 +821,23 @@ func (t *WaitTCPTask) Rollback(context.Context, *RunContext, sdk.TaskSpec, Apply
 	return nil
 }
 
-// --- #10 wait.http ---
+// --- #10 wait.http (target-host SSH probe for loopback/viaHost + LiveOps-style delay/interval/threshold controls) ---
 
 type WaitHTTPTask struct{}
 
 func (t *WaitHTTPTask) Name() string { return "wait.http" }
 
-func (t *WaitHTTPTask) probe(ctx context.Context, urlStr string) bool {
+func (t *WaitHTTPTask) probe(ctx context.Context, rc *RunContext, spec sdk.TaskSpec, urlStr string) bool {
+	if parsed, perr := url.Parse(urlStr); perr == nil && shouldProbeViaSession(rc, parsed.Hostname(), spec) {
+		probeCmd := fmt.Sprintf(
+			`if command -v curl >/dev/null 2>&1; then curl -kfsS --max-time 3 -o /dev/null %s; `+
+				`elif command -v wget >/dev/null 2>&1; then wget --no-check-certificate -q -T 3 -O /dev/null %s; `+
+				`else exit 1; fi`,
+			shellescape.Quote(urlStr), shellescape.Quote(urlStr),
+		)
+		res, rerr := rc.Session.Run(ctx, ports.Command{Script: probeCmd, Timeout: 5 * time.Second})
+		return rerr == nil && res.ExitCode == 0
+	}
 	client := &http.Client{
 		Timeout: 3 * time.Second,
 		Transport: &http.Transport{
@@ -746,28 +857,38 @@ func (t *WaitHTTPTask) probe(ctx context.Context, urlStr string) bool {
 	return resp.StatusCode >= 200 && resp.StatusCode < 400
 }
 
-func (t *WaitHTTPTask) Check(ctx context.Context, _ *RunContext, spec sdk.TaskSpec) (CheckResult, error) {
-	if t.probe(ctx, strParam(spec.Params, "url")) {
+func (t *WaitHTTPTask) Check(ctx context.Context, rc *RunContext, spec sdk.TaskSpec) (CheckResult, error) {
+	if t.probe(ctx, rc, spec, strParam(spec.Params, "url")) {
 		return CheckResult{Converged: true, Summary: "http healthy"}, nil
 	}
 	return CheckResult{Converged: false, Summary: "waiting for http"}, nil
 }
 
-func (t *WaitHTTPTask) Apply(ctx context.Context, _ *RunContext, spec sdk.TaskSpec) (ApplyResult, error) {
+func (t *WaitHTTPTask) Apply(ctx context.Context, rc *RunContext, spec sdk.TaskSpec) (ApplyResult, error) {
 	u := strParam(spec.Params, "url")
-	timeout := spec.Timeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
+	initialDelay, interval, timeout, threshold := probeTiming(spec)
+	if initialDelay > 0 {
+		select {
+		case <-ctx.Done():
+			return ApplyResult{}, ctx.Err()
+		case <-time.After(initialDelay):
+		}
 	}
 	deadline := time.Now().Add(timeout)
+	consecutive := 0
 	for time.Now().Before(deadline) {
-		if t.probe(ctx, u) {
-			return ApplyResult{Changed: false, Output: "healthy"}, nil
+		if t.probe(ctx, rc, spec, u) {
+			consecutive++
+			if consecutive >= threshold {
+				return ApplyResult{Changed: false, Output: "healthy"}, nil
+			}
+		} else {
+			consecutive = 0
 		}
 		select {
 		case <-ctx.Done():
 			return ApplyResult{}, ctx.Err()
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(interval):
 		}
 	}
 	return ApplyResult{}, sdk.NewError(sdk.CodeWaitTimeout, "WAIT", http.StatusGatewayTimeout, sdk.CodeWaitTimeout, true,

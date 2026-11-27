@@ -92,34 +92,45 @@ type NICView struct {
 	IsVirtual bool     `json:"isVirtual,omitempty" yaml:"isVirtual,omitempty"`
 }
 
+// ListeningPort describes a live listening TCP/UDP socket observed on a managed host during 1-RTT Facts probe.
+type ListeningPort struct {
+	Proto   string `json:"proto" yaml:"proto"`     // tcp | udp
+	Address string `json:"address" yaml:"address"` // 0.0.0.0 | 127.0.0.1 | ::
+	Port    int    `json:"port" yaml:"port"`
+	Process string `json:"process,omitempty" yaml:"process,omitempty"`
+}
+
 // FactsView is the read-only host facts snapshot exposed to plugins.
 type FactsView struct {
-	Hostname     string     `json:"hostname" yaml:"hostname"`
-	FQDN         string     `json:"fqdn,omitempty" yaml:"fqdn,omitempty"`
-	OS           OSInfo     `json:"os" yaml:"os"`
-	Kernel       string     `json:"kernel" yaml:"kernel"`
-	Arch         string     `json:"arch" yaml:"arch"`
-	PageSize     int        `json:"pageSize" yaml:"pageSize"`
-	GlibcVersion string     `json:"glibcVersion,omitempty" yaml:"glibcVersion,omitempty"`
-	Libc         string     `json:"libc,omitempty" yaml:"libc,omitempty"` // glibc | musl
-	MachineID    string     `json:"machineId,omitempty" yaml:"machineId,omitempty"`
-	CgroupVer    int        `json:"cgroupVer" yaml:"cgroupVer"`
-	SystemdVer   int        `json:"systemdVer,omitempty" yaml:"systemdVer,omitempty"`
-	NFTVersion   string     `json:"nftVersion,omitempty" yaml:"nftVersion,omitempty"`
-	X86Level     string     `json:"x86Level,omitempty" yaml:"x86Level,omitempty"`
-	SecurityMod  []string   `json:"securityMod,omitempty" yaml:"securityMod,omitempty"`
-	SudoImpl     string     `json:"sudoImpl,omitempty" yaml:"sudoImpl,omitempty"` // sudo | sudo-rs
-	SELinuxMode  string     `json:"selinuxMode,omitempty" yaml:"selinuxMode,omitempty"`
-	CPUCores     int        `json:"cpuCores" yaml:"cpuCores"`
-	MemMB        int        `json:"memMB" yaml:"memMB"`
-	SwapMB       int        `json:"swapMB" yaml:"swapMB"`
-	HugePageKB   int        `json:"hugePageKB,omitempty" yaml:"hugePageKB,omitempty"`
-	NUMANodes    int        `json:"numaNodes,omitempty" yaml:"numaNodes,omitempty"`
-	PrimaryIP4   string     `json:"primaryIP4,omitempty" yaml:"primaryIP4,omitempty"`
-	PrimaryIP6   string     `json:"primaryIP6,omitempty" yaml:"primaryIP6,omitempty"`
-	Disks        []DiskView `json:"disks,omitempty" yaml:"disks,omitempty"`
-	NICs         []NICView  `json:"nics,omitempty" yaml:"nics,omitempty"`
-	CollectedAt  time.Time  `json:"collectedAt,omitempty" yaml:"collectedAt,omitempty"`
+	Hostname       string            `json:"hostname" yaml:"hostname"`
+	FQDN           string            `json:"fqdn,omitempty" yaml:"fqdn,omitempty"`
+	OS             OSInfo            `json:"os" yaml:"os"`
+	Kernel         string            `json:"kernel" yaml:"kernel"`
+	Arch           string            `json:"arch" yaml:"arch"`
+	PageSize       int               `json:"pageSize" yaml:"pageSize"`
+	GlibcVersion   string            `json:"glibcVersion,omitempty" yaml:"glibcVersion,omitempty"`
+	Libc           string            `json:"libc,omitempty" yaml:"libc,omitempty"` // glibc | musl
+	MachineID      string            `json:"machineId,omitempty" yaml:"machineId,omitempty"`
+	CgroupVer      int               `json:"cgroupVer" yaml:"cgroupVer"`
+	SystemdVer     int               `json:"systemdVer,omitempty" yaml:"systemdVer,omitempty"`
+	NFTVersion     string            `json:"nftVersion,omitempty" yaml:"nftVersion,omitempty"`
+	X86Level       string            `json:"x86Level,omitempty" yaml:"x86Level,omitempty"`
+	SecurityMod    []string          `json:"securityMod,omitempty" yaml:"securityMod,omitempty"`
+	SudoImpl       string            `json:"sudoImpl,omitempty" yaml:"sudoImpl,omitempty"` // sudo | sudo-rs
+	SELinuxMode    string            `json:"selinuxMode,omitempty" yaml:"selinuxMode,omitempty"`
+	CPUCores       int               `json:"cpuCores" yaml:"cpuCores"`
+	MemMB          int               `json:"memMB" yaml:"memMB"`
+	SwapMB         int               `json:"swapMB" yaml:"swapMB"`
+	HugePageKB     int               `json:"hugePageKB,omitempty" yaml:"hugePageKB,omitempty"`
+	THPEnabled     string            `json:"thpEnabled,omitempty" yaml:"thpEnabled,omitempty"`
+	Sysctls        map[string]string `json:"sysctls,omitempty" yaml:"sysctls,omitempty"`
+	ListeningPorts []ListeningPort   `json:"listeningPorts,omitempty" yaml:"listeningPorts,omitempty"`
+	NUMANodes      int               `json:"numaNodes,omitempty" yaml:"numaNodes,omitempty"`
+	PrimaryIP4     string            `json:"primaryIP4,omitempty" yaml:"primaryIP4,omitempty"`
+	PrimaryIP6     string            `json:"primaryIP6,omitempty" yaml:"primaryIP6,omitempty"`
+	Disks          []DiskView        `json:"disks,omitempty" yaml:"disks,omitempty"`
+	NICs           []NICView         `json:"nics,omitempty" yaml:"nics,omitempty"`
+	CollectedAt    time.Time         `json:"collectedAt,omitempty" yaml:"collectedAt,omitempty"`
 }
 
 // HostView is the read-only host representation supplied to plugins.

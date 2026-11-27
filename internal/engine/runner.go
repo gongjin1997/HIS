@@ -457,6 +457,39 @@ func (w *Worker) persistOutcome(ctx context.Context, op *domain.Operation, final
 				_ = w.store.Hosts().Update(ctx, h)
 			}
 		}
+
+	case "stack":
+		st, err := w.store.Stacks().Get(ctx, op.TargetID)
+		if err != nil || st == nil {
+			return
+		}
+		switch finalState {
+		case domain.OpSucceeded:
+			if op.Action == "uninstall" {
+				st.State = "uninstalled"
+				if members, lerr := w.store.Instances().ListByStack(ctx, st.ID); lerr == nil {
+					for i := range members {
+						members[i].State = "uninstalled"
+						_ = w.store.Instances().ReplaceClaims(ctx, members[i].ID, nil)
+						_ = w.store.Instances().Update(ctx, &members[i])
+					}
+				}
+			} else {
+				st.State = "ready"
+				if members, lerr := w.store.Instances().ListByStack(ctx, st.ID); lerr == nil {
+					for i := range members {
+						members[i].State = "ready"
+						if len(members[i].DesiredSpecJSON) > 0 {
+							members[i].LastAppliedJSON = append([]byte(nil), members[i].DesiredSpecJSON...)
+						}
+						_ = w.store.Instances().Update(ctx, &members[i])
+					}
+				}
+			}
+		case domain.OpFailed:
+			st.State = "failed"
+		}
+		_ = w.store.Stacks().Update(ctx, st)
 	}
 }
 
@@ -558,7 +591,7 @@ func (w *Worker) runPipeline(
 				for _, hb := range wave {
 					binding := hb
 					eg.Go(func() error {
-						return w.runPhaseOnHost(egCtx, op, phaseIdx, phase, binding, prior, mp, stateTrack)
+						return w.runPhaseOnHost(egCtx, op, pl, phaseIdx, phase, binding, prior, mp, stateTrack)
 					})
 				}
 				if err := eg.Wait(); err != nil {
@@ -589,7 +622,7 @@ func (w *Worker) runPipeline(
 			}
 			eg.Go(func() error {
 				defer sem.Release(1)
-				return w.runPhaseOnHost(egCtx, op, phaseIdx, phase, binding, prior, mp, stateTrack)
+				return w.runPhaseOnHost(egCtx, op, pl, phaseIdx, phase, binding, prior, mp, stateTrack)
 			})
 		}
 		if err := eg.Wait(); err != nil {
@@ -650,6 +683,7 @@ func (l *sseLineWriter) Flush() {
 func (w *Worker) runPhaseOnHost(
 	ctx context.Context,
 	op *domain.Operation,
+	pl *sdk.Pipeline,
 	phaseIdx int,
 	phase sdk.PhaseSpec,
 	binding HostExecBinding,
@@ -697,6 +731,8 @@ func (w *Worker) runPhaseOnHost(
 		Logger:             w.logger,
 		LastApplied:        stateTrack.snapshotSHAs(),
 		LastAppliedContent: make(map[string]string),
+		ForceOverride:      pl != nil && pl.ForceOverride,
+		Adopt:              pl != nil && pl.Adopt,
 		Notify: func(handler string) {
 			handler = strings.TrimSpace(handler)
 			if handler == "" {

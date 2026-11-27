@@ -1,6 +1,7 @@
 package osadapter
 
 import (
+	"fmt"
 	"net/netip"
 	"regexp"
 	"strconv"
@@ -36,6 +37,7 @@ kv fapolicyd    "$(systemctl is-active fapolicyd 2>/dev/null || echo inactive)"
 kv swap_kb      "$(awk '/^SwapTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
 kv mem_kb       "$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
 kv hugepage_kb  "$(awk '/^Hugepagesize:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+kv thp_enabled  "$(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo '')"
 kv cpu_cores    "$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)"
 kv numa_nodes   "$(ls -d /sys/devices/system/node/node[0-9]* 2>/dev/null | wc -l | tr -d ' ')"
 kv x86_flags    "$(awk -F: '/^flags/{print $2; exit}' /proc/cpuinfo 2>/dev/null | tr -s ' ')"
@@ -63,6 +65,17 @@ echo '@END:DISKS'
 echo '@BEGIN:MOUNTS'
 df -P -B1 2>/dev/null || true
 echo '@END:MOUNTS'
+
+echo '@BEGIN:SYSCTL'
+for k in fs.file-max fs.inotify.max_user_watches fs.inotify.max_user_instances kernel.pid_max net.core.somaxconn net.core.netdev_max_backlog net.ipv4.tcp_max_syn_backlog net.ipv4.tcp_fin_timeout net.ipv4.ip_forward net.bridge.bridge-nf-call-iptables net.netfilter.nf_conntrack_max vm.swappiness vm.overcommit_memory vm.overcommit_ratio vm.max_map_count vm.dirty_background_bytes vm.dirty_bytes vm.zone_reclaim_mode; do
+  v="$(sysctl -n "$k" 2>/dev/null || true)"
+  if [ -n "$v" ]; then printf '%s=%s\n' "$k" "$v"; fi
+done
+echo '@END:SYSCTL'
+
+echo '@BEGIN:LISTEN_PORTS'
+(ss -lntupH 2>/dev/null || netstat -lntup 2>/dev/null || true) | head -n 200
+echo '@END:LISTEN_PORTS'
 `
 
 var (
@@ -88,6 +101,7 @@ func ParseFactsOutput(raw string, fallbackAddr string, engine *Engine) (*sdk.Fac
 		MemMB:       parseIntDefault(kv["mem_kb"], 0) / 1024,
 		SwapMB:      parseIntDefault(kv["swap_kb"], 0) / 1024,
 		HugePageKB:  parseIntDefault(kv["hugepage_kb"], 0),
+		THPEnabled:  strings.TrimSpace(kv["thp_enabled"]),
 		NUMANodes:   parseIntDefault(kv["numa_nodes"], 1),
 		PrimaryIP4:  strings.TrimSpace(kv["primary_ip4"]),
 		PrimaryIP6:  strings.TrimSpace(kv["primary_ip6"]),
@@ -150,8 +164,12 @@ func ParseFactsOutput(raw string, fallbackAddr string, engine *Engine) (*sdk.Fac
 		f.PrimaryIP4 = selectFallbackIPv4(f.NICs, fallbackAddr)
 	}
 
-	// Disks
+	// Disks, live Sysctls, and listening ports (0 extra SSH RTTs)
 	f.Disks = parseDisks(sections["DISKS"])
+	if sysctls := parseKVSection(sections["SYSCTL"]); len(sysctls) > 0 {
+		f.Sysctls = sysctls
+	}
+	f.ListeningPorts = parseListeningPorts(sections["LISTEN_PORTS"])
 
 	// OS match via spec/osmatch.yaml
 	osRel := ParseOSRelease(sections["OS_RELEASE"])
@@ -234,6 +252,66 @@ func parseKVSection(s string) map[string]string {
 		if ok {
 			out[strings.TrimSpace(k)] = strings.TrimSpace(v)
 		}
+	}
+	return out
+}
+
+var reSSProc = regexp.MustCompile(`"([^"]+)"`)
+
+// parseListeningPorts parses `ss -lntupH` or `netstat -lntup` output into normalized ListeningPort entries.
+func parseListeningPorts(s string) []sdk.ListeningPort {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var out []sdk.ListeningPort
+	for _, line := range strings.Split(s, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		protoRaw := strings.ToLower(fields[0])
+		var proto string
+		switch {
+		case strings.HasPrefix(protoRaw, "tcp"):
+			proto = "tcp"
+		case strings.HasPrefix(protoRaw, "udp"):
+			proto = "udp"
+		default:
+			continue
+		}
+		// ss -lntupH: tcp LISTEN 0 128 0.0.0.0:5432 0.0.0.0:* users:(("postgres",pid=123,fd=5))
+		// netstat -lntup: tcp 0 0 0.0.0.0:5432 0.0.0.0:* LISTEN 123/postgres
+		localAddr := fields[4]
+		if fields[1] == "0" && len(fields) >= 4 {
+			localAddr = fields[3]
+		}
+		idx := strings.LastIndex(localAddr, ":")
+		if idx < 0 || idx == len(localAddr)-1 {
+			continue
+		}
+		addr := strings.Trim(localAddr[:idx], "[]")
+		port, err := strconv.Atoi(localAddr[idx+1:])
+		if err != nil || port <= 0 || port > 65535 {
+			continue
+		}
+		proc := ""
+		if m := reSSProc.FindStringSubmatch(line); len(m) > 1 {
+			proc = m[1]
+		} else if len(fields) >= 7 && strings.Contains(fields[6], "/") {
+			_, proc, _ = strings.Cut(fields[6], "/")
+		}
+		key := fmt.Sprintf("%s|%s|%d", proto, addr, port)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, sdk.ListeningPort{
+			Proto:   proto,
+			Address: addr,
+			Port:    port,
+			Process: proc,
+		})
 	}
 	return out
 }

@@ -161,7 +161,9 @@ type PhaseSpec struct {
 
 // Pipeline is the immutable declarative DAG produced by Operation.Build.
 type Pipeline struct {
-	Phases []PhaseSpec `json:"phases" yaml:"phases"`
+	Phases        []PhaseSpec `json:"phases" yaml:"phases"`
+	ForceOverride bool        `json:"forceOverride,omitempty" yaml:"forceOverride,omitempty"`
+	Adopt         bool        `json:"adopt,omitempty" yaml:"adopt,omitempty"`
 }
 
 // AddPhase appends a PhaseSpec to the Pipeline.

@@ -246,3 +246,84 @@ func collectStrings(v any, out *[]string) {
 		}
 	}
 }
+
+// InterpolateSpec resolves ${instances.<id>.outputs.<key>} and ${externalRefs.<id>.<field>} placeholders
+// recursively in a copy of spec using accumulated upstream outputs and read-only externalRefs.
+func InterpolateSpec(spec map[string]any, upstreamOutputs map[string]map[string]any, externalRefs []ExternalRef) map[string]any {
+	if len(spec) == 0 {
+		return map[string]any{}
+	}
+	extMap := make(map[string]ExternalRef, len(externalRefs))
+	for _, er := range externalRefs {
+		extMap[er.ID] = er
+	}
+	res := interpolateValue(spec, upstreamOutputs, extMap)
+	if m, ok := res.(map[string]any); ok {
+		return m
+	}
+	return map[string]any{}
+}
+
+func interpolateValue(v any, upstreamOutputs map[string]map[string]any, extMap map[string]ExternalRef) any {
+	switch x := v.(type) {
+	case string:
+		out := reInstanceRef.ReplaceAllStringFunc(x, func(match string) string {
+			sub := reInstanceRef.FindStringSubmatch(match)
+			if len(sub) != 3 {
+				return match
+			}
+			outs, ok := upstreamOutputs[sub[1]]
+			if !ok {
+				return match
+			}
+			if val, exists := outs[sub[2]]; exists && val != nil {
+				return fmt.Sprint(val)
+			}
+			topKey := strings.SplitN(sub[2], ".", 2)[0]
+			if val, exists := outs[topKey]; exists && val != nil {
+				return fmt.Sprint(val)
+			}
+			return match
+		})
+		out = reExternalRef.ReplaceAllStringFunc(out, func(match string) string {
+			sub := reExternalRef.FindStringSubmatch(match)
+			if len(sub) != 3 {
+				return match
+			}
+			er, ok := extMap[sub[1]]
+			if !ok {
+				return match
+			}
+			switch sub[2] {
+			case "endpoint":
+				if len(er.Endpoints) > 0 {
+					return er.Endpoints[0]
+				}
+			case "endpoints":
+				return strings.Join(er.Endpoints, ",")
+			case "credentialRef":
+				return er.CredentialRef
+			case "tlsCA":
+				return er.TLSCA
+			case "kind":
+				return er.Kind
+			}
+			return match
+		})
+		return out
+	case map[string]any:
+		cp := make(map[string]any, len(x))
+		for k, val := range x {
+			cp[k] = interpolateValue(val, upstreamOutputs, extMap)
+		}
+		return cp
+	case []any:
+		cp := make([]any, len(x))
+		for i, val := range x {
+			cp[i] = interpolateValue(val, upstreamOutputs, extMap)
+		}
+		return cp
+	default:
+		return v
+	}
+}
