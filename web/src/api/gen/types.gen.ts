@@ -8,7 +8,7 @@ export type ProblemDetails = {
     code: string;
     instance?: string;
     traceId: string;
-    suggestion?: string | null;
+    suggestion?: string;
 };
 
 export type IdempotencyKey = string;
@@ -76,6 +76,57 @@ export type LoginLocalResponses = {
      */
     200: unknown;
 };
+
+export type GetOidcConfigData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/auth/oidc/config';
+};
+
+export type GetOidcConfigResponses = {
+    /**
+     * OIDC configuration
+     */
+    200: unknown;
+};
+
+export type StartOidcLoginData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/auth/oidc/login';
+};
+
+export type CompleteOidcCallbackData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/auth/oidc/callback';
+};
+
+export type CompleteOidcCallbackResponses = {
+    /**
+     * Authenticated OIDC session
+     */
+    200: unknown;
+};
+
+export type LogoutSessionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/auth/logout';
+};
+
+export type LogoutSessionResponses = {
+    /**
+     * Logged out
+     */
+    204: void;
+};
+
+export type LogoutSessionResponse = LogoutSessionResponses[keyof LogoutSessionResponses];
 
 export type ListApiTokensData = {
     body?: never;
@@ -161,7 +212,9 @@ export type CreateProjectResponses = {
 
 export type ListHostsData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/hosts';
 };
@@ -178,7 +231,9 @@ export type CreateHostData = {
     headers?: {
         'Idempotency-Key'?: string;
     };
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/hosts';
 };
@@ -192,7 +247,10 @@ export type CreateHostResponses = {
 
 export type ProbeHostFactsData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+        hostId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/hosts/{hostId}:probe';
 };
@@ -206,7 +264,9 @@ export type ProbeHostFactsResponses = {
 
 export type ListMediaPoliciesData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/media-policies';
 };
@@ -223,7 +283,9 @@ export type CreateMediaPolicyData = {
     headers?: {
         'Idempotency-Key'?: string;
     };
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/media-policies';
 };
@@ -240,7 +302,10 @@ export type UpdateMediaPolicyData = {
     headers?: {
         'If-Match'?: string;
     };
-    path?: never;
+    path: {
+        projectId: string;
+        policyId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/media-policies/{policyId}';
 };
@@ -263,7 +328,10 @@ export type UpdateMediaPolicyResponses = {
 
 export type TestMediaPolicyConnectivityData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+        policyId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/media-policies/{policyId}:test';
 };
@@ -277,7 +345,9 @@ export type TestMediaPolicyConnectivityResponses = {
 
 export type ListInstancesData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/instances';
 };
@@ -294,7 +364,9 @@ export type CreateInstanceData = {
     headers?: {
         'Idempotency-Key'?: string;
     };
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/instances';
 };
@@ -308,7 +380,10 @@ export type CreateInstanceResponses = {
 
 export type PlanInstanceData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+        instanceId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/instances/{instanceId}:plan';
 };
@@ -326,7 +401,10 @@ export type ApplyInstanceData = {
         'Idempotency-Key'?: string;
         'If-Match'?: string;
     };
-    path?: never;
+    path: {
+        projectId: string;
+        instanceId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/instances/{instanceId}:apply';
 };
@@ -340,7 +418,9 @@ export type ApplyInstanceResponses = {
 
 export type ListStacksData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/stacks';
 };
@@ -357,7 +437,9 @@ export type CreateStackData = {
     headers?: {
         'Idempotency-Key'?: string;
     };
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/stacks';
 };
@@ -371,7 +453,9 @@ export type CreateStackResponses = {
 
 export type ListOperationsData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/operations';
 };
@@ -385,7 +469,10 @@ export type ListOperationsResponses = {
 
 export type ApproveOperationData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+        opId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/operations/{opId}:approve';
 };
@@ -408,7 +495,10 @@ export type ApproveOperationResponses = {
 
 export type RejectOperationData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+        opId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/operations/{opId}:reject';
 };
@@ -422,7 +512,10 @@ export type RejectOperationResponses = {
 
 export type StreamOperationEventsData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+        opId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/operations/{opId}/events';
 };
@@ -436,7 +529,9 @@ export type StreamOperationEventsResponses = {
 
 export type ListPendingApprovalsData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/approvals';
 };
@@ -450,7 +545,10 @@ export type ListPendingApprovalsResponses = {
 
 export type ListClusterKubeconfigsData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+        instanceId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/clusters/{instanceId}/kubeconfigs';
 };
@@ -464,7 +562,10 @@ export type ListClusterKubeconfigsResponses = {
 
 export type IssueClusterKubeconfigData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+        instanceId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/clusters/{instanceId}/kubeconfigs';
 };
@@ -478,7 +579,9 @@ export type IssueClusterKubeconfigResponses = {
 
 export type ListAuditLogsData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/audit';
 };
@@ -566,7 +669,9 @@ export type VerifyAuditChainResponses = {
 
 export type GenerateComplianceReportData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/compliance:report';
 };
@@ -580,7 +685,9 @@ export type GenerateComplianceReportResponses = {
 
 export type DownloadComplianceEvidenceData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/compliance:download';
 };
@@ -594,7 +701,9 @@ export type DownloadComplianceEvidenceResponses = {
 
 export type GetPluginMetadataData = {
     body?: never;
-    path?: never;
+    path: {
+        product: string;
+    };
     query?: never;
     url: '/api/v1/plugins/{product}';
 };
@@ -636,7 +745,9 @@ export type CreateUserResponses = {
 
 export type RevokeApiTokenData = {
     body?: never;
-    path?: never;
+    path: {
+        tokenId: string;
+    };
     query?: never;
     url: '/api/v1/auth/tokens/{tokenId}';
 };
@@ -652,7 +763,9 @@ export type RevokeApiTokenResponse = RevokeApiTokenResponses[keyof RevokeApiToke
 
 export type ListCredentialsData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/credentials';
 };
@@ -666,7 +779,10 @@ export type ListCredentialsResponses = {
 
 export type DeleteCredentialData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+        credId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/credentials/{credId}';
 };
@@ -682,7 +798,9 @@ export type DeleteCredentialResponse = DeleteCredentialResponses[keyof DeleteCre
 
 export type ImportHostsBulkData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/hosts:import';
 };
@@ -694,9 +812,28 @@ export type ImportHostsBulkResponses = {
     200: unknown;
 };
 
+export type DiscoverHostsSubnetData = {
+    body?: never;
+    path: {
+        projectId: string;
+    };
+    query?: never;
+    url: '/api/v1/projects/{projectId}/hosts:discover';
+};
+
+export type DiscoverHostsSubnetResponses = {
+    /**
+     * Discovered hosts
+     */
+    200: unknown;
+};
+
 export type DeleteHostData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+        hostId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/hosts/{hostId}';
 };
@@ -712,7 +849,10 @@ export type DeleteHostResponse = DeleteHostResponses[keyof DeleteHostResponses];
 
 export type CheckHostBaselineData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+        hostId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/hosts/{hostId}:check';
 };
@@ -726,7 +866,10 @@ export type CheckHostBaselineResponses = {
 
 export type InitHostData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+        hostId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/hosts/{hostId}:init';
 };
@@ -740,7 +883,10 @@ export type InitHostResponses = {
 
 export type DeleteInstanceData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+        instanceId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/instances/{instanceId}';
 };
@@ -756,7 +902,9 @@ export type DeleteInstanceResponse = DeleteInstanceResponses[keyof DeleteInstanc
 
 export type ValidateStackYamlData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/stacks:validate';
 };
@@ -770,7 +918,10 @@ export type ValidateStackYamlResponses = {
 
 export type ApplyStackData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+        stackId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/stacks/{stackId}:apply';
 };
@@ -784,7 +935,10 @@ export type ApplyStackResponses = {
 
 export type UninstallStackData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+        stackId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/stacks/{stackId}:uninstall';
 };
@@ -798,7 +952,9 @@ export type UninstallStackResponses = {
 
 export type ListNotificationChannelsData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/notification-channels';
 };
@@ -812,7 +968,9 @@ export type ListNotificationChannelsResponses = {
 
 export type CreateNotificationChannelData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/notification-channels';
 };
@@ -826,7 +984,9 @@ export type CreateNotificationChannelResponses = {
 
 export type TestNotificationChannelsData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/notification-channels:test';
 };
@@ -840,7 +1000,9 @@ export type TestNotificationChannelsResponses = {
 
 export type ExportGitOpsYamlData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/gitops/export';
 };
@@ -854,7 +1016,9 @@ export type ExportGitOpsYamlResponses = {
 
 export type DiffGitOpsYamlData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/gitops:diff';
 };
@@ -868,7 +1032,9 @@ export type DiffGitOpsYamlResponses = {
 
 export type DownloadSupportBundleData = {
     body?: never;
-    path?: never;
+    path: {
+        projectId: string;
+    };
     query?: never;
     url: '/api/v1/projects/{projectId}/support-bundle';
 };

@@ -122,10 +122,31 @@ func GeneratePKCEChallenge() (verifier, challenge string, err error) {
 type Service struct {
 	repo  ports.AuthRepo
 	audit ports.AuditRecorder
+	oidc  *OIDCProvider
 }
 
 func NewService(repo ports.AuthRepo, audit ports.AuditRecorder) *Service {
 	return &Service{repo: repo, audit: audit}
+}
+
+// ConfigureOIDC attaches an active OIDC PKCE provider for SSO login (T-M3-06).
+func (s *Service) ConfigureOIDC(p *OIDCProvider) { s.oidc = p }
+
+// OIDC returns the configured OIDC provider, or nil if OIDC SSO is disabled.
+func (s *Service) OIDC() *OIDCProvider { return s.oidc }
+
+// RevokeSessionByToken immediately revokes a server-side session token on logout (G1 §4.1).
+func (s *Service) RevokeSessionByToken(ctx context.Context, rawToken string) error {
+	rawToken = strings.TrimSpace(rawToken)
+	if rawToken == "" || strings.HasPrefix(rawToken, "ki_") {
+		return nil
+	}
+	sum := sha256.Sum256([]byte(rawToken))
+	sess, err := s.repo.GetSessionByTokenHash(ctx, hex.EncodeToString(sum[:]))
+	if err != nil {
+		return nil //nolint:nilerr // logout is idempotent when session is already revoked or missing
+	}
+	return s.repo.RevokeSession(ctx, sess.ID)
 }
 
 // CreateLocalUser creates a local account with Argon2id hashed password.

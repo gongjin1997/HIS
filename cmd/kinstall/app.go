@@ -24,6 +24,7 @@ import (
 	"github.com/kinstall/kinstall/internal/events"
 	"github.com/kinstall/kinstall/internal/executor/sshx"
 	"github.com/kinstall/kinstall/internal/i18n"
+	"github.com/kinstall/kinstall/internal/inventory"
 	"github.com/kinstall/kinstall/internal/lock"
 	"github.com/kinstall/kinstall/internal/multicluster"
 	"github.com/kinstall/kinstall/internal/obs"
@@ -138,6 +139,21 @@ func BuildApplication(ctx context.Context) (*Application, error) {
 	evHub := events.NewHub(st.OperationEvents(), directPGDSN, logger)
 	audRec := audit.NewRecorder(st.Audit(), enableGM)
 	authSvc := authz.NewService(st.Auth(), audRec)
+	if issuer := strings.TrimSpace(os.Getenv("KINSTALL_OIDC_ISSUER")); issuer != "" {
+		oidcProv, oidcErr := authz.NewOIDCProvider(ctx, authz.OIDCConfig{
+			IssuerURL:    issuer,
+			ClientID:     strings.TrimSpace(os.Getenv("KINSTALL_OIDC_CLIENT_ID")),
+			ClientSecret: strings.TrimSpace(os.Getenv("KINSTALL_OIDC_CLIENT_SECRET")),
+			RedirectURL:  strings.TrimSpace(os.Getenv("KINSTALL_OIDC_REDIRECT_URL")),
+			AdminGroup:   strings.TrimSpace(os.Getenv("KINSTALL_OIDC_ADMIN_GROUP")),
+		}, nil)
+		if oidcErr != nil {
+			logger.Warn("failed to initialize OIDC provider; falling back to local auth", slog.String("error", oidcErr.Error()))
+		} else {
+			authSvc.ConfigureOIDC(oidcProv)
+			logger.Info("enabled OIDC PKCE SSO provider", slog.String("issuer", issuer))
+		}
+	}
 	mediaRes := source.NewPolicyMediaResolver(filepath.Join(dataDir, "cache"))
 	pkiIssuer := pki.NewIssuer()
 	kcMgr := multicluster.NewKubeconfigManager(st.Kubeconfigs(), pkiIssuer, audRec)
@@ -195,6 +211,22 @@ func (a *Application) RunServer(parentCtx context.Context, listenAddr string, de
 		WriteTimeout:      60 * time.Second, // cleared per-SSE stream via http.ResponseController (G1 §3.2)
 		IdleTimeout:       120 * time.Second,
 	}
+
+	// Start background gocron/v2 periodic Facts/Baseline scheduler (T-M1-04)
+	cronInterval := 30 * time.Minute
+	if rawInt := strings.TrimSpace(os.Getenv("KINSTALL_FACTS_CRON_INTERVAL")); rawInt != "" {
+		if d, perr := time.ParseDuration(rawInt); perr == nil && d >= time.Minute {
+			cronInterval = d
+		}
+	}
+	factsSched, _ := inventory.NewFactsScheduler(cronInterval, a.Logger, func(sctx context.Context) {
+		n := a.Facade.RefreshAllHostsBaseline(sctx)
+		if n > 0 {
+			a.Logger.Info("periodic host baseline check finished", slog.Int("hostsChecked", n))
+		}
+	})
+	factsSched.Start()
+	defer func() { _ = factsSched.Shutdown() }()
 
 	// Start background PG LISTEN & Worker loops
 	listenDone := make(chan struct{})

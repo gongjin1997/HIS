@@ -130,11 +130,19 @@ export const useAuthStore = defineStore('auth', () => {
     return data.user
   }
 
+  function setToken(tok: string) {
+    token.value = tok
+    localStorage.setItem('kinstall.token', tok)
+  }
+
   function logout() {
+    if (token.value) {
+      void apiRequest('POST', '/api/v1/auth/logout').catch(() => {})
+    }
     token.value = ''
     user.value = null
     localStorage.removeItem('kinstall.token')
   }
 
-  return { token, user, initialized, isAuthenticated, primaryRole, can, fetchMe, loginLocal, logout }
+  return { token, user, initialized, isAuthenticated, primaryRole, can, fetchMe, loginLocal, setToken, logout }
 })

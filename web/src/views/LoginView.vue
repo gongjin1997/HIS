@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { Lock, User, KeyRound } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { APIError, type ProblemDetail } from '@/api/client'
+import { apiRequest, APIError, type ProblemDetail } from '@/api/client'
 import KiProblemBanner from '@/components/domain/KiProblemBanner.vue'
 
 const LAST_USER_KEY = 'ki.last_user'
+const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const ws = useWorkspaceStore()
@@ -19,6 +20,33 @@ const form = reactive({
 })
 const loading = ref(false)
 const problem = ref<ProblemDetail | null>(null)
+const oidcEnabled = ref(false)
+const oidcIssuer = ref('')
+
+function startOidcLogin() {
+  window.location.href = '/api/v1/auth/oidc/login'
+}
+
+onMounted(async () => {
+  const cbTok = typeof route.query.oidc_token === 'string' ? route.query.oidc_token : ''
+  if (cbTok) {
+    auth.setToken(cbTok)
+    const ok = await auth.fetchMe()
+    if (ok) {
+      await ws.loadProjects()
+      await ws.refreshApprovalBadge()
+      await router.replace('/dashboard')
+      return
+    }
+  }
+  try {
+    const { data } = await apiRequest<{ enabled: boolean; issuer?: string }>('GET', '/api/v1/auth/oidc/config')
+    oidcEnabled.value = Boolean(data?.enabled)
+    oidcIssuer.value = data?.issuer || ''
+  } catch {
+    oidcEnabled.value = false
+  }
+})
 
 function fillDefault() {
   form.username = 'admin'
@@ -106,9 +134,9 @@ async function onSubmit() {
       </el-form>
 
       <div class="ki-login-oidc">
-        <el-button plain disabled class="ki-w-full">
+        <el-button plain :disabled="!oidcEnabled" class="ki-w-full" @click="startOidcLogin">
           <KeyRound :size="14" class="ki-oidc-icon" />
-          企业 OIDC / PKCE 单点登录（服务端配置后启用）
+          {{ oidcEnabled ? `企业 OIDC / PKCE 单点登录 (${oidcIssuer})` : '企业 OIDC / PKCE 单点登录（配置 KINSTALL_OIDC_ISSUER 后启用）' }}
         </el-button>
       </div>
 

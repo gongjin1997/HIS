@@ -93,6 +93,10 @@ func NewRouter(shutdownCtx context.Context, facade *app.Facade, authSvc *authz.S
 		_, _ = w.Write(raw)
 	})
 	r.Post("/api/v1/auth/login", s.handleLoginLocal)
+	r.Get("/api/v1/auth/oidc/config", s.handleOIDCConfig)
+	r.Get("/api/v1/auth/oidc/login", s.handleOIDCLogin)
+	r.Get("/api/v1/auth/oidc/callback", s.handleOIDCCallback)
+	r.Post("/api/v1/auth/logout", s.handleLogout)
 
 	// Authenticated Control Plane REST + SSE API
 	r.Route("/api/v1", func(ar chi.Router) {
@@ -135,6 +139,7 @@ func NewRouter(shutdownCtx context.Context, facade *app.Facade, authSvc *authz.S
 			pr.Get("/hosts", s.handleListHosts)
 			pr.Post("/hosts", s.handleCreateHost)
 			pr.Post("/hosts:import", s.handleImportHosts)
+			pr.Post("/hosts:discover", s.handleDiscoverHosts)
 			pr.Delete("/hosts/{hostId}", s.handleDeleteHost)
 			pr.Post("/hosts/{hostId}:probe", s.handleProbeHost)
 			pr.Post("/hosts/{hostId}:check", s.handleCheckHostBaseline)

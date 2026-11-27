@@ -12,8 +12,10 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/kinstall/kinstall/internal/app"
+	"github.com/kinstall/kinstall/internal/artifact/source"
 	"github.com/kinstall/kinstall/internal/domain"
 	"github.com/kinstall/kinstall/internal/i18n"
+	"github.com/kinstall/kinstall/internal/inventory"
 	"github.com/kinstall/kinstall/internal/version"
 	"github.com/kinstall/kinstall/pkg/client"
 	sdk "github.com/kinstall/kinstall/pkg/sdk/v1alpha1"
@@ -133,6 +135,12 @@ func NewRootCmd(deps Deps) *cobra.Command {
 	})
 	root.AddCommand(pluginCmd)
 
+	newClient := func() *client.Client {
+		c := client.New(serverURL, token)
+		c.Lang = i18n.ResolveCLILang(lang)
+		return c
+	}
+
 	// project create / list
 	projectCmd := &cobra.Command{Use: "project", Short: "Manage projects"}
 	var prjDesc string
@@ -141,6 +149,13 @@ func NewRootCmd(deps Deps) *cobra.Command {
 		Short: "Create a new project",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if serverURL != "" {
+				var p domain.Project
+				if err := newClient().DoJSON(cmd.Context(), "POST", "/api/v1/projects", map[string]string{"name": args[0], "description": prjDesc}, &p, nil); err != nil {
+					return err
+				}
+				return render(p, []string{"ID", "NAME", "DESCRIPTION"}, [][]string{{p.ID, p.Name, p.Description}})
+			}
 			p, err := deps.Facade.CreateProject(cmd.Context(), cliActor, args[0], prjDesc)
 			if err != nil {
 				return err
@@ -153,9 +168,21 @@ func NewRootCmd(deps Deps) *cobra.Command {
 		Use:   "list",
 		Short: "List all projects",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			items, err := deps.Facade.ListProjects(cmd.Context(), cliActor)
-			if err != nil {
-				return err
+			var items []domain.Project
+			if serverURL != "" {
+				var resp struct {
+					Items []domain.Project `json:"items"`
+				}
+				if err := newClient().DoJSON(cmd.Context(), "GET", "/api/v1/projects", nil, &resp, nil); err != nil {
+					return err
+				}
+				items = resp.Items
+			} else {
+				var err error
+				items, err = deps.Facade.ListProjects(cmd.Context(), cliActor)
+				if err != nil {
+					return err
+				}
 			}
 			rows := make([][]string, 0, len(items))
 			for _, p := range items {
@@ -166,7 +193,7 @@ func NewRootCmd(deps Deps) *cobra.Command {
 	})
 	root.AddCommand(projectCmd)
 
-	// host add / list / probe
+	// host add / list / probe / check / discover
 	hostCmd := &cobra.Command{Use: "host", Short: "Manage CMDB hosts and Facts"}
 	var hAddr, hUser, hCred string
 	var hPort int
@@ -175,9 +202,17 @@ func NewRootCmd(deps Deps) *cobra.Command {
 		Short: "Register a host in CMDB",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			h, err := deps.Facade.CreateHost(cmd.Context(), cliActor, &domain.Host{
+			hIn := &domain.Host{
 				ProjectID: projectID, Name: args[0], Address: hAddr, SSHPort: hPort, SSHUser: hUser, CredentialID: hCred,
-			})
+			}
+			if serverURL != "" {
+				var outH domain.Host
+				if err := newClient().DoJSON(cmd.Context(), "POST", "/api/v1/projects/"+projectID+"/hosts", hIn, &outH, nil); err != nil {
+					return err
+				}
+				return render(outH, []string{"ID", "NAME", "ADDRESS", "STATE"}, [][]string{{outH.ID, outH.Name, outH.Address, string(outH.State)}})
+			}
+			h, err := deps.Facade.CreateHost(cmd.Context(), cliActor, hIn)
 			if err != nil {
 				return err
 			}
@@ -188,13 +223,55 @@ func NewRootCmd(deps Deps) *cobra.Command {
 	hostAdd.Flags().IntVar(&hPort, "port", 22, "SSH port")
 	hostAdd.Flags().StringVar(&hUser, "user", "root", "SSH username")
 	hostAdd.Flags().StringVar(&hCred, "credential", "", "Credential ID")
-	hostCmd.AddCommand(hostAdd, &cobra.Command{
+	var discPort int
+	hostDiscover := &cobra.Command{
+		Use:   "discover <cidr>",
+		Short: "Scan CIDR subnet for reachable SSH endpoints (T-M1-04)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var found []inventory.DiscoveredHost
+			if serverURL != "" {
+				var resp struct {
+					Items []inventory.DiscoveredHost `json:"items"`
+				}
+				if err := newClient().DoJSON(cmd.Context(), "POST", "/api/v1/projects/"+projectID+"/hosts:discover", map[string]any{"cidr": args[0], "port": discPort}, &resp, nil); err != nil {
+					return err
+				}
+				found = resp.Items
+			} else {
+				var err error
+				found, err = deps.Facade.DiscoverHostsSubnet(cmd.Context(), cliActor, projectID, args[0], discPort)
+				if err != nil {
+					return err
+				}
+			}
+			rows := make([][]string, 0, len(found))
+			for _, f := range found {
+				rows = append(rows, []string{f.Address, fmt.Sprintf("%d", f.Port), fmt.Sprintf("%dms", f.LatencyMs), f.Banner})
+			}
+			return render(found, []string{"ADDRESS", "PORT", "LATENCY", "SSH_BANNER"}, rows)
+		},
+	}
+	hostDiscover.Flags().IntVar(&discPort, "port", 22, "Target SSH port to probe")
+	hostCmd.AddCommand(hostAdd, hostDiscover, &cobra.Command{
 		Use:   "list",
 		Short: "List hosts in project",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			items, err := deps.Facade.ListHosts(cmd.Context(), cliActor, projectID)
-			if err != nil {
-				return err
+			var items []domain.Host
+			if serverURL != "" {
+				var resp struct {
+					Items []domain.Host `json:"items"`
+				}
+				if err := newClient().DoJSON(cmd.Context(), "GET", "/api/v1/projects/"+projectID+"/hosts", nil, &resp, nil); err != nil {
+					return err
+				}
+				items = resp.Items
+			} else {
+				var err error
+				items, err = deps.Facade.ListHosts(cmd.Context(), cliActor, projectID)
+				if err != nil {
+					return err
+				}
 			}
 			rows := make([][]string, 0, len(items))
 			for _, h := range items {
@@ -233,15 +310,87 @@ func NewRootCmd(deps Deps) *cobra.Command {
 	})
 	root.AddCommand(hostCmd)
 
-	// instance list / plan / apply
+	// instance list / plan / apply / restore (T-M0-17, T-M4-11)
 	instCmd := &cobra.Command{Use: "instance", Short: "Manage product instances"}
-	instCmd.AddCommand(&cobra.Command{
+	var planAction, applyPlanID, restoreTargetTime string
+	var forceOverride bool
+	instPlan := &cobra.Command{
+		Use:   "plan <instanceId>",
+		Short: "Compute 3-Way Diff & frozen Plan snapshot",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if serverURL != "" {
+				var resp map[string]any
+				if err := newClient().DoJSON(cmd.Context(), "POST", "/api/v1/projects/"+projectID+"/instances/"+args[0]+":plan", map[string]string{"action": planAction}, &resp, nil); err != nil {
+					return err
+				}
+				return render(resp, nil, nil)
+			}
+			pl, rep, err := deps.Facade.PlanInstance(cmd.Context(), cliActor, projectID, args[0], planAction, nil, nil)
+			if err != nil {
+				return err
+			}
+			return render(map[string]any{"plan": pl, "validation": rep}, []string{"PLAN_ID", "TARGET", "EXPIRES"}, [][]string{{pl.ID, pl.TargetID, pl.ExpiresAt.Format("2006-01-02T15:04:05Z")}})
+		},
+	}
+	instPlan.Flags().StringVar(&planAction, "action", "install", "Lifecycle action (install|upgrade|scale|backup|restore|failover|uninstall)")
+
+	instApply := &cobra.Command{
+		Use:   "apply <instanceId>",
+		Short: "Apply a frozen Plan (enforces four-eyes approval in prod)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if serverURL != "" {
+				var op domain.Operation
+				if err := newClient().DoJSON(cmd.Context(), "POST", "/api/v1/projects/"+projectID+"/instances/"+args[0]+":apply", map[string]any{"planId": applyPlanID, "action": planAction, "forceOverride": forceOverride}, &op, nil); err != nil {
+					return err
+				}
+				return render(op, []string{"OP_ID", "ACTION", "STATE"}, [][]string{{op.ID, op.Action, string(op.State)}})
+			}
+			op, err := deps.Facade.ApplyInstance(cmd.Context(), cliActor, projectID, args[0], applyPlanID, planAction, forceOverride, false, nil)
+			if err != nil {
+				return err
+			}
+			return render(op, []string{"OP_ID", "ACTION", "STATE"}, [][]string{{op.ID, op.Action, string(op.State)}})
+		},
+	}
+	instApply.Flags().StringVar(&applyPlanID, "plan", "", "Frozen Plan ID")
+	instApply.Flags().StringVar(&planAction, "action", "install", "Lifecycle action")
+	instApply.Flags().BoolVar(&forceOverride, "force-override", false, "Override remote drift (triggers four-eyes approval)")
+
+	instRestore := &cobra.Command{
+		Use:   "restore <instanceId>",
+		Short: "Plan & trigger PITR point-in-time recovery (--target-time, T-M4-11)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pl, _, err := deps.Facade.PlanInstance(cmd.Context(), cliActor, projectID, args[0], "restore", nil, nil)
+			if err != nil {
+				return err
+			}
+			return render(map[string]any{"plan": pl, "targetTime": restoreTargetTime}, []string{"PLAN_ID", "TARGET_TIME"}, [][]string{{pl.ID, restoreTargetTime}})
+		},
+	}
+	instRestore.Flags().StringVar(&restoreTargetTime, "target-time", "", "RFC3339 recovery point timestamp (e.g. 2026-11-27T12:00:00Z)")
+
+	instCmd.AddCommand(instPlan, instApply, instRestore, &cobra.Command{
 		Use:   "list",
 		Short: "List instances in project",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			items, err := deps.Facade.ListInstances(cmd.Context(), cliActor, projectID)
-			if err != nil {
-				return err
+			var items []domain.Instance
+			if serverURL != "" {
+				var resp struct {
+					Items []domain.Instance `json:"items"`
+				}
+				if err := newClient().DoJSON(cmd.Context(), "GET", "/api/v1/projects/"+projectID+"/instances", nil, &resp, nil); err != nil {
+					return err
+				}
+				items = resp.Items
+			} else {
+				var err error
+				items, err = deps.Facade.ListInstances(cmd.Context(), cliActor, projectID)
+				if err != nil {
+					return err
+				}
 			}
 			rows := make([][]string, 0, len(items))
 			for _, it := range items {
@@ -252,8 +401,8 @@ func NewRootCmd(deps Deps) *cobra.Command {
 	})
 	root.AddCommand(instCmd)
 
-	// operation list / approve / reject
-	opCmd := &cobra.Command{Use: "operation", Short: "Inspect and approve operations"}
+	// operation list / resume / report
+	opCmd := &cobra.Command{Use: "operation", Short: "Inspect, resume, and report operations"}
 	opCmd.AddCommand(&cobra.Command{
 		Use:   "list",
 		Short: "List operations in project",
@@ -267,6 +416,23 @@ func NewRootCmd(deps Deps) *cobra.Command {
 				rows = append(rows, []string{o.ID, o.TargetType + "/" + o.TargetID, o.Action, string(o.State), fmt.Sprintf("%d", o.FencingToken)})
 			}
 			return render(items, []string{"ID", "TARGET", "ACTION", "STATE", "FENCING"}, rows)
+		},
+	}, &cobra.Command{
+		Use:   "resume <opId>",
+		Short: "Resume a failed/paused operation from its last completed step (T-M0-12)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if serverURL != "" {
+				var op domain.Operation
+				if err := newClient().DoJSON(cmd.Context(), "POST", "/api/v1/projects/"+projectID+"/operations/"+args[0]+":resume", nil, &op, nil); err != nil {
+					return err
+				}
+				return render(op, []string{"ID", "STATE"}, [][]string{{op.ID, string(op.State)}})
+			}
+			if err := deps.Facade.ResumeOperation(cmd.Context(), cliActor, args[0]); err != nil {
+				return err
+			}
+			return render(map[string]string{"id": args[0], "state": "pending"}, []string{"ID", "STATE"}, [][]string{{args[0], "pending"}})
 		},
 	})
 	var repFmt string
@@ -361,9 +527,48 @@ func NewRootCmd(deps Deps) *cobra.Command {
 	})
 	root.AddCommand(specCmd)
 
-	// artifact verify-sources (T-M1-13)
-	artCmd := &cobra.Command{Use: "artifact", Short: "Verify ternary media sources (Local / OBS·S3 / Online)"}
-	artCmd.AddCommand(&cobra.Command{
+	// artifact verify-sources / sync-to-obs (T-M1-13)
+	artCmd := &cobra.Command{Use: "artifact", Short: "Verify and sync ternary media sources (Local / OBS·S3 / Online)"}
+	var obsEndpoint, obsBucket, obsRegion, obsPrefix, obsFile, obsKey, obsAK, obsSK string
+	syncObsCmd := &cobra.Command{
+		Use:   "sync-to-obs",
+		Short: "Upload local artifact bundle to Huawei OBS / S3 via aws-sdk-go-v2 (no aws-chunked, T-M1-13)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			f, err := os.Open(obsFile)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = f.Close() }()
+			fi, err := f.Stat()
+			if err != nil {
+				return err
+			}
+			ak := obsAK
+			if ak == "" {
+				ak = os.Getenv("KINSTALL_OBS_AK")
+			}
+			sk := obsSK
+			if sk == "" {
+				sk = os.Getenv("KINSTALL_OBS_SK")
+			}
+			src := source.NewObjectStoreSource(domain.MediaSourceConfig{
+				Type: "obs", Endpoint: obsEndpoint, Bucket: obsBucket, Region: obsRegion, Prefix: obsPrefix, Internal: true,
+			}, ak, sk, nil)
+			if err := src.PutObject(cmd.Context(), obsKey, f, fi.Size()); err != nil {
+				return err
+			}
+			return render(map[string]any{"uploaded": obsKey, "bytes": fi.Size(), "bucket": obsBucket}, []string{"BUCKET", "KEY", "BYTES"}, [][]string{{obsBucket, obsKey, fmt.Sprintf("%d", fi.Size())}})
+		},
+	}
+	syncObsCmd.Flags().StringVar(&obsEndpoint, "endpoint", "", "OBS/S3 endpoint URL")
+	syncObsCmd.Flags().StringVar(&obsBucket, "bucket", "", "Target bucket name")
+	syncObsCmd.Flags().StringVar(&obsRegion, "region", "cn-north-4", "Region")
+	syncObsCmd.Flags().StringVar(&obsPrefix, "prefix", "", "Object prefix")
+	syncObsCmd.Flags().StringVar(&obsFile, "file", "", "Local artifact file path")
+	syncObsCmd.Flags().StringVar(&obsKey, "key", "", "Destination logical path")
+	syncObsCmd.Flags().StringVar(&obsAK, "ak", "", "Access key (or KINSTALL_OBS_AK)")
+	syncObsCmd.Flags().StringVar(&obsSK, "sk", "", "Secret key (or KINSTALL_OBS_SK)")
+	artCmd.AddCommand(syncObsCmd, &cobra.Command{
 		Use:   "verify-sources <policyId>",
 		Short: "Probe all configured sources in a MediaPolicy",
 		Args:  cobra.ExactArgs(1),

@@ -2,7 +2,6 @@ package source
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -17,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/kinstall/kinstall/internal/domain"
@@ -253,7 +254,7 @@ func (s *LocalSource) PresignGet(context.Context, ArtifactSpec, time.Duration) (
 }
 
 // ObjectStoreSource supports Huawei OBS / Aliyun OSS / Tencent COS / AWS S3 / SeaweedFS / Ceph RGW
-// using clean S3v4 signing WITHOUT aws-chunked trailing checksum headers (D3 §7.3 Trap 2).
+// powered by aws-sdk-go-v2/service/s3 with RequestChecksumCalculationWhenRequired (D3 §7.3 Trap 2, T-M1-12).
 type ObjectStoreSource struct {
 	name      string
 	priority  int
@@ -266,6 +267,8 @@ type ObjectStoreSource struct {
 	secretKey string
 	pathStyle bool
 	client    *http.Client
+	s3Client  *s3.Client
+	presign   *s3.PresignClient
 }
 
 func NewObjectStoreSource(cfg domain.MediaSourceConfig, ak, sk string, hc *http.Client) *ObjectStoreSource {
@@ -280,6 +283,7 @@ func NewObjectStoreSource(cfg domain.MediaSourceConfig, ak, sk string, hc *http.
 	if region == "" {
 		region = "cn-north-4"
 	}
+	s3Cli, preCli := newAWSS3Clients(cfg, ak, sk, hc)
 	return &ObjectStoreSource{
 		name:      name,
 		priority:  cfg.Priority,
@@ -292,6 +296,8 @@ func NewObjectStoreSource(cfg domain.MediaSourceConfig, ak, sk string, hc *http.
 		secretKey: sk,
 		pathStyle: true,
 		client:    hc,
+		s3Client:  s3Cli,
+		presign:   preCli,
 	}
 }
 
@@ -307,102 +313,40 @@ func (s *ObjectStoreSource) objectKey(logicalPath string) string {
 	return path.Join(s.prefix, clean)
 }
 
-func (s *ObjectStoreSource) objectURL(key string) string {
-	return fmt.Sprintf("%s/%s/%s", s.endpoint, s.bucket, strings.TrimLeft(key, "/"))
-}
-
 func (s *ObjectStoreSource) Exists(ctx context.Context, spec ArtifactSpec) (bool, error) {
-	u := s.objectURL(s.objectKey(spec.LogicalPath))
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, u, nil)
-	if err != nil {
-		return false, err
+	if s.s3Client == nil {
+		return false, nil
 	}
-	resp, err := s.client.Do(req)
+	_, err := s.s3Client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s.objectKey(spec.LogicalPath)),
+	})
 	if err != nil {
-		return false, err
+		return false, nil //nolint:nilerr // missing/unreachable object falls through to next source in ternary chain
 	}
-	_ = resp.Body.Close()
-	return resp.StatusCode == http.StatusOK, nil
+	return true, nil
 }
 
 func (s *ObjectStoreSource) FetchTo(ctx context.Context, spec ArtifactSpec, dst io.Writer) error {
-	u := s.objectURL(s.objectKey(spec.LogicalPath))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return err
+	if s.s3Client == nil {
+		return fmt.Errorf("s3 client not initialized")
 	}
-	resp, err := s.client.Do(req)
+	out, err := s.s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s.objectKey(spec.LogicalPath)),
+	})
 	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
 		return sdk.NewError(sdk.CodeSrcPresignFailed, "SRC", http.StatusBadGateway, sdk.CodeSrcPresignFailed, true,
-			fmt.Errorf("object store GET %s returned %d", spec.LogicalPath, resp.StatusCode))
+			fmt.Errorf("object store GET %s failed: %w", spec.LogicalPath, err))
 	}
-	_, err = io.Copy(dst, resp.Body)
+	defer func() { _ = out.Body.Close() }()
+	_, err = io.Copy(dst, out.Body)
 	return err
 }
 
-// PresignGet produces a short-lived SigV4 query-authenticated GET URL (TTL <= 30m, D3 §7.3 Trap 4).
-func (s *ObjectStoreSource) PresignGet(_ context.Context, spec ArtifactSpec, ttl time.Duration) (string, string, error) {
-	if ttl <= 0 || ttl > 30*time.Minute {
-		ttl = 15 * time.Minute
-	}
-	key := s.objectKey(spec.LogicalPath)
-	base := s.objectURL(key)
-	parsed, err := url.Parse(base)
-	if err != nil {
-		return "", "", err
-	}
-	now := time.Now().UTC()
-	dateStamp := now.Format("20060102")
-	amzDate := now.Format("20060102T150405Z")
-	scope := fmt.Sprintf("%s/%s/s3/aws4_request", dateStamp, s.region)
-
-	q := parsed.Query()
-	q.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
-	q.Set("X-Amz-Credential", s.accessKey+"/"+scope)
-	q.Set("X-Amz-Date", amzDate)
-	q.Set("X-Amz-Expires", fmt.Sprintf("%d", int(ttl.Seconds())))
-	q.Set("X-Amz-SignedHeaders", "host")
-	canonicalQuery := q.Encode()
-
-	canonicalReq := strings.Join([]string{
-		http.MethodGet,
-		parsed.EscapedPath(),
-		canonicalQuery,
-		"host:" + parsed.Host + "\n",
-		"host",
-		"UNSIGNED-PAYLOAD",
-	}, "\n")
-	crHash := sha256.Sum256([]byte(canonicalReq))
-	strToSign := strings.Join([]string{
-		"AWS4-HMAC-SHA256",
-		amzDate,
-		scope,
-		hex.EncodeToString(crHash[:]),
-	}, "\n")
-
-	sig := signAWSV4(s.secretKey, dateStamp, s.region, "s3", strToSign)
-	q.Set("X-Amz-Signature", sig)
-	parsed.RawQuery = q.Encode()
-	label := fmt.Sprintf("%s://%s/%s [PRESIGNED-REDACTED]", s.name, s.bucket, key)
-	return parsed.String(), label, nil
-}
-
-func signAWSV4(secretKey, dateStamp, region, service, stringToSign string) string {
-	kDate := hmacSHA256([]byte("AWS4"+secretKey), dateStamp)
-	kRegion := hmacSHA256(kDate, region)
-	kService := hmacSHA256(kRegion, service)
-	kSigning := hmacSHA256(kService, "aws4_request")
-	return hex.EncodeToString(hmacSHA256(kSigning, stringToSign))
-}
-
-func hmacSHA256(key []byte, data string) []byte {
-	mac := hmac.New(sha256.New, key)
-	_, _ = mac.Write([]byte(data))
-	return mac.Sum(nil)
+// PresignGet produces a short-lived SigV4 query-authenticated GET URL via aws-sdk-go-v2 (TTL <= 30m, D3 §7.3 Trap 4).
+func (s *ObjectStoreSource) PresignGet(ctx context.Context, spec ArtifactSpec, ttl time.Duration) (string, string, error) {
+	return s.PresignGetAWS(ctx, spec, ttl)
 }
 
 // OnlineSource fetches artifacts from allowlisted upstream URLs (D3 §7.2).

@@ -3,6 +3,8 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -278,6 +280,75 @@ func (s *Server) handleRevokeAPIToken(w http.ResponseWriter, r *http.Request) {
 	if err := s.app.RevokeAPIToken(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "tokenId")); err != nil {
 		writeProblem(w, r, s.i18n, err)
 		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleOIDCConfig(w http.ResponseWriter, _ *http.Request) {
+	p := s.authSvc.OIDC()
+	if p == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "issuer": p.Issuer()})
+}
+
+func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
+	p := s.authSvc.OIDC()
+	if p == nil {
+		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "AUTH", http.StatusNotImplemented, sdk.CodeAPIInvalidRequest, false, nil))
+		return
+	}
+	authURL, state, err := p.BeginAuth()
+	if err != nil {
+		writeProblem(w, r, s.i18n, err)
+		return
+	}
+	if r.URL.Query().Get("mode") == "json" {
+		writeJSON(w, http.StatusOK, map[string]string{"authUrl": authURL, "state": state})
+		return
+	}
+	http.Redirect(w, r, authURL, http.StatusFound)
+}
+
+func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
+	p := s.authSvc.OIDC()
+	if p == nil {
+		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "AUTH", http.StatusNotImplemented, sdk.CodeAPIInvalidRequest, false, nil))
+		return
+	}
+	tok, user, err := p.CompleteAuth(r.Context(), s.authSvc, r.URL.Query().Get("state"), r.URL.Query().Get("code"), r.RemoteAddr, r.UserAgent())
+	if err != nil {
+		writeProblem(w, r, s.i18n, err)
+		return
+	}
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		writeJSON(w, http.StatusOK, map[string]any{"token": tok, "user": user})
+		return
+	}
+	http.Redirect(w, r, "/login?oidc_token="+url.QueryEscape(tok), http.StatusFound)
+}
+
+func (s *Server) handleDiscoverHosts(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		CIDR string `json:"cidr"`
+		Port int    `json:"port"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err))
+		return
+	}
+	items, err := s.app.DiscoverHostsSubnet(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), body.CIDR, body.Port)
+	if err != nil {
+		writeProblem(w, r, s.i18n, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "); raw != "" {
+		_ = s.authSvc.RevokeSessionByToken(r.Context(), raw)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -631,3 +631,38 @@ func (f *Facade) RevokeAPIToken(ctx context.Context, actor domain.Actor, tokenID
 	f.recordAudit(ctx, actor, "*", "api_token.revoke", "api_token", tokenID, "success", "", nil)
 	return nil
 }
+
+// DiscoverHostsSubnet scans an operator-specified CIDR for active SSH endpoints (T-M1-04).
+func (f *Facade) DiscoverHostsSubnet(ctx context.Context, actor domain.Actor, projectID, cidr string, port int) ([]inventory.DiscoveredHost, error) {
+	if err := authz.Authorize(actor, projectID, "host.write"); err != nil {
+		return nil, err
+	}
+	items, err := inventory.DiscoverSubnet(ctx, cidr, port, 1200*time.Millisecond, 32)
+	if err != nil {
+		return nil, sdk.NewError(sdk.CodeAPIInvalidRequest, "HOST", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err)
+	}
+	f.recordAudit(ctx, actor, projectID, "host.discover", "project", projectID, "success", "", map[string]any{"cidr": cidr, "found": len(items)})
+	return items, nil
+}
+
+// RefreshAllHostsBaseline runs periodic background baseline checks across all projects (invoked by gocron/v2, T-M1-04).
+func (f *Facade) RefreshAllHostsBaseline(ctx context.Context) int {
+	sysActor := domain.Actor{ID: "system_scheduler", Username: "gocron", Type: "system"}
+	projects, err := f.store.Projects().List(ctx)
+	if err != nil {
+		return 0
+	}
+	checked := 0
+	for _, prj := range projects {
+		hosts, herr := f.store.Hosts().ListByProject(ctx, prj.ID)
+		if herr != nil {
+			continue
+		}
+		for _, h := range hosts {
+			if _, derr := f.CheckHostBaseline(ctx, sysActor, prj.ID, h.ID); derr == nil {
+				checked++
+			}
+		}
+	}
+	return checked
+}

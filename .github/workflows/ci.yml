@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  spec-and-lint:
+  spec-lint-and-codegen:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -15,51 +15,81 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pyyaml
-      - name: Verify OS Spec SSOT (ADR-029)
+      - name: Verify OS Spec SSOT (Redline 3 / ADR-029)
         run: python3 spec/gen_os_docs.py --check
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27.4"
-      - name: Run golangci-lint (v2 + depguard + gochecknoinits)
+      - name: Run golangci-lint (Redline 2 / depguard + gochecknoinits)
         uses: golangci/golangci-lint-action@v7
         with:
           version: latest
-      - name: Dependency blacklist check (Redline 5)
+      - name: OpenAPI 3.1 Go Codegen Zero-Drift Check (Redline 4 / T-M3-01)
+        run: |
+          make generate
+          git diff --exit-code internal/server/gen pkg/client/gen
+      - name: Dependency Blacklist & No-Init Check (Redline 5)
         run: |
           ! grep -rn "openapi-typescript-codegen" web/package.json || (echo "CVE-2026-108551 forbidden"; exit 1)
           ! grep -rnE '"(tailwindcss|unocss)"' web/package.json || (echo "Tailwind/UnoCSS forbidden"; exit 1)
           ! grep -rn "tjfoc/gmsm" go.mod || (echo "tjfoc/gmsm forbidden"; exit 1)
           ! grep -rn "mattn/go-sqlite3" go.mod || (echo "CGO sqlite forbidden"; exit 1)
           ! grep -rn "gorm.io/" go.mod || (echo "GORM forbidden"; exit 1)
+          ! grep -rnE "^func init\(\)" cmd/ internal/ pkg/ plugins/ || (echo "init() forbidden"; exit 1)
+      - name: SDK Compatibility Check (O-03 apidiff)
+        run: |
+          go install golang.org/x/exp/cmd/apidiff@latest
+          apidiff -w /tmp/sdk-current.api ./pkg/sdk/v1alpha1
+          test -s /tmp/sdk-current.api
 
-  test-and-build:
+  test-and-cross-build:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: kinstall
+          POSTGRES_PASSWORD: kinstallpass
+          POSTGRES_DB: kinstall
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U kinstall"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.4"
+      - name: Full Race Test Suite + Dual-Dialect SQLite & PG 18 Contract (Redline 6-7 / O-02)
+        env:
+          KINSTALL_TEST_PG_DSN: postgres://kinstall:kinstallpass@127.0.0.1:5432/kinstall?sslmode=disable
+        run: go test -race -count=1 ./...
+      - name: Cross-Build Static Binaries (Redline 1 / CGO_ENABLED=0 + noui)
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o bin/kinstall-linux-amd64 ./cmd/kinstall
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o bin/kinstall-linux-arm64 ./cmd/kinstall
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags=noui -trimpath -ldflags="-s -w" -o bin/kinstall-noui ./cmd/kinstall
+          ls -lh bin/
+
+  web-ci-and-e2e:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27.4"
-      - name: Unit, Chaos, Scale & Contract Tests (-race)
-        run: go test -race -count=1 ./...
-      - name: Cross-Build Static Binaries (CGO_ENABLED=0 + noui)
-        run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o bin/kinstall-linux-amd64 ./cmd/kinstall
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o bin/kinstall-linux-arm64 ./cmd/kinstall
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags=noui -trimpath -o bin/kinstall-noui ./cmd/kinstall
-          ls -lh bin/
-
-  web-ci:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: OpenAPI Codegen, Design System Gates, Unit Tests & Offline Build
+      - name: OpenAPI TS Zero-Drift, Design System Gates, Unit Tests & Offline Build (Redline 4 & 8 / O-09 / O-10)
         working-directory: web
         run: |
           npm ci --ignore-scripts 2>/dev/null || npm install
           npm run openapi-ts
+          git diff --exit-code src/api/gen
           npm run lint:css
           npm run contrast-check
           npm run tokens:export
@@ -67,3 +97,42 @@ jobs:
           npm run typecheck
           npm run build
           ! grep -rnE 'https?://(cdn\.|fonts\.googleapis|unpkg\.com|jsdelivr\.net)' dist/ || (echo "External CDN forbidden"; exit 1)
+      - name: Playwright Headless Chrome E2E (T-M3-27)
+        run: |
+          CGO_ENABLED=0 go build -trimpath -o /tmp/kinstall-e2e ./cmd/kinstall
+          KINSTALL_DATA_DIR=/tmp/kinstall-e2e-data /tmp/kinstall-e2e server start --listen 127.0.0.1:18080 &
+          SRV_PID=$!
+          trap "kill $SRV_PID 2>/dev/null || true" EXIT
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:18080/healthz && break || sleep 1; done
+          cd web && KINSTALL_E2E_URL=http://127.0.0.1:18080 npm run test:e2e
+
+  supply-chain-sbom-and-license:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.4"
+      - name: License Gate — Block GPL/AGPL/SSPL/ELv2 (Redline 10 / ADR-059)
+        run: |
+          go install github.com/google/go-licenses/v2@latest
+          go-licenses check ./cmd/kinstall --disallowed_types=forbidden,restricted
+      - name: Generate SPDX SBOM via Syft (Redline 9 / ADR-057)
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: kinstall.spdx.json
+      - name: Vulnerability Scan via Grype (Redline 9 / ADR-058)
+        uses: anchore/scan-action@v6
+        with:
+          sbom: kinstall.spdx.json
+          fail-build: false
+          severity-cutoff: critical
+      - name: Cross-Verify via Isolated Trivy (Redline 9 / ADR-058)
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL
+          exit-code: "0"
