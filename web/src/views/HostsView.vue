@@ -13,7 +13,6 @@ import {
   Layers,
   Plus,
   Radar,
-  RefreshCw,
   Search,
   Server,
   ShieldCheck,
@@ -136,6 +135,10 @@ const newHost = reactive({
   sshPort: 22,
   sshUser: 'root',
   credentialId: '',
+  useInlineCred: false,
+  inlineCredName: '',
+  inlineCredKind: 'ssh_password' as 'ssh_password' | 'ssh_key',
+  inlineCredSecret: '',
   faultZone: 'az-1',
   faultRack: '',
   arch: 'amd64',
@@ -348,6 +351,10 @@ async function exportLedger(fmt: 'xlsx' | 'csv') {
 }
 
 async function createHost() {
+  if (!newHost.name.trim() || !newHost.address.trim()) {
+    ElMessage.warning('请填写主机名与内网 IP 地址')
+    return
+  }
   const labels: Record<string, string> = {}
   if (newHost.biz.trim()) labels['cmdb.biz'] = newHost.biz.trim()
   if (newHost.set.trim()) labels['cmdb.set'] = newHost.set.trim()
@@ -356,26 +363,41 @@ async function createHost() {
   if (newHost.securityArea.trim()) labels['cmdb.security_area'] = newHost.securityArea.trim()
   if (newHost.owner.trim()) labels['cmdb.owner'] = newHost.owner.trim()
   if (newHost.assetTag.trim()) labels['cmdb.asset_tag'] = newHost.assetTag.trim()
+
+  const payload: Record<string, unknown> = {
+    name: newHost.name.trim(),
+    address: newHost.address.trim(),
+    sshPort: newHost.sshPort,
+    sshUser: newHost.sshUser.trim() || 'root',
+    credentialId: newHost.useInlineCred ? '' : newHost.credentialId,
+    faultZone: newHost.faultZone,
+    faultRack: newHost.faultRack,
+    arch: newHost.arch,
+    pageSize: newHost.pageSize,
+    labels,
+  }
+  if (newHost.useInlineCred) {
+    if (!newHost.inlineCredSecret.trim()) {
+      ElMessage.warning('请输入 SSH 密码或私钥内容')
+      return
+    }
+    payload.inlineCredential = {
+      name: newHost.inlineCredName.trim() || `ssh-${newHost.name.trim()}`,
+      kind: newHost.inlineCredKind,
+      plaintext: newHost.inlineCredSecret,
+    }
+  }
   try {
     await apiRequest('POST', `/api/v1/projects/${ws.currentProjectId}/hosts`, {
-      body: {
-        name: newHost.name,
-        address: newHost.address,
-        sshPort: newHost.sshPort,
-        sshUser: newHost.sshUser,
-        credentialId: newHost.credentialId,
-        faultZone: newHost.faultZone,
-        faultRack: newHost.faultRack,
-        arch: newHost.arch,
-        pageSize: newHost.pageSize,
-        labels,
-      },
+      body: payload,
       idempotent: true,
     })
     ElMessage.success('主机已纳管至 CMDB 资产库')
     showAdd.value = false
     newHost.name = ''
     newHost.address = ''
+    newHost.inlineCredSecret = ''
+    newHost.useInlineCred = false
     await loadAll()
   } catch (e) {
     ElMessage.error(String(e))
@@ -665,35 +687,74 @@ onMounted(loadAll)
 
 <template>
   <div class="hosts-page">
-    <PageHeader title="CMDB 资产中心" :refresh="loadAll" :refreshing="loading" />
+    <PageHeader
+      title="CMDB 资产中心"
+      subtitle="三级业务/物理拓扑 · 模板导入导出 · 动态分组 · 外部同步"
+      :refresh="loadAll"
+      :refreshing="loading"
+    >
+      <template #actions>
+        <el-button v-if="auth.can('host:write', ws.currentProjectId)" type="primary" @click="showImport = true">
+          <Upload :size="14" class="btn-ico" /> 批量导入
+        </el-button>
+        <el-dropdown trigger="click" @command="(fmt: 'xlsx' | 'csv') => downloadTemplate(fmt)">
+          <el-button>
+            <FileSpreadsheet :size="14" class="btn-ico" /> 下载模板 <ChevronDown :size="13" class="btn-ico-r" />
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="xlsx">Excel 标准导入模板 (.xlsx)</el-dropdown-item>
+              <el-dropdown-item command="csv">CSV 导入模板 (UTF-8 BOM)</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <el-dropdown trigger="click" @command="(fmt: 'xlsx' | 'csv') => exportLedger(fmt)">
+          <el-button>
+            <Download :size="14" class="btn-ico" /> 导出台账 <ChevronDown :size="13" class="btn-ico-r" />
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="xlsx">导出 CMDB Excel 台账 (.xlsx)</el-dropdown-item>
+              <el-dropdown-item command="csv">导出 CSV 台账 (.csv)</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <el-button v-if="auth.can('host:probe', ws.currentProjectId)" @click="discoverDialog.open = true">
+          <Radar :size="14" class="btn-ico" /> 网段发现
+        </el-button>
+        <el-button v-if="auth.can('host:write', ws.currentProjectId)" @click="showAdd = true">
+          <Plus :size="14" class="btn-ico" /> 新增主机
+        </el-button>
+      </template>
+    </PageHeader>
 
     <!-- 顶部可点击指标条 -->
     <div class="ki-chips">
       <div class="ki-chip" :class="{ 'ki-chip--active': !activeFilterBadge }" @click="clearAllFilters">
         <span class="ki-chip__bar" />
         <div>
-          <div class="ki-chip__label">全部纳管资产</div>
+          <div class="ki-chip__label">纳管主机总计</div>
           <div class="ki-chip__val ki-num">{{ hosts.length }}</div>
         </div>
       </div>
       <div class="ki-chip" @click="activeTab = 'hosts'">
         <span class="ki-chip__bar ki-chip__bar--ok" />
         <div>
-          <div class="ki-chip__label">就绪节点 / 基线模块</div>
-          <div class="ki-chip__val ki-num">{{ readyTotal }} / {{ modules.length }}</div>
+          <div class="ki-chip__label">就绪 / 服役节点</div>
+          <div class="ki-chip__val ki-num">{{ readyTotal }} / {{ hosts.length }}</div>
         </div>
       </div>
       <div class="ki-chip" :class="{ 'ki-chip--active': filterArch === '64k' }" @click="selectArchFilter('64k')">
         <span class="ki-chip__bar ki-chip__bar--warn" />
         <div>
-          <div class="ki-chip__label">ARM64-64K 节点</div>
+          <div class="ki-chip__label">ARM64 · 64K 页节点</div>
           <div class="ki-chip__val ki-num">{{ arm64kTotal }}</div>
         </div>
       </div>
       <div class="ki-chip" @click="activeTab = 'ci'">
         <span class="ki-chip__bar ki-chip__bar--running" />
         <div>
-          <div class="ki-chip__label">动态分组 / 影子端口风险</div>
+          <div class="ki-chip__label">动态分组 / 影子端口</div>
           <div class="ki-chip__val ki-num">{{ dynamicGroups.length }} / {{ overview?.shadowPorts || 0 }}</div>
         </div>
       </div>
@@ -828,46 +889,6 @@ onMounted(loadAll)
       </aside>
 
       <section class="ki-card ledger-main">
-        <!-- 顶部核心操作栏：导入 / 模板 / 导出 置顶突出 -->
-        <div class="table-heading">
-          <span class="ki-secondary">
-            支持中英文 Excel/CSV/LiveOps/Ansible 批量导入、模板下载、台账导出、外部同步与 CI 影响面分析
-          </span>
-          <div class="table-actions">
-            <el-button v-if="auth.can('host:write', ws.currentProjectId)" type="primary" @click="showImport = true">
-              <Upload :size="14" class="btn-ico" /> 批量导入
-            </el-button>
-            <el-dropdown trigger="click" @command="(fmt: 'xlsx' | 'csv') => downloadTemplate(fmt)">
-              <el-button>
-                <FileSpreadsheet :size="14" class="btn-ico" /> 下载模板 <ChevronDown :size="13" class="btn-ico-r" />
-              </el-button>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item command="xlsx">Excel 标准导入模板 (.xlsx)</el-dropdown-item>
-                  <el-dropdown-item command="csv">CSV 导入模板 (UTF-8 BOM)</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
-            <el-dropdown trigger="click" @command="(fmt: 'xlsx' | 'csv') => exportLedger(fmt)">
-              <el-button>
-                <Download :size="14" class="btn-ico" /> 导出台账 <ChevronDown :size="13" class="btn-ico-r" />
-              </el-button>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item command="xlsx">导出 CMDB Excel 台账 (.xlsx)</el-dropdown-item>
-                  <el-dropdown-item command="csv">导出 CSV 台账 (.csv)</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
-            <el-button v-if="auth.can('host:probe', ws.currentProjectId)" @click="discoverDialog.open = true">
-              <Radar :size="14" class="btn-ico" /> 网段发现
-            </el-button>
-            <el-button v-if="auth.can('host:write', ws.currentProjectId)" @click="showAdd = true">
-              <Plus :size="14" class="btn-ico" /> 新增主机
-            </el-button>
-          </div>
-        </div>
-
         <el-tabs v-model="activeTab">
           <!-- Tab 1: CMDB 主机台账 -->
           <el-tab-pane :label="`主机台账 (${filteredHosts.length})`" name="hosts">
@@ -879,7 +900,6 @@ onMounted(loadAll)
                 <span>{{ activeFilterBadge }}</span>
                 <button type="button" class="clear-chip-btn" @click="clearAllFilters">清除</button>
               </div>
-              <el-button size="small" @click="loadAll"><RefreshCw :size="13" class="btn-ico" /> 刷新</el-button>
             </div>
 
             <!-- 批量运维操作栏 -->
@@ -998,21 +1018,15 @@ onMounted(loadAll)
               <p class="ki-empty-state__desc">
                 {{
                   hosts.length === 0
-                    ? '可下载标准 Excel/CSV 模板一键导入，或从 LiveOps/Ansible/HCS 外部同步，也可扫描内网 CIDR 自动发现主机。'
+                    ? '可通过上方「批量导入」上传 Excel/CSV/LiveOps/Ansible 清单，或点击「网段发现」与「新增主机」快速接入。'
                     : '请清除左侧拓扑/动态分组筛选或调整搜索关键字。'
                 }}
               </p>
               <div v-if="hosts.length === 0 && auth.can('host:write', ws.currentProjectId)" class="ki-empty-state__actions">
-                <el-button type="primary" size="small" @click="showImport = true">
-                  <Upload :size="13" class="btn-ico" /> 批量导入主机
+                <el-button type="primary" @click="showImport = true">
+                  <Upload :size="14" class="btn-ico" /> 立即导入主机
                 </el-button>
-                <el-button size="small" @click="downloadTemplate('xlsx')">
-                  <FileSpreadsheet :size="13" class="btn-ico" /> 下载 Excel 模板
-                </el-button>
-                <el-button size="small" @click="discoverDialog.open = true">
-                  <Radar :size="13" class="btn-ico" /> 内网网段发现
-                </el-button>
-                <el-button size="small" @click="showAdd = true"><Plus :size="13" class="btn-ico" /> 新增主机</el-button>
+                <el-button @click="activeTab = 'sync'">配置外部 CMDB 同步</el-button>
               </div>
             </div>
           </el-tab-pane>
@@ -1348,13 +1362,7 @@ onMounted(loadAll)
     </el-dialog>
 
     <!-- 新增单台主机弹窗 -->
-    <el-dialog v-model="showAdd" title="新增纳管主机" width="600px">
-      <KiBanner
-        v-if="credentials.length === 0"
-        variant="warn"
-        text="当前项目尚无加密凭据，可在「平台设置 → 凭据保险库」创建，或直接使用「批量导入」内联创建凭据。"
-        class="ki-mb-3"
-      />
+    <el-dialog v-model="showAdd" title="新增纳管主机" width="620px">
       <el-form label-position="top">
         <div class="ki-grid-2">
           <el-form-item label="主机名 (DNS-1123)"><el-input v-model="newHost.name" placeholder="node-kunpeng-01" class="ki-mono" /></el-form-item>
@@ -1366,11 +1374,38 @@ onMounted(loadAll)
         </div>
         <div class="ki-grid-2">
           <el-form-item label="SSH 用户名"><el-input v-model="newHost.sshUser" class="ki-mono" /></el-form-item>
-          <el-form-item label="加密凭据引用">
-            <el-select v-model="newHost.credentialId" class="ki-w-full" placeholder="选择项目凭据">
-              <el-option v-for="c in credentials" :key="c.id" :label="`${c.name} (${c.kind})`" :value="c.id" />
-            </el-select>
+          <el-form-item label="凭据绑定方式">
+            <div class="ki-flex-row ki-w-full">
+              <el-select
+                v-if="!newHost.useInlineCred"
+                v-model="newHost.credentialId"
+                class="ki-flex-1"
+                :placeholder="credentials.length ? '选择已有凭据' : '暂无凭据，请切右侧新建'"
+              >
+                <el-option v-for="c in credentials" :key="c.id" :label="`${c.name} (${c.kind})`" :value="c.id" />
+              </el-select>
+              <el-button size="small" @click="newHost.useInlineCred = !newHost.useInlineCred">
+                {{ newHost.useInlineCred ? '选用已有凭据' : '直接填密码/私钥' }}
+              </el-button>
+            </div>
           </el-form-item>
+        </div>
+        <div v-if="newHost.useInlineCred || credentials.length === 0" class="inline-cred-box ki-mb-3">
+          <div class="ki-grid-3">
+            <el-input v-model="newHost.inlineCredName" size="small" placeholder="凭据名称（留空自动生成）" class="ki-mono" />
+            <el-select v-model="newHost.inlineCredKind" size="small" class="ki-w-full">
+              <el-option label="SSH 密码" value="ssh_password" />
+              <el-option label="SSH 私钥" value="ssh_key" />
+            </el-select>
+            <el-input
+              v-model="newHost.inlineCredSecret"
+              size="small"
+              type="password"
+              show-password
+              placeholder="输入 SSH 密码（信封加密入库）"
+              @focus="newHost.useInlineCred = true"
+            />
+          </div>
         </div>
         <div class="ki-grid-3">
           <el-form-item label="业务系统"><el-input v-model="newHost.biz" placeholder="HIS核心门诊" /></el-form-item>
@@ -1418,13 +1453,21 @@ onMounted(loadAll)
 .ledger-body {
   display: flex;
   gap: var(--ki-space-4);
-  align-items: flex-start;
+  align-items: stretch;
+  min-height: 500px;
 }
 
 .ledger-nav {
   width: 248px;
   flex: none;
   padding: 12px 10px;
+}
+
+.inline-cred-box {
+  padding: 10px 12px;
+  border-radius: var(--ki-radius-sm);
+  border: 1px solid var(--ki-border-subtle);
+  background-color: var(--ki-bg-subtle);
 }
 
 .nav-mode-tabs {

@@ -83,6 +83,22 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  async function refreshOfflineMode() {
+    if (!currentProjectId.value) return
+    try {
+      const { data } = await apiRequest<{ items: Array<{ offlineStrict?: boolean }> }>(
+        'GET',
+        `/api/v1/projects/${currentProjectId.value}/media-policies`
+      )
+      const list = data.items || []
+      if (list.length > 0 && typeof list[0].offlineStrict === 'boolean') {
+        offlineStrict.value = list[0].offlineStrict
+      }
+    } catch {
+      // keep previous value
+    }
+  }
+
   function toggleTheme() {
     themeCtl.toggleTheme()
   }
@@ -112,6 +128,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     offlineStrict,
     loadProjects,
     refreshApprovalBadge,
+    refreshOfflineMode,
     toggleTheme,
     cycleTheme,
     setTheme: themeCtl.setTheme,

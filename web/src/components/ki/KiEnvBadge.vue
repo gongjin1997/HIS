@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { ShieldAlert, Layers, Code2, FlaskConical } from 'lucide-vue-next'
 
-const props = defineProps<{ env: string }>()
+const props = withDefaults(defineProps<{ env: string; compact?: boolean }>(), { compact: false })
 
 const normalized = computed(() => {
   const e = (props.env || '').toLowerCase()
@@ -11,6 +11,18 @@ const normalized = computed(() => {
 })
 
 const label = computed(() => {
+  if (props.compact) {
+    switch (normalized.value) {
+      case 'prod':
+        return '生产'
+      case 'staging':
+        return '预发'
+      case 'dev':
+        return '开发'
+      default:
+        return '沙箱'
+    }
+  }
   switch (normalized.value) {
     case 'prod':
       return 'PROD 生产'

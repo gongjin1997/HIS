@@ -264,6 +264,15 @@ func (r *approvalRepo) Decide(ctx context.Context, opID, decidedBy string, appro
 	return tx.Commit()
 }
 
+func (r *approvalRepo) Cancel(ctx context.Context, opID, note string) error {
+	now := fmtTime(time.Now().UTC())
+	_, err := r.s.writeDB.NewRaw(
+		`UPDATE operation_approvals SET status = 'cancelled', decision_note = ?, decided_at = ? WHERE operation_id = ? AND status = 'pending'`,
+		note, now, opID,
+	).Exec(ctx)
+	return err
+}
+
 // --- MediaPolicyRepo (Global / Project / Instance 3-tier scope, ADR-077) ---
 
 type mediaPolicyRepo struct{ s *DBStore }
@@ -776,6 +785,11 @@ func (r *notificationRepo) ListChannels(ctx context.Context, projectID string) (
 		out = append(out, ch)
 	}
 	return out, rows.Err()
+}
+
+func (r *notificationRepo) DeleteChannel(ctx context.Context, id string) error {
+	_, err := r.s.writeDB.NewRaw(`DELETE FROM notification_channels WHERE id = ?`, id).Exec(ctx)
+	return err
 }
 
 func (r *notificationRepo) UpsertDelivery(ctx context.Context, d *domain.NotificationDelivery) (bool, error) {

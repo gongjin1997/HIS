@@ -11,8 +11,9 @@ export interface MediaSourceItem {
   name: string
   endpoint: string
   enabled: boolean
-  probeStatus?: 'ok' | 'warn' | 'failed' | 'pending'
+  probeStatus?: 'ok' | 'warn' | 'failed' | 'pending' | 'unprobed' | 'blocked'
   latencyMs?: number
+  probeNote?: string
   lastChecked?: string
 }
 
@@ -36,7 +37,11 @@ const emit = defineEmits<{
   (e: 'probe', source: MediaSourceItem): void
 }>()
 
-const lockedOffline = computed(() => props.offlineStrict && props.source.type === 'online')
+const lockedOffline = computed(
+  () =>
+    props.offlineStrict &&
+    (props.source.type === 'online' || ((props.source.type === 'obs' || props.source.type === 's3') && !props.source.enabled))
+)
 
 function onKeydown(e: KeyboardEvent) {
   if (!e.altKey) return
@@ -78,25 +83,26 @@ const typeLabel = computed(() => {
       <span class="ki-media-card__rank ki-mono">[{{ index + 1 }}]</span>
 
       <div class="ki-media-card__meta">
-        <div class="ki-flex-row">
+        <div class="ki-flex-row ki-flex-wrap">
           <HardDrive v-if="source.type === 'local'" :size="14" class="ki-muted" />
           <Cloud v-else-if="source.type === 'obs' || source.type === 's3'" :size="14" class="ki-muted" />
           <Globe v-else :size="14" class="ki-muted" />
           <strong class="ki-media-card__name">{{ source.name }}</strong>
           <span class="ki-badge ki-media-card__type">{{ typeLabel }}</span>
           <span v-if="lockedOffline" class="ki-badge ki-media-card__lock">
-            <Lock :size="11" /> offlineStrict 已锁定
+            <Lock :size="11" /> 离线策略拦截
           </span>
         </div>
         <div class="ki-media-card__endpoint">
-          <KiMonoText :value="source.endpoint" :head="28" :tail="12" />
+          <KiMonoText :value="source.endpoint" :head="34" :tail="14" />
+          <span v-if="source.probeNote && !lockedOffline" class="ki-media-card__note">· {{ source.probeNote }}</span>
         </div>
       </div>
     </div>
 
     <div class="ki-media-card__right">
       <div class="ki-media-card__probe">
-        <KiStatusBadge :status="lockedOffline ? 'blocked' : (source.probeStatus || 'pending')" />
+        <KiStatusBadge :status="lockedOffline ? 'blocked' : (source.probeStatus || 'unprobed')" />
         <span v-if="source.latencyMs !== undefined && !lockedOffline" class="ki-mono ki-muted ki-media-card__lat">
           {{ source.latencyMs }}ms
         </span>
@@ -150,7 +156,7 @@ const typeLabel = computed(() => {
 }
 
 .ki-media-card--locked {
-  opacity: 0.45;
+  opacity: 0.55;
   border-style: dashed;
 }
 
@@ -201,8 +207,17 @@ const typeLabel = computed(() => {
 }
 
 .ki-media-card__endpoint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
   font-size: var(--ki-fs-xs);
   color: var(--ki-text-secondary);
+}
+
+.ki-media-card__note {
+  color: var(--ki-status-warn-text);
+  font-size: var(--ki-fs-xs);
 }
 
 .ki-media-card__right {

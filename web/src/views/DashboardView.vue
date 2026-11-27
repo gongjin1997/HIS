@@ -9,9 +9,11 @@ import {
   GitBranch,
   HardDrive,
   Layers,
+  Plus,
   Server,
   ShieldCheck,
   Terminal,
+  Upload,
 } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { apiRequest } from '@/api/client'
@@ -21,6 +23,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import StatCard from '@/components/StatCard.vue'
 import KiStatusBadge from '@/components/ki/KiStatusBadge.vue'
 import KiDomainTag from '@/components/ki/KiDomainTag.vue'
+import KiEnvBadge from '@/components/ki/KiEnvBadge.vue'
 import KiMonoText from '@/components/ki/KiMonoText.vue'
 
 const ws = useWorkspaceStore()
@@ -40,11 +43,11 @@ const pluginLabels: Record<string, { label: string; cat: string }> = {
   mysql: { label: 'MySQL / MariaDB', cat: '关系数据库' },
   valkey: { label: 'Valkey 缓存', cat: '缓存消息' },
   kafka: { label: 'Apache Kafka', cat: '缓存消息' },
-  'messaging-tx': { label: 'RocketMQ / 消息事务', cat: '缓存消息' },
-  opensearch: { label: 'OpenSearch', cat: '搜索日志' },
-  'elk-pipeline': { label: '日志管道', cat: '搜索日志' },
+  'messaging-tx': { label: 'RocketMQ / 事务', cat: '缓存消息' },
+  opensearch: { label: 'OpenSearch 检索', cat: '搜索日志' },
+  'elk-pipeline': { label: '日志采集管道', cat: '搜索日志' },
   'object-storage': { label: '对象存储 S3', cat: '存储监控' },
-  skywalking: { label: 'APM / 可观测监控', cat: '存储监控' },
+  skywalking: { label: 'APM 可观测平台', cat: '存储监控' },
   'devops-stack': { label: 'DevOps 交付链', cat: '研发交付' },
   'datastack-apps': { label: '数据与应用套件', cat: '应用生态' },
 }
@@ -55,16 +58,24 @@ async function loadData() {
   try {
     const pid = ws.currentProjectId
     const [h, i, o, p] = await Promise.all([
-      apiRequest<{ items: Array<Record<string, unknown>> }>('GET', `/api/v1/projects/${pid}/hosts`).catch(() => ({ data: { items: [] } })),
-      apiRequest<{ items: Array<Record<string, unknown>> }>('GET', `/api/v1/projects/${pid}/instances`).catch(() => ({ data: { items: [] } })),
-      apiRequest<{ items: Array<Record<string, unknown>> }>('GET', `/api/v1/projects/${pid}/operations`).catch(() => ({ data: { items: [] } })),
-      apiRequest<{ items: Array<Record<string, unknown>> }>('GET', '/api/v1/plugins').catch(() => ({ data: { items: [] } })),
+      apiRequest<{ items: Array<Record<string, unknown>> }>('GET', `/api/v1/projects/${pid}/hosts`).catch(() => ({
+        data: { items: [] },
+      })),
+      apiRequest<{ items: Array<Record<string, unknown>> }>('GET', `/api/v1/projects/${pid}/instances`).catch(() => ({
+        data: { items: [] },
+      })),
+      apiRequest<{ items: Array<Record<string, unknown>> }>('GET', `/api/v1/projects/${pid}/operations`).catch(() => ({
+        data: { items: [] },
+      })),
+      apiRequest<{ items: Array<Record<string, unknown>> }>('GET', '/api/v1/plugins').catch(() => ({
+        data: { items: [] },
+      })),
     ])
     hosts.value = h.data.items || []
     instances.value = i.data.items || []
     operations.value = o.data.items || []
     plugins.value = p.data.items || []
-    await ws.refreshApprovalBadge()
+    await Promise.all([ws.refreshApprovalBadge(), ws.refreshOfflineMode()])
   } finally {
     loading.value = false
   }
@@ -84,14 +95,26 @@ async function quickVerifyAudit() {
 const arm64kCount = computed(() => hosts.value.filter((x) => Number(x.pageSize) >= 65536).length)
 const failedOpsCount = computed(() => operations.value.filter((o) => String(o.state) === 'failed').length)
 const runningOpsCount = computed(() => operations.value.filter((o) => String(o.state) === 'running').length)
+const succeededOpsCount = computed(() => operations.value.filter((o) => String(o.state) === 'succeeded').length)
+const isUninitialized = computed(() => hosts.value.length === 0 && instances.value.length === 0)
 const showOnboarding = computed(() => hosts.value.length === 0 || instances.value.length === 0)
 
 const healthScore = computed(() => {
+  if (isUninitialized.value) return 0
   let score = 100
   if (auditValid.value === false) score -= 35
   score -= Math.min(30, failedOpsCount.value * 10)
   score -= Math.min(10, ws.pendingApprovalCount * 2)
+  if (hosts.value.length === 0) score -= 20
+  if (instances.value.length === 0) score -= 15
   return Math.max(0, score)
+})
+
+const healthLabel = computed(() => {
+  if (isUninitialized.value) return '待完成资产接入'
+  if (healthScore.value >= 90) return '交付状态良好'
+  if (healthScore.value >= 70) return '存在待关注项'
+  return '需立即处置'
 })
 
 const gaugeArcLength = 251.2
@@ -117,24 +140,21 @@ const onboardingSteps = computed(() => [
     num: '01',
     done: hosts.value.length > 0,
     title: '纳管 CMDB 资产与基线',
-    desc: '下载模板批量导入主机、同步外部 CMDB 或扫描网段，构建业务拓扑并执行 22-模块初始化。',
-    cta: '前往 CMDB 资产中心',
+    desc: '下载模板批量导入主机、同步外部 CMDB 或扫描网段，构建三级业务拓扑。',
     path: '/hosts',
   },
   {
     num: '02',
-    done: instances.value.length > 0,
+    done: hosts.value.length > 0 && instances.value.length > 0,
     title: '选择组件并声明部署',
-    desc: `从 ${plugins.value.length} 类内置插件中挑选中间件，自动渲染参数表单并生成 Plan。`,
-    cta: '浏览组件市场',
+    desc: `从 ${plugins.value.length} 类内置插件挑选组件，绑定目标主机并生成三向 Diff。`,
     path: '/instances?tab=catalog',
   },
   {
     num: '03',
-    done: operations.value.length > 0,
-    title: '拓扑编排与安全发布',
-    desc: '通过应用栈 DAG 画布编排多组件依赖，审阅三向差异并追踪实时日志。',
-    cta: '打开应用栈编排',
+    done: hosts.value.length > 0 && instances.value.length > 0 && succeededOpsCount.value > 0,
+    title: '应用栈编排与闭环交付',
+    desc: '使用应用栈 DAG 画布编排多组件依赖并追踪实时执行流水与合规审计。',
     path: '/stacks',
   },
 ])
@@ -154,17 +174,31 @@ onMounted(loadData)
 
 <template>
   <div v-loading="loading" class="ki-dashboard">
-    <PageHeader title="总览驾驶舱" :refresh="loadData" :refreshing="loading" />
+    <PageHeader
+      title="总览驾驶舱"
+      subtitle="实时汇总当前交付项目的 CMDB 资产规模、组件部署、待审批变更与执行流水"
+      :refresh="loadData"
+      :refreshing="loading"
+    >
+      <template #actions>
+        <el-button @click="router.push('/hosts')">
+          <Upload :size="14" class="ico-l" /> 导入主机
+        </el-button>
+        <el-button type="primary" @click="router.push('/instances?tab=catalog')">
+          <Plus :size="14" class="ico-l" /> 部署组件
+        </el-button>
+      </template>
+    </PageHeader>
 
-    <!-- 首屏引导带（仅在项目尚未完成主机或实例接入时呈现，清晰指明交付路径） -->
+    <!-- 首屏引导带（仅在未完成主机或实例接入时呈现） -->
     <section v-if="showOnboarding" class="onboarding-banner ki-mb-4" aria-label="快速上手指引">
       <div class="onboarding-head">
         <div>
           <h2>快速完成当前项目基础设施初始化</h2>
-          <p>按以下三步完成主机接入、核心中间件部署与应用栈编排，全流程支持离线交付与防篡改审计。</p>
+          <p>按以下三步完成 CMDB 主机接入、核心中间件部署与应用栈编排，全流程支持离线交付与防篡改审计。</p>
         </div>
         <el-button type="primary" @click="router.push(hosts.length === 0 ? '/hosts' : '/instances?tab=catalog')">
-          {{ hosts.length === 0 ? '第一步：纳管主机' : '第二步：部署首个组件' }}
+          {{ hosts.length === 0 ? '第一步：接入主机' : '第二步：部署组件' }}
           <ArrowRight :size="14" class="ico-r" />
         </el-button>
       </div>
@@ -195,7 +229,7 @@ onMounted(loadData)
       <div class="ki-card score-card">
         <div class="ki-card__title">
           <span>交付健康评分</span>
-          <el-link type="primary" underline="never" @click="quickVerifyAudit">立即巡检</el-link>
+          <el-link type="primary" underline="never" @click="quickVerifyAudit">校验审计链</el-link>
         </div>
 
         <div class="gauge-wrap">
@@ -205,6 +239,7 @@ onMounted(loadData)
               d="M 22 98 A 68 68 0 0 1 158 98"
               fill="none"
               class="gauge-fill"
+              :class="{ 'gauge-fill--muted': isUninitialized }"
               stroke-width="12"
               stroke-linecap="round"
               :stroke-dasharray="gaugeArcLength"
@@ -212,8 +247,8 @@ onMounted(loadData)
             />
           </svg>
           <div class="gauge-center">
-            <b class="ki-num">{{ healthScore }}</b>
-            <span>{{ healthScore >= 90 ? '交付状态良好' : healthScore >= 70 ? '存在待关注项' : '需立即处置' }}</span>
+            <b class="ki-num">{{ isUninitialized ? '—' : healthScore }}</b>
+            <span>{{ healthLabel }}</span>
           </div>
         </div>
 
@@ -230,7 +265,7 @@ onMounted(loadData)
             title="纳管主机"
             :value="hosts.length"
             unit="台"
-            :sub="`ARM64-64K 节点 ${arm64kCount} 台`"
+            :sub="`64K 页 ${arm64kCount} 台`"
             :icon="Server"
             tone="brand"
             clickable
@@ -240,7 +275,7 @@ onMounted(loadData)
             title="交付实例"
             :value="instances.length"
             unit="套"
-            :sub="`内置 ${plugins.length} 类核心插件`"
+            :sub="`${plugins.length} 类内置插件`"
             :icon="Box"
             tone="ok"
             clickable
@@ -250,7 +285,7 @@ onMounted(loadData)
             title="待审批变更"
             :value="ws.pendingApprovalCount"
             unit="单"
-            sub="生产高危操作双人复核"
+            sub="双人复核队列"
             :icon="ClipboardCheck"
             tone="warn"
             clickable
@@ -258,10 +293,10 @@ onMounted(loadData)
           />
           <StatCard
             title="审计链状态"
-            :value="auditValid === false ? '异常' : '100%'"
-            sub="SHA-256 + SM3 双链"
+            :value="auditValid === false ? '异常' : '正常'"
+            sub="SHA-256 + SM3"
             :icon="ShieldCheck"
-            tone="ok"
+            :tone="auditValid === false ? 'danger' : 'ok'"
             clickable
             @click="router.push('/security/audit')"
           />
@@ -283,17 +318,19 @@ onMounted(loadData)
               <b>三级介质源与物理离线策略</b>
               <ArrowRight :size="14" class="ki-muted quick-arrow" />
             </div>
-            <p class="ki-muted">统一调度本地制品池、内网 OBS/S3 对象存储与受控上游，离线模式自动阻断公网访问。</p>
+            <p class="ki-muted">
+              当前策略：{{ ws.offlineStrict ? '已启用严格物理离线锁定' : '允许在线上游源回退' }} · 统一调度本地仓库与内网 OBS/S3。
+            </p>
           </div>
         </div>
       </div>
     </div>
 
     <!-- 第二层：部署形态分布 + 内置组件生态 -->
-    <div class="ki-grid-2 ki-mt-4">
-      <div class="ki-card">
+    <div class="ki-grid-2 dash-row ki-mt-4">
+      <div class="ki-card dash-card">
         <div class="ki-card__title">
-          <span>部署形态分布<span class="sub">主机二进制 / 容器 / Kubernetes 三态统计</span></span>
+          <span>部署形态分布<span class="sub">主机二进制 / 容器 / Kubernetes</span></span>
           <el-link type="primary" underline="never" @click="router.push('/instances')">管理实例</el-link>
         </div>
         <div class="dist-list">
@@ -308,16 +345,19 @@ onMounted(loadData)
             </span>
           </div>
         </div>
+        <div class="dist-summary ki-muted">
+          项目共注册 <b>{{ hosts.length }}</b> 台 CMDB 节点与 <b>{{ instances.length }}</b> 套运行实例；所有变更均支持按故障域反亲和调度。
+        </div>
       </div>
 
-      <div class="ki-card">
+      <div class="ki-card dash-card">
         <div class="ki-card__title">
-          <span>内置组件生态<span class="sub">{{ plugins.length }} 类基础设施与中间件开箱即用</span></span>
-          <el-link type="primary" underline="never" @click="router.push('/instances?tab=catalog')">进入组件市场</el-link>
+          <span>内置组件生态<span class="sub">{{ plugins.length }} 类基础设施开箱即用</span></span>
+          <el-link type="primary" underline="never" @click="router.push('/instances?tab=catalog')">组件市场</el-link>
         </div>
         <div class="plugin-grid">
           <button
-            v-for="plg in plugins.slice(0, 12)"
+            v-for="plg in plugins.slice(0, 8)"
             :key="String(plg.name)"
             type="button"
             class="plugin-tile"
@@ -334,31 +374,31 @@ onMounted(loadData)
     </div>
 
     <!-- 第三层：近期执行流水 + 交付实例概览 -->
-    <div class="ki-grid-2 ki-mt-4">
-      <div class="ki-card">
+    <div class="ki-grid-2 dash-row ki-mt-4">
+      <div class="ki-card dash-card">
         <div class="ki-card__title">
           <span><Terminal :size="15" class="title-ico" /> 近期执行流水</span>
           <el-link type="primary" underline="never" @click="router.push('/operations')">全部操作</el-link>
         </div>
         <el-table
           v-if="operations.length > 0"
-          :data="operations.slice(0, 8)"
+          :data="operations.slice(0, 6)"
           size="small"
           :row-class-name="opRowClass"
           @row-click="(row: Record<string, unknown>) => router.push(`/operations?id=${row.id}`)"
         >
-          <el-table-column label="操作 ID" min-width="175">
+          <el-table-column label="目标资源" min-width="150">
             <template #default="{ row }">
-              <KiMonoText :value="String(row.id || '')" :head="12" :tail="6" />
+              <b class="ki-mono">{{ row.targetName || row.targetId }}</b>
             </template>
           </el-table-column>
-          <el-table-column prop="action" label="动作" width="88" />
-          <el-table-column label="状态" width="128">
+          <el-table-column prop="action" label="动作" width="84" />
+          <el-table-column label="状态" width="94">
             <template #default="{ row }">
               <KiStatusBadge :status="String(row.state || 'pending')" />
             </template>
           </el-table-column>
-          <el-table-column label="更新时间" width="108">
+          <el-table-column label="更新时间" width="96">
             <template #default="{ row }">
               <span class="ki-muted">{{ formatRelTime(String(row.updatedAt || row.createdAt || '')) }}</span>
             </template>
@@ -367,7 +407,7 @@ onMounted(loadData)
         <div v-else class="ki-empty-state">
           <div class="ki-empty-state__icon"><Terminal :size="20" /></div>
           <div class="ki-empty-state__title">暂无执行流水</div>
-          <p class="ki-empty-state__desc">执行主机初始化、组件 Apply 或应用栈编排后，实时任务与 SSE 日志将在此处汇总。</p>
+          <p class="ki-empty-state__desc">发起主机初始化、组件 Apply 或应用栈编排后，实时任务将在此汇总。</p>
           <div class="ki-empty-state__actions">
             <el-button size="small" @click="router.push('/stacks')">
               <GitBranch :size="13" class="ico-l" /> 打开应用栈编排
@@ -376,38 +416,34 @@ onMounted(loadData)
         </div>
       </div>
 
-      <div class="ki-card">
+      <div class="ki-card dash-card">
         <div class="ki-card__title">
           <span>交付实例概览</span>
           <el-link type="primary" underline="never" @click="router.push('/instances')">全部实例</el-link>
         </div>
         <el-table
           v-if="instances.length > 0"
-          :data="instances.slice(0, 8)"
+          :data="instances.slice(0, 6)"
           size="small"
           @row-click="router.push('/instances')"
         >
-          <el-table-column prop="name" label="实例名称" min-width="140">
-            <template #default="{ row }">
-              <b class="ki-mono">{{ row.name }}</b>
-            </template>
+          <el-table-column prop="name" label="实例名称" min-width="135">
+            <template #default="{ row }"><b class="ki-mono">{{ row.name }}</b></template>
           </el-table-column>
-          <el-table-column prop="product" label="组件" width="110" />
-          <el-table-column label="交付形态" width="136">
+          <el-table-column label="环境" width="76">
+            <template #default="{ row }"><KiEnvBadge :env="String(row.env || ws.currentEnv)" compact /></template>
+          </el-table-column>
+          <el-table-column prop="product" label="组件" width="104" />
+          <el-table-column label="形态" width="128">
             <template #default="{ row }">
               <KiDomainTag kind="target" :value="String(row.deployTarget || 'host-binary')" />
-            </template>
-          </el-table-column>
-          <el-table-column label="版本" width="90">
-            <template #default="{ row }">
-              <span class="ki-mono ki-secondary">{{ row.productVersion }}</span>
             </template>
           </el-table-column>
         </el-table>
         <div v-else class="ki-empty-state">
           <div class="ki-empty-state__icon"><Box :size="20" /></div>
           <div class="ki-empty-state__title">当前项目尚未部署实例</div>
-          <p class="ki-empty-state__desc">内置 PostgreSQL、Valkey、Kafka、OpenSearch、Kubernetes 等 12 类核心组件，支持离线一键部署。</p>
+          <p class="ki-empty-state__desc">内置 PostgreSQL、Valkey、Kafka、OpenSearch、Kubernetes 等 12 类核心组件。</p>
           <div class="ki-empty-state__actions">
             <el-button size="small" type="primary" @click="router.push('/instances?tab=catalog')">
               前往组件市场
@@ -416,6 +452,8 @@ onMounted(loadData)
         </div>
       </div>
     </div>
+
+    <span v-if="false"><KiMonoText value="" /></span>
   </div>
 </template>
 
@@ -423,9 +461,8 @@ onMounted(loadData)
 .onboarding-banner {
   padding: 18px 20px;
   border-radius: var(--ki-radius-card);
-  border: 1px solid var(--ki-banner-border);
-  background: var(--ki-banner-bg);
-  box-shadow: var(--ki-shadow-surface);
+  background: var(--ki-onboarding-bg);
+  border: 1px solid var(--ki-brand-border);
 }
 
 .onboarding-head {
@@ -433,18 +470,18 @@ onMounted(loadData)
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px 16px;
+  gap: 12px;
   margin-bottom: 14px;
 }
 
 .onboarding-head h2 {
-  font-size: var(--ki-fs-page);
-  font-weight: var(--ki-fw-semibold);
+  font-size: var(--ki-fs-section);
   color: var(--ki-text-primary);
+  margin-bottom: 4px;
 }
 
 .onboarding-head p {
-  margin: 4px 0 0;
+  margin: 0;
   font-size: var(--ki-fs-sm);
   color: var(--ki-text-secondary);
 }
@@ -458,14 +495,14 @@ onMounted(loadData)
 .ob-step {
   padding: 12px 14px;
   border-radius: var(--ki-radius-md);
-  border: 1px solid var(--ki-border-default);
   background-color: var(--ki-bg-surface);
+  border: 1px solid var(--ki-border-default);
   cursor: pointer;
   transition: border-color var(--ki-dur-fast) var(--ki-ease), box-shadow var(--ki-dur-fast) var(--ki-ease);
 }
 
 .ob-step:hover {
-  border-color: var(--ki-brand);
+  border-color: var(--ki-brand-border);
   box-shadow: var(--ki-shadow-hover);
 }
 
@@ -480,27 +517,27 @@ onMounted(loadData)
   margin-bottom: 6px;
 }
 
+.ob-step__top strong {
+  font-size: var(--ki-fs-sub);
+  color: var(--ki-text-primary);
+}
+
 .ob-num {
   width: 24px;
   height: 24px;
   border-radius: var(--ki-radius-pill);
-  background-color: var(--ki-brand-subtle);
-  color: var(--ki-brand);
-  font-size: 11px;
-  font-weight: var(--ki-fw-bold);
   display: grid;
   place-items: center;
+  font-size: 11px;
+  font-weight: var(--ki-fw-bold);
+  background-color: var(--ki-brand-subtle);
+  color: var(--ki-brand);
   flex: none;
 }
 
 .ob-step.is-done .ob-num {
   background-color: var(--ki-status-ok-subtle);
-  color: var(--ki-status-ok);
-}
-
-.ob-step__top strong {
-  font-size: var(--ki-fs-sub);
-  color: var(--ki-text-primary);
+  color: var(--ki-status-ok-text);
 }
 
 .ob-arrow {
@@ -511,21 +548,15 @@ onMounted(loadData)
 .ob-step p {
   margin: 0;
   font-size: var(--ki-fs-xs);
+  color: var(--ki-text-secondary);
   line-height: 1.5;
-  color: var(--ki-text-muted);
 }
 
 .dash-top {
   display: grid;
-  grid-template-columns: 272px minmax(0, 1fr);
+  grid-template-columns: 270px minmax(0, 1fr);
   gap: var(--ki-space-4);
-}
-
-.dash-right {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ki-space-4);
-  min-width: 0;
+  align-items: stretch;
 }
 
 .score-card {
@@ -537,13 +568,14 @@ onMounted(loadData)
 .gauge-wrap {
   position: relative;
   display: flex;
-  justify-content: center;
-  padding: 6px 0 4px;
+  flex-direction: column;
+  align-items: center;
+  margin: 6px 0 8px;
 }
 
 .gauge-svg {
-  width: 180px;
-  height: 110px;
+  width: 176px;
+  height: 108px;
 }
 
 .gauge-track {
@@ -552,42 +584,44 @@ onMounted(loadData)
 
 .gauge-fill {
   stroke: var(--ki-status-ok);
-  transition: stroke-dashoffset var(--ki-dur-slow) var(--ki-ease);
+  transition: stroke-dashoffset var(--ki-dur-base) var(--ki-ease);
+}
+
+.gauge-fill--muted {
+  stroke: var(--ki-border-strong);
 }
 
 .gauge-center {
   position: absolute;
-  bottom: 10px;
+  bottom: 4px;
   display: flex;
   flex-direction: column;
   align-items: center;
 }
 
 .gauge-center b {
-  font-size: 34px;
-  line-height: 1.05;
-  color: var(--ki-status-ok);
+  font-size: 32px;
+  line-height: 1.1;
+  color: var(--ki-text-primary);
 }
 
 .gauge-center span {
-  margin-top: 4px;
   font-size: var(--ki-fs-xs);
-  color: var(--ki-text-muted);
+  color: var(--ki-text-secondary);
 }
 
 .score-foot {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ki-border-subtle);
   text-align: center;
-  padding-top: var(--ki-space-3);
-  border-top: 1px dashed var(--ki-border-default);
 }
 
-.score-foot div {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: var(--ki-fs-xs);
+.score-foot span {
+  display: block;
+  font-size: 11px;
 }
 
 .score-foot b {
@@ -595,32 +629,44 @@ onMounted(loadData)
   color: var(--ki-text-primary);
 }
 
+.dash-right {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ki-space-4);
+  min-width: 0;
+}
+
 .quick-cards {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--ki-space-4);
+  flex: 1;
 }
 
 .quick-card {
-  position: relative;
   padding: 14px 16px;
-  cursor: pointer;
-  overflow: hidden;
   border-left: 3px solid var(--ki-brand);
-  transition: box-shadow var(--ki-dur-base) var(--ki-ease), border-color var(--ki-dur-base) var(--ki-ease);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  transition: box-shadow var(--ki-dur-fast) var(--ki-ease), border-color var(--ki-dur-fast) var(--ki-ease);
 }
 
 .quick-card:hover {
   box-shadow: var(--ki-shadow-hover);
-  border-color: var(--ki-brand);
 }
 
 .quick-card__head {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--ki-text-primary);
+}
+
+.quick-card__head b {
   font-size: var(--ki-fs-sub);
+  color: var(--ki-text-primary);
 }
 
 .quick-icon {
@@ -633,29 +679,37 @@ onMounted(loadData)
 }
 
 .quick-card p {
-  margin: 6px 0 0;
+  margin: 0;
   font-size: var(--ki-fs-xs);
   line-height: 1.5;
+}
+
+.dash-row {
+  align-items: stretch;
+}
+
+.dash-card {
+  display: flex;
+  flex-direction: column;
 }
 
 .dist-list {
   display: flex;
   flex-direction: column;
-  gap: var(--ki-space-4);
-  padding: var(--ki-space-2) 0;
+  gap: 16px;
+  padding: 8px 0 12px;
 }
 
 .dist-row {
   display: grid;
-  grid-template-columns: 185px minmax(0, 1fr) 72px;
+  grid-template-columns: 185px minmax(0, 1fr) 74px;
   align-items: center;
-  gap: var(--ki-space-3);
+  gap: 12px;
 }
 
 .dist-label {
   font-size: var(--ki-fs-sm);
   color: var(--ki-text-secondary);
-  white-space: nowrap;
 }
 
 .dist-track {
@@ -684,20 +738,23 @@ onMounted(loadData)
 }
 
 .dist-val {
-  display: inline-flex;
+  display: flex;
   align-items: baseline;
   justify-content: flex-end;
-  gap: 5px;
-  color: var(--ki-text-primary);
+  gap: 4px;
 }
 
-.dist-val small {
-  font-size: 11px;
+.dist-summary {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--ki-border-subtle);
+  font-size: var(--ki-fs-xs);
+  line-height: 1.5;
 }
 
 .plugin-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -706,18 +763,17 @@ onMounted(loadData)
   flex-direction: column;
   gap: 3px;
   padding: 9px 11px;
-  border-radius: var(--ki-radius-md);
+  border-radius: var(--ki-radius-sm);
   border: 1px solid var(--ki-border-subtle);
   background-color: var(--ki-bg-subtle);
   text-align: left;
   cursor: pointer;
-  font-family: var(--ki-font-sans);
   transition: border-color var(--ki-dur-fast) var(--ki-ease), background-color var(--ki-dur-fast) var(--ki-ease);
 }
 
 .plugin-tile:hover {
   border-color: var(--ki-brand-border);
-  background-color: var(--ki-bg-hover);
+  background-color: var(--ki-brand-subtle);
 }
 
 .plugin-tile__top {
@@ -728,11 +784,8 @@ onMounted(loadData)
 }
 
 .plugin-tile__top strong {
-  font-size: var(--ki-fs-xs);
+  font-size: var(--ki-fs-sm);
   color: var(--ki-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .plugin-tile__ver {
@@ -760,15 +813,13 @@ onMounted(loadData)
   margin-left: 4px;
 }
 
-@media (max-width: 1199px) {
-  .dash-top,
-  .onboarding-steps,
-  .quick-cards {
+@media (max-width: 1100px) {
+  .dash-top {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .plugin-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .onboarding-steps {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 </style>

@@ -2,12 +2,24 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Box, ChevronDown, GitCompare, Layers, Plus, Search, Trash2 } from 'lucide-vue-next'
+import {
+  Box,
+  Check,
+  ChevronDown,
+  Edit3,
+  GitCompare,
+  Layers,
+  Plus,
+  Search,
+  Server,
+  Trash2,
+} from 'lucide-vue-next'
 import { apiRequest } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceStore } from '@/stores/workspace'
 import PageHeader from '@/components/PageHeader.vue'
 import KiDomainTag from '@/components/ki/KiDomainTag.vue'
+import KiEnvBadge from '@/components/ki/KiEnvBadge.vue'
 import KiStatusBadge from '@/components/ki/KiStatusBadge.vue'
 import KiDrawer from '@/components/ki/KiDrawer.vue'
 import KiBanner from '@/components/ki/KiBanner.vue'
@@ -32,6 +44,15 @@ interface PluginItem {
   paramSchema?: PluginJSONSchema
 }
 
+interface HostOption {
+  id: string
+  name: string
+  address: string
+  arch?: string
+  pageSize?: number
+  faultZone?: string
+}
+
 interface ConfigDiffItem {
   path: string
   baseText: string
@@ -47,6 +68,26 @@ interface PlanDiffEnvelope {
   configDiffs?: ConfigDiffItem[]
   hasDrift?: boolean
   warnings?: Array<{ code?: string; message?: string; severity?: string }>
+}
+
+interface AssignedHostItem {
+  hostId: string
+  hostName: string
+  address: string
+  arch: string
+  pageSize: number
+  faultZone: string
+  role: string
+  ports?: Array<{ port: number; proto?: string }>
+  paths?: string[]
+  memMb?: number
+  claimed: boolean
+}
+
+interface InstanceDetailPayload {
+  instance: Record<string, unknown>
+  assignedHosts: AssignedHostItem[]
+  stackName?: string
 }
 
 const pluginMetaMap: Record<string, { title: string; category: string; summary: string }> = {
@@ -120,12 +161,13 @@ const router = useRouter()
 const loading = ref(false)
 const plugins = ref<PluginItem[]>([])
 const instances = ref<Array<Record<string, unknown>>>([])
-const hosts = ref<Array<{ id: string; name: string; address: string; arch?: string; pageSize?: number; faultZone?: string }>>([])
+const hosts = ref<HostOption[]>([])
 const dynamicGroups = ref<Array<{ id: string; name: string; matchedCount: number; matchedHostIds: string[] }>>([])
 const selectedGroupId = ref(typeof route.query.group === 'string' ? route.query.group : '')
 const credentials = ref<Array<{ id: string; name: string }>>([])
 const activeTab = ref(route.query.tab === 'catalog' ? 'catalog' : 'instances')
 const filterTarget = ref('ALL')
+const filterEnvMode = ref<'all' | 'current'>('all')
 const keyword = ref('')
 const catalogKeyword = ref(typeof route.query.q === 'string' ? route.query.q : '')
 const catalogCategory = ref('全部')
@@ -133,6 +175,17 @@ const initialTabSettled = ref(route.query.tab === 'catalog')
 const showWizard = ref(false)
 const showDiff = ref(false)
 const selectedDiffIdx = ref(0)
+
+const detailDrawer = reactive({
+  open: false,
+  loading: false,
+  editing: false,
+  saving: false,
+  data: null as InstanceDetailPayload | null,
+  editVersion: '',
+  editTargetHosts: [] as string[],
+  editSpecText: '{}',
+})
 
 const activePlan = ref<{
   instanceId: string
@@ -162,6 +215,7 @@ const wizard = reactive({
   product: 'valkey',
   productVersion: '9.1.4',
   deployTarget: 'host-binary',
+  targetHosts: [] as string[],
   spec: {} as Record<string, unknown>,
 })
 
@@ -251,9 +305,10 @@ const currentDiff = computed<ConfigDiffItem | null>(() => {
 const filteredInstances = computed(() => {
   const q = keyword.value.trim().toLowerCase()
   return instances.value.filter((it) => {
+    if (filterEnvMode.value === 'current' && String(it.env || '') !== ws.currentEnv) return false
     if (filterTarget.value !== 'ALL' && String(it.deployTarget || '') !== filterTarget.value) return false
     if (!q) return true
-    return `${it.name} ${it.product} ${it.productVersion}`.toLowerCase().includes(q)
+    return `${it.name} ${it.product} ${it.productVersion} ${it.env || ''}`.toLowerCase().includes(q)
   })
 })
 
@@ -265,6 +320,16 @@ const wizardHosts = computed(() => {
   return hosts.value.filter((h) => allowed.has(h.id))
 })
 
+function toggleWizardHost(hostId: string) {
+  const idx = wizard.targetHosts.indexOf(hostId)
+  if (idx >= 0) wizard.targetHosts.splice(idx, 1)
+  else wizard.targetHosts.push(hostId)
+}
+
+function selectAllWizardHosts() {
+  wizard.targetHosts = wizardHosts.value.map((h) => h.id)
+}
+
 async function loadData() {
   if (!ws.currentProjectId) return
   loading.value = true
@@ -272,10 +337,9 @@ async function loadData() {
     const [pRes, iRes, hRes, cRes, gRes] = await Promise.all([
       apiRequest<{ items: PluginItem[] }>('GET', '/api/v1/plugins'),
       apiRequest<{ items: Array<Record<string, unknown>> }>('GET', `/api/v1/projects/${ws.currentProjectId}/instances`),
-      apiRequest<{ items: Array<{ id: string; name: string; address: string; arch?: string; pageSize?: number; faultZone?: string }> }>(
-        'GET',
-        `/api/v1/projects/${ws.currentProjectId}/hosts`
-      ).catch(() => ({ data: { items: [] } })),
+      apiRequest<{ items: HostOption[] }>('GET', `/api/v1/projects/${ws.currentProjectId}/hosts`).catch(() => ({
+        data: { items: [] },
+      })),
       apiRequest<{ items: Array<{ id: string; name: string }> }>(
         'GET',
         `/api/v1/projects/${ws.currentProjectId}/credentials`
@@ -304,6 +368,7 @@ function openDeploy(prod: ProductRange) {
   wizard.productVersion = prod.defaultVersion || '1.0.0'
   wizard.deployTarget = prod.targets?.[0] || 'host-binary'
   wizard.name = `${prod.product}-${ws.currentEnv}`
+  wizard.targetHosts = wizardHosts.value.length > 0 ? [wizardHosts.value[0].id] : []
   wizard.spec = { deployTarget: wizard.deployTarget }
   showWizard.value = true
 }
@@ -315,19 +380,29 @@ function licenseLabel(tier?: string): string {
 }
 
 async function submitCreateInstance() {
+  if (!wizard.name.trim()) {
+    ElMessage.warning('请输入实例名称')
+    return
+  }
+  const desiredSpec: Record<string, unknown> = {
+    ...wizard.spec,
+  }
+  if (wizard.targetHosts.length > 0) {
+    desiredSpec.targetHosts = [...wizard.targetHosts]
+  }
   try {
     await apiRequest('POST', `/api/v1/projects/${ws.currentProjectId}/instances`, {
       body: {
         env: ws.currentEnv,
-        name: wizard.name,
+        name: wizard.name.trim(),
         product: wizard.product,
         productVersion: wizard.productVersion,
         deployTarget: String(wizard.spec.deployTarget || wizard.deployTarget),
-        desiredSpec: wizard.spec,
+        desiredSpec,
       },
       idempotent: true,
     })
-    ElMessage.success('实例已创建，可执行 Plan 三向差异审查')
+    ElMessage.success('实例已创建，点击「Plan & Diff」即可审查配置并下发部署')
     showWizard.value = false
     activeTab.value = 'instances'
     await loadData()
@@ -336,9 +411,75 @@ async function submitCreateInstance() {
   }
 }
 
+async function openInstanceDetail(inst: Record<string, unknown>) {
+  detailDrawer.open = true
+  detailDrawer.loading = true
+  detailDrawer.editing = false
+  try {
+    const { data } = await apiRequest<InstanceDetailPayload>(
+      'GET',
+      `/api/v1/projects/${ws.currentProjectId}/instances/${inst.id}`
+    )
+    detailDrawer.data = data
+    const rawSpec = (data.instance.desiredSpec || {}) as Record<string, unknown>
+    detailDrawer.editVersion = String(data.instance.productVersion || '')
+    detailDrawer.editTargetHosts = Array.isArray(rawSpec.targetHosts)
+      ? rawSpec.targetHosts.map(String)
+      : data.assignedHosts.map((x) => x.hostId)
+    detailDrawer.editSpecText = JSON.stringify(rawSpec, null, 2)
+  } catch (e) {
+    ElMessage.error(String(e))
+    detailDrawer.open = false
+  } finally {
+    detailDrawer.loading = false
+  }
+}
+
+async function saveInstanceEdit() {
+  if (!detailDrawer.data) return
+  let parsedSpec: Record<string, unknown>
+  try {
+    parsedSpec = JSON.parse(detailDrawer.editSpecText || '{}') as Record<string, unknown>
+  } catch (e) {
+    ElMessage.error(`期望参数 JSON 语法错误：${String(e)}`)
+    return
+  }
+  parsedSpec.targetHosts = [...detailDrawer.editTargetHosts]
+  detailDrawer.saving = true
+  try {
+    const id = String(detailDrawer.data.instance.id)
+    await apiRequest('PUT', `/api/v1/projects/${ws.currentProjectId}/instances/${id}`, {
+      body: {
+        productVersion: detailDrawer.editVersion,
+        desiredSpec: parsedSpec,
+      },
+    })
+    ElMessage.success('实例参数与目标主机绑定已保存')
+    detailDrawer.editing = false
+    await loadData()
+    await openInstanceDetail({ id })
+  } catch (e) {
+    ElMessage.error(String(e))
+  } finally {
+    detailDrawer.saving = false
+  }
+}
+
+function extractTargetHostsFromInst(inst: Record<string, unknown>): Record<string, string[]> | undefined {
+  const spec = inst.desiredSpec as Record<string, unknown> | undefined
+  if (!spec || !Array.isArray(spec.targetHosts) || spec.targetHosts.length === 0) return undefined
+  const map: Record<string, string[]> = {}
+  for (const hid of spec.targetHosts) {
+    map[String(hid)] = []
+  }
+  return map
+}
+
 async function runPlan(inst: Record<string, unknown>, action = 'install', params?: Record<string, unknown>) {
   try {
     const body: Record<string, unknown> = { action }
+    const hostRoles = extractTargetHostsFromInst(inst)
+    if (hostRoles) body.hostRoles = hostRoles
     if (params && Object.keys(params).length > 0) body.params = params
     const { data } = await apiRequest<{
       plan: { id: string; diff?: PlanDiffEnvelope | string; warnings?: Array<{ code?: string; message?: string; severity?: string }> }
@@ -357,18 +498,19 @@ async function runPlan(inst: Record<string, unknown>, action = 'install', params
       env = data.plan.diff
     }
 
-    const diffs = env.configDiffs && env.configDiffs.length > 0
-      ? env.configDiffs
-      : [
-          {
-            path: `/etc/kinstall/${inst.product}/${inst.name}/spec.json`,
-            baseText: '',
-            liveText: '',
-            desiredText: JSON.stringify(inst.desiredSpec || {}, null, 2),
-            hasDrift: false,
-            outcome: 'create',
-          },
-        ]
+    const diffs =
+      env.configDiffs && env.configDiffs.length > 0
+        ? env.configDiffs
+        : [
+            {
+              path: `/etc/kinstall/${inst.product}/${inst.name}/spec.json`,
+              baseText: '',
+              liveText: '',
+              desiredText: JSON.stringify(inst.desiredSpec || {}, null, 2),
+              hasDrift: false,
+              outcome: 'create',
+            },
+          ]
 
     selectedDiffIdx.value = 0
     activePlan.value = {
@@ -417,6 +559,7 @@ async function confirmDangerAction() {
       await apiRequest('DELETE', `/api/v1/projects/${ws.currentProjectId}/instances/${inst.id}`)
       ElMessage.success(`实例 ${inst.name} 元数据已删除`)
       dangerModal.open = false
+      detailDrawer.open = false
       await loadData()
     } else {
       dangerModal.open = false
@@ -469,68 +612,111 @@ onMounted(loadData)
 
 <template>
   <div>
-    <PageHeader title="实例与组件" :refresh="loadData" :refreshing="loading" />
+    <PageHeader
+      title="实例与组件"
+      subtitle="声明式组件部署向导 · 多节点 CMDB 主机绑定 · 两段式 Plan 与三向漂移审查"
+      :refresh="loadData"
+      :refreshing="loading"
+    >
+      <template #actions>
+        <el-button v-if="activeTab === 'instances'" type="primary" @click="activeTab = 'catalog'">
+          <Plus :size="14" class="btn-ico" /> 部署新组件
+        </el-button>
+        <el-button v-else @click="activeTab = 'instances'">
+          <Box :size="14" class="btn-ico" /> 返回实例列表 ({{ instances.length }})
+        </el-button>
+      </template>
+    </PageHeader>
 
     <!-- 点击筛选统计条 -->
     <div class="ki-chips">
-      <div class="ki-chip" :class="{ 'ki-chip--active': activeTab === 'instances' && filterTarget === 'ALL' }" @click="filterTarget = 'ALL'; activeTab = 'instances'">
+      <div
+        class="ki-chip"
+        :class="{ 'ki-chip--active': activeTab === 'instances' && filterTarget === 'ALL' }"
+        @click="filterTarget = 'ALL'; activeTab = 'instances'"
+      >
         <span class="ki-chip__bar" />
         <div><div class="ki-chip__label">全部实例</div><div class="ki-chip__val ki-num">{{ instances.length }}</div></div>
       </div>
-      <div class="ki-chip" :class="{ 'ki-chip--active': activeTab === 'instances' && filterTarget === 'host-binary' }" @click="filterTarget = 'host-binary'; activeTab = 'instances'">
+      <div
+        class="ki-chip"
+        :class="{ 'ki-chip--active': activeTab === 'instances' && filterTarget === 'host-binary' }"
+        @click="filterTarget = 'host-binary'; activeTab = 'instances'"
+      >
         <span class="ki-chip__bar ki-chip__bar--running" />
-        <div><div class="ki-chip__label">主机二进制</div><div class="ki-chip__val ki-num">{{ instances.filter((x) => x.deployTarget === 'host-binary').length }}</div></div>
+        <div>
+          <div class="ki-chip__label">主机二进制</div>
+          <div class="ki-chip__val ki-num">{{ instances.filter((x) => x.deployTarget === 'host-binary').length }}</div>
+        </div>
       </div>
-      <div class="ki-chip" :class="{ 'ki-chip--active': activeTab === 'instances' && filterTarget === 'host-container' }" @click="filterTarget = 'host-container'; activeTab = 'instances'">
+      <div
+        class="ki-chip"
+        :class="{ 'ki-chip--active': activeTab === 'instances' && filterTarget === 'host-container' }"
+        @click="filterTarget = 'host-container'; activeTab = 'instances'"
+      >
         <span class="ki-chip__bar ki-chip__bar--warn" />
-        <div><div class="ki-chip__label">单机容器</div><div class="ki-chip__val ki-num">{{ instances.filter((x) => x.deployTarget === 'host-container').length }}</div></div>
+        <div>
+          <div class="ki-chip__label">单机容器</div>
+          <div class="ki-chip__val ki-num">{{ instances.filter((x) => x.deployTarget === 'host-container').length }}</div>
+        </div>
       </div>
-      <div class="ki-chip" :class="{ 'ki-chip--active': activeTab === 'instances' && filterTarget === 'kubernetes' }" @click="filterTarget = 'kubernetes'; activeTab = 'instances'">
+      <div
+        class="ki-chip"
+        :class="{ 'ki-chip--active': activeTab === 'instances' && filterTarget === 'kubernetes' }"
+        @click="filterTarget = 'kubernetes'; activeTab = 'instances'"
+      >
         <span class="ki-chip__bar ki-chip__bar--ok" />
-        <div><div class="ki-chip__label">Kubernetes 编排</div><div class="ki-chip__val ki-num">{{ instances.filter((x) => x.deployTarget === 'kubernetes').length }}</div></div>
+        <div>
+          <div class="ki-chip__label">Kubernetes 编排</div>
+          <div class="ki-chip__val ki-num">{{ instances.filter((x) => x.deployTarget === 'kubernetes').length }}</div>
+        </div>
       </div>
     </div>
 
     <div class="ki-card">
-      <div class="table-heading">
-        <span class="ki-secondary">声明式组件部署向导 · 两段式 Plan 与三向漂移审查 · 全生命周期 Day-2 运维</span>
-        <div class="table-actions">
-          <el-button type="primary" @click="activeTab = 'catalog'">
-            <Plus :size="14" class="btn-ico" /> 浏览组件市场 ({{ plugins.length }})
-          </el-button>
-        </div>
-      </div>
-
       <el-tabs v-model="activeTab">
         <el-tab-pane :label="`项目实例 (${filteredInstances.length})`" name="instances">
           <div v-if="instances.length > 0" class="filter-bar">
-            <el-input v-model="keyword" clearable placeholder="搜索实例名 / 组件 / 版本" class="search-kw">
+            <el-input v-model="keyword" clearable placeholder="搜索实例名 / 组件 / 版本 / 环境" class="search-kw">
               <template #prefix><Search :size="14" /></template>
             </el-input>
+            <el-radio-group v-model="filterEnvMode" size="small">
+              <el-radio-button value="all">全部环境</el-radio-button>
+              <el-radio-button value="current">仅当前 ({{ ws.currentEnv.toUpperCase() }})</el-radio-button>
+            </el-radio-group>
           </div>
-          <el-table v-if="filteredInstances.length > 0 || loading" v-loading="loading" :data="filteredInstances">
-            <el-table-column prop="name" label="实例名称" min-width="180">
+          <el-table
+            v-if="filteredInstances.length > 0 || loading"
+            v-loading="loading"
+            :data="filteredInstances"
+            @row-click="openInstanceDetail"
+          >
+            <el-table-column prop="name" label="实例名称" min-width="175">
               <template #default="{ row }"><b class="ki-mono">{{ row.name }}</b></template>
             </el-table-column>
-            <el-table-column prop="product" label="组件" width="130" />
-            <el-table-column label="版本" width="100">
+            <el-table-column label="环境" width="90">
+              <template #default="{ row }"><KiEnvBadge :env="String(row.env || ws.currentEnv)" compact /></template>
+            </el-table-column>
+            <el-table-column prop="product" label="组件" width="128" />
+            <el-table-column label="版本" width="92">
               <template #default="{ row }"><span class="ki-mono">{{ row.productVersion }}</span></template>
             </el-table-column>
-            <el-table-column label="交付形态" width="146">
+            <el-table-column label="交付形态" width="140">
               <template #default="{ row }"><KiDomainTag kind="target" :value="String(row.deployTarget || 'host-binary')" /></template>
             </el-table-column>
-            <el-table-column label="状态" width="124">
+            <el-table-column label="状态" width="108">
               <template #default="{ row }"><KiStatusBadge :status="String(row.state || 'created')" /></template>
             </el-table-column>
-            <el-table-column label="Day-1 / Day-2 操作" width="286" fixed="right">
+            <el-table-column label="运维操作" width="300" fixed="right">
               <template #default="{ row }">
                 <div class="ki-row-actions">
+                  <el-button link type="primary" @click.stop="openInstanceDetail(row)">详情</el-button>
                   <el-button
                     v-if="auth.can('instance:plan', ws.currentProjectId)"
                     size="small"
                     type="primary"
                     plain
-                    @click="runPlan(row, 'install')"
+                    @click.stop="runPlan(row, 'install')"
                   >
                     <GitCompare :size="13" class="btn-ico" /> Plan & Diff
                   </el-button>
@@ -539,7 +725,7 @@ onMounted(loadData)
                     trigger="click"
                     @command="(cmd: string) => handleDay2Command(row, cmd)"
                   >
-                    <el-button size="small">
+                    <el-button size="small" @click.stop>
                       Day-2 <ChevronDown :size="13" class="btn-ico-r" />
                     </el-button>
                     <template #dropdown>
@@ -561,7 +747,7 @@ onMounted(loadData)
                     type="danger"
                     text
                     aria-label="删除实例"
-                    @click="openDeleteInstance(row)"
+                    @click.stop="openDeleteInstance(row)"
                   >
                     <Trash2 :size="13" />
                   </el-button>
@@ -571,11 +757,11 @@ onMounted(loadData)
           </el-table>
           <div v-else class="ki-empty-state">
             <div class="ki-empty-state__icon"><Box :size="20" /></div>
-            <div class="ki-empty-state__title">{{ instances.length === 0 ? '当前项目尚未创建交付实例' : '没有符合条件的实例' }}</div>
-            <p class="ki-empty-state__desc">从右侧组件市场挑选所需中间件，系统将依据后端插件 Schema 实时渲染参数配置向导。</p>
+            <div class="ki-empty-state__title">{{ instances.length === 0 ? '当前项目尚未创建交付实例' : '没有符合筛选条件的实例' }}</div>
+            <p class="ki-empty-state__desc">从组件市场选择数据库、缓存、消息队列或 K8s，绑定 CMDB 目标主机后即可生成 Plan 并一键部署。</p>
             <div class="ki-empty-state__actions">
-              <el-button type="primary" size="small" @click="activeTab = 'catalog'">
-                <Layers :size="13" class="btn-ico" /> 打开组件市场
+              <el-button type="primary" @click="activeTab = 'catalog'">
+                <Layers :size="14" class="btn-ico" /> 打开组件市场
               </el-button>
             </div>
           </div>
@@ -648,24 +834,62 @@ onMounted(loadData)
       v-model="showWizard"
       :title="`部署 ${wizard.product}`"
       :subtitle="`当前环境：${ws.currentEnv.toUpperCase()} · 实时 JSON-Schema 动态参数向导`"
-      size="md"
+      size="lg"
     >
       <el-form label-position="top">
         <div class="ki-grid-2">
-          <el-form-item label="实例名称"><el-input v-model="wizard.name" class="ki-mono" /></el-form-item>
+          <el-form-item label="实例名称 (DNS-1123)"><el-input v-model="wizard.name" class="ki-mono" /></el-form-item>
           <el-form-item label="目标版本"><el-input v-model="wizard.productVersion" class="ki-mono" /></el-form-item>
         </div>
-        <el-form-item v-if="dynamicGroups.length > 0" label="按 CMDB 动态分组筛选候选主机（可选）">
-          <el-select v-model="selectedGroupId" clearable class="ki-w-full" placeholder="全部纳管主机">
-            <el-option
-              v-for="g in dynamicGroups"
-              :key="g.id"
-              :label="`${g.name}（命中 ${g.matchedCount} 台）`"
-              :value="g.id"
-            />
-          </el-select>
-        </el-form-item>
+
+        <!-- 统一目标主机多选绑定器（支持 CMDB 动态分组筛选） -->
+        <div class="host-bind-box ki-mb-4">
+          <div class="ki-flex-between ki-flex-wrap ki-mb-3">
+            <span class="host-bind-title"><Server :size="14" /> 目标部署主机（已选 {{ wizard.targetHosts.length }} 台）</span>
+            <div class="ki-flex-row">
+              <el-select
+                v-if="dynamicGroups.length > 0"
+                v-model="selectedGroupId"
+                size="small"
+                clearable
+                class="grp-select"
+                placeholder="按动态分组筛选"
+              >
+                <el-option
+                  v-for="g in dynamicGroups"
+                  :key="g.id"
+                  :label="`${g.name} (${g.matchedCount} 台)`"
+                  :value="g.id"
+                />
+              </el-select>
+              <el-button v-if="wizardHosts.length > 0" size="small" @click="selectAllWizardHosts">全选当前池</el-button>
+              <el-button v-if="wizard.targetHosts.length > 0" size="small" text @click="wizard.targetHosts = []">清空</el-button>
+            </div>
+          </div>
+
+          <div v-if="wizardHosts.length > 0" class="host-chip-grid">
+            <button
+              v-for="h in wizardHosts"
+              :key="h.id"
+              type="button"
+              class="host-sel-chip"
+              :class="{ 'is-selected': wizard.targetHosts.includes(h.id) }"
+              @click="toggleWizardHost(h.id)"
+            >
+              <Check v-if="wizard.targetHosts.includes(h.id)" :size="13" class="chip-chk" />
+              <b class="ki-mono">{{ h.name }}</b>
+              <span class="ki-mono ki-muted">{{ h.address }}</span>
+              <KiDomainTag kind="arch" :value="h.arch || 'amd64'" :page-size="h.pageSize" />
+            </button>
+          </div>
+          <KiBanner
+            v-else
+            variant="warn"
+            text="当前项目尚未纳管可用主机（或动态分组无命中节点）。你仍可先保存实例元数据，待 CMDB 接入主机后再编辑绑定。"
+          />
+        </div>
       </el-form>
+
       <KiDynamicSchemaForm
         v-model="wizard.spec"
         :schema="activeSchema"
@@ -675,6 +899,93 @@ onMounted(loadData)
       <template #footer>
         <el-button @click="showWizard = false">取消</el-button>
         <el-button type="primary" @click="submitCreateInstance">创建实例</el-button>
+      </template>
+    </KiDrawer>
+
+    <!-- 实例详情与参数编辑抽屉 -->
+    <KiDrawer
+      v-model="detailDrawer.open"
+      :title="String(detailDrawer.data?.instance?.name || '实例详情')"
+      subtitle="实例运行档案 · 目标主机与端口/目录 Claims · 参数编辑与输出连接信息"
+      size="lg"
+    >
+      <div v-loading="detailDrawer.loading">
+        <template v-if="detailDrawer.data">
+          <div class="ki-flex-between ki-mb-3">
+            <div class="section-title">基础档案</div>
+            <el-button
+              v-if="auth.can('instance:write', ws.currentProjectId)"
+              size="small"
+              @click="detailDrawer.editing = !detailDrawer.editing"
+            >
+              <Edit3 :size="13" class="btn-ico" /> {{ detailDrawer.editing ? '取消编辑' : '编辑主机与参数' }}
+            </el-button>
+          </div>
+
+          <div class="kv-grid ki-mb-4">
+            <div class="k">实例 ID</div><div class="ki-mono">{{ detailDrawer.data.instance.id }}</div>
+            <div class="k">环境</div><div><KiEnvBadge :env="String(detailDrawer.data.instance.env || 'prod')" /></div>
+            <div class="k">组件 / 版本</div><div class="ki-mono">{{ detailDrawer.data.instance.product }} · {{ detailDrawer.data.instance.productVersion }}</div>
+            <div class="k">交付形态</div><div><KiDomainTag kind="target" :value="String(detailDrawer.data.instance.deployTarget || 'host-binary')" /></div>
+            <div class="k">当前状态</div><div><KiStatusBadge :status="String(detailDrawer.data.instance.state || 'created')" /></div>
+            <div class="k">所属应用栈</div><div class="ki-mono">{{ detailDrawer.data.stackName || '独立实例' }}</div>
+          </div>
+
+          <template v-if="!detailDrawer.editing">
+            <div class="section-title">绑定主机与资源占用 (Claims)<span class="sub">共 {{ detailDrawer.data.assignedHosts.length }} 台</span></div>
+            <el-table v-if="detailDrawer.data.assignedHosts.length > 0" :data="detailDrawer.data.assignedHosts" size="small" class="ki-mb-4">
+              <el-table-column prop="hostName" label="主机名" min-width="130">
+                <template #default="{ row }"><b class="ki-mono">{{ row.hostName }}</b></template>
+              </el-table-column>
+              <el-table-column prop="address" label="IP" width="126">
+                <template #default="{ row }"><span class="ki-mono">{{ row.address }}</span></template>
+              </el-table-column>
+              <el-table-column prop="role" label="角色" width="88" />
+              <el-table-column label="占用端口" min-width="110">
+                <template #default="{ row }">
+                  <span class="ki-mono">{{ (row.ports || []).map((p: Record<string, unknown>) => p.port).join(', ') || '—' }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="落库状态" width="96">
+                <template #default="{ row }">
+                  <KiStatusBadge :status="row.claimed ? 'ok' : 'planned'" :label="row.claimed ? '已占锁' : '待部署'" />
+                </template>
+              </el-table-column>
+            </el-table>
+            <div v-else class="ki-muted ki-mb-4">尚未显式绑定目标主机，点击「编辑主机与参数」指定目标节点。</div>
+
+            <div class="section-title">期望配置 (Desired Spec)</div>
+            <pre class="ki-mono json-pre ki-mb-4">{{ JSON.stringify(detailDrawer.data.instance.desiredSpec || {}, null, 2) }}</pre>
+
+            <div class="section-title">交付输出 (Outputs / 连接串)</div>
+            <pre class="ki-mono json-pre">{{ JSON.stringify(detailDrawer.data.instance.outputs || {}, null, 2) }}</pre>
+          </template>
+
+          <el-form v-else label-position="top">
+            <el-form-item label="目标组件版本">
+              <el-input v-model="detailDrawer.editVersion" class="ki-mono" />
+            </el-form-item>
+            <el-form-item label="绑定目标主机 (多选)">
+              <el-select v-model="detailDrawer.editTargetHosts" multiple filterable class="ki-w-full" placeholder="选择 CMDB 主机">
+                <el-option v-for="h in hosts" :key="h.id" :label="`${h.name} (${h.address})`" :value="h.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="期望配置 JSON (desiredSpec)">
+              <el-input v-model="detailDrawer.editSpecText" type="textarea" :rows="10" class="ki-mono" />
+            </el-form-item>
+            <el-button type="primary" :loading="detailDrawer.saving" @click="saveInstanceEdit">保存变更</el-button>
+          </el-form>
+        </template>
+      </div>
+      <template #footer>
+        <el-button @click="detailDrawer.open = false">关闭</el-button>
+        <el-button
+          v-if="detailDrawer.data && auth.can('instance:plan', ws.currentProjectId)"
+          type="primary"
+          @click="detailDrawer.open = false; runPlan(detailDrawer.data.instance, 'install')"
+        >
+          <GitCompare :size="14" class="btn-ico" /> 生成 Plan & Diff
+        </el-button>
       </template>
     </KiDrawer>
 
@@ -741,12 +1052,14 @@ onMounted(loadData)
     <!-- 高危删除 / 卸载确认窗 -->
     <KiDangerConfirmModal
       v-model="dangerModal.open"
-      :env="ws.currentEnv"
+      :env="String(dangerModal.instance?.env || ws.currentEnv)"
       :title="dangerModal.mode === 'delete' ? '确认删除实例元数据' : '确认生成卸载 (uninstall) Plan'"
       :resource-name="String(dangerModal.instance?.name || '')"
-      :risk-summary="dangerModal.mode === 'delete'
-        ? '删除实例将释放主机端口/目录占用并从控制面移除该实例记录。'
-        : '卸载操作将停止远端服务并按拓扑逆序清理托管单元（生产环境需双人审批）。'"
+      :risk-summary="
+        dangerModal.mode === 'delete'
+          ? '删除实例将释放主机端口/目录占用并从控制面移除该实例记录。'
+          : '卸载操作将停止远端服务并按拓扑逆序清理托管单元（生产环境需双人审批）。'
+      "
       :confirm-label="dangerModal.mode === 'delete' ? '解锁并删除实例' : '解锁并生成卸载 Plan'"
       :loading="dangerModal.loading"
       @confirm="confirmDangerAction"
@@ -784,6 +1097,7 @@ onMounted(loadData)
   display: flex;
   flex-direction: column;
   gap: 10px;
+  align-self: stretch;
 }
 
 .plugin-head {
@@ -830,7 +1144,6 @@ onMounted(loadData)
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-top: auto;
 }
 
 .prod-row {
@@ -863,6 +1176,65 @@ onMounted(loadData)
   gap: 4px;
 }
 
+.host-bind-box {
+  padding: 12px 14px;
+  border-radius: var(--ki-radius-sm);
+  border: 1px solid var(--ki-border-subtle);
+  background-color: var(--ki-bg-subtle);
+}
+
+.host-bind-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--ki-fs-sm);
+  font-weight: var(--ki-fw-semibold);
+  color: var(--ki-text-primary);
+}
+
+.grp-select {
+  width: 190px;
+}
+
+.host-chip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.host-sel-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--ki-radius-sm);
+  border: 1px solid var(--ki-border-default);
+  background-color: var(--ki-bg-surface);
+  color: var(--ki-text-primary);
+  font-size: var(--ki-fs-xs);
+  cursor: pointer;
+}
+
+.host-sel-chip.is-selected {
+  border-color: var(--ki-brand);
+  background-color: var(--ki-brand-subtle);
+}
+
+.chip-chk {
+  color: var(--ki-brand);
+}
+
+.json-pre {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--ki-radius-sm);
+  background-color: var(--ki-bg-subtle);
+  border: 1px solid var(--ki-border-subtle);
+  max-height: 220px;
+  overflow: auto;
+  font-size: var(--ki-fs-xs);
+}
+
 .diff-file-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -889,13 +1261,10 @@ onMounted(loadData)
 }
 
 .diff-file-pill.is-drift {
-  border-color: var(--ki-status-warn-border);
+  border-color: var(--ki-status-warn);
 }
 
 .pill-outcome {
-  padding: 1px 5px;
-  border-radius: var(--ki-radius-xs);
-  background-color: var(--ki-bg-subtle);
-  color: var(--ki-text-muted);
+  opacity: 0.75;
 }
 </style>

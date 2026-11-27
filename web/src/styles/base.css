@@ -180,8 +180,96 @@ a:hover {
   min-width: 0;
 }
 
-.table-actions .el-button + .el-button {
+.table-actions .el-button + .el-button,
+.ki-page-bar__actions .el-button + .el-button,
+.filter-bar .el-button + .el-button {
   margin-left: 0;
+}
+
+/* Unified Page Header Bar across all views */
+.ki-page-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ki-space-3) var(--ki-space-4);
+  margin-bottom: var(--ki-space-4);
+  min-height: 36px;
+}
+
+.ki-page-bar__left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ki-page-bar__title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ki-space-2);
+}
+
+.ki-page-bar__title {
+  font-size: var(--ki-fs-page);
+  font-weight: var(--ki-fw-bold);
+  line-height: 1.3;
+  color: var(--ki-text-primary);
+  letter-spacing: var(--ki-tracking-snug);
+}
+
+.ki-page-bar__sub {
+  margin: 0;
+  font-size: var(--ki-fs-xs);
+  color: var(--ki-text-muted);
+  line-height: 1.4;
+}
+
+.ki-page-bar__actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ki-space-2);
+  flex: none;
+}
+
+/* File upload label matching exact Element Plus button geometry */
+.ki-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: var(--ki-control-h);
+  padding: 0 15px;
+  border-radius: var(--ki-radius-sm);
+  border: 1px solid var(--ki-border-default);
+  background-color: var(--ki-bg-surface);
+  color: var(--ki-text-primary);
+  font-size: var(--ki-fs-body);
+  font-weight: var(--ki-fw-medium);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color var(--ki-dur-fast) var(--ki-ease),
+    background-color var(--ki-dur-fast) var(--ki-ease),
+    color var(--ki-dur-fast) var(--ki-ease);
+}
+
+.ki-upload-btn:hover {
+  border-color: var(--ki-brand-border);
+  background-color: var(--ki-brand-subtle);
+  color: var(--ki-brand);
+}
+
+.ki-upload-btn--sm {
+  height: var(--ki-control-h-sm);
+  padding: 0 11px;
+  font-size: var(--ki-fs-sm);
+}
+
+.ki-upload-btn input[type="file"] {
+  display: none;
 }
 
 .pager {

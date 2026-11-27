@@ -129,6 +129,29 @@ const groupTitles: Record<string, string> = {
   advanced: '高级参数（默认折叠）',
 }
 
+function toggleHostId(key: string, hostId: string) {
+  const curRaw = form[key]
+  const list = Array.isArray(curRaw)
+    ? curRaw.map((x) => String(x)).filter(Boolean)
+    : String(curRaw ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+  const idx = list.indexOf(hostId)
+  if (idx >= 0) list.splice(idx, 1)
+  else list.push(hostId)
+  onFieldChange(key, Array.isArray(curRaw) ? list : list.join(','))
+}
+
+function isHostSelected(key: string, hostId: string): boolean {
+  const curRaw = form[key]
+  if (Array.isArray(curRaw)) return curRaw.map(String).includes(hostId)
+  return String(curRaw ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .includes(hostId)
+}
+
 function suggestCidr(key: string) {
   const presets = ['10.244.0.0/16', '10.96.0.0/12', '172.20.0.0/16']
   const cur = String(form[key] ?? '')
@@ -220,8 +243,8 @@ function suggestCidr(key: string) {
                         :key="h.id"
                         type="button"
                         class="ki-host-chip"
-                        :class="{ 'is-selected': String(form[item.key] ?? '').includes(h.id) }"
-                        @click="onFieldChange(item.key, h.id)"
+                        :class="{ 'is-selected': isHostSelected(item.key, h.id) }"
+                        @click="toggleHostId(item.key, h.id)"
                       >
                         <strong>{{ h.name }}</strong>
                         <span class="ki-mono ki-muted">{{ h.address }}</span>

@@ -125,6 +125,7 @@ func NewRouter(shutdownCtx context.Context, facade *app.Facade, authSvc *authz.S
 		// Projects
 		ar.Get("/projects", s.handleListProjects)
 		ar.Post("/projects", s.handleCreateProject)
+		ar.Delete("/projects/{projectId}", s.handleDeleteProject)
 
 		// Global audit verification
 		ar.Post("/audit:verify", s.handleVerifyAudit)
@@ -168,16 +169,20 @@ func NewRouter(shutdownCtx context.Context, facade *app.Facade, authSvc *authz.S
 			pr.Put("/media-policies/{policyId}", s.handleUpdateMediaPolicy)
 			pr.Post("/media-policies/{policyId}:test", s.handleTestMediaPolicy)
 
-			// Instances + 2-phase Plan / Apply / Delete
+			// Instances + 2-phase Plan / Apply / Detail / Update / Delete
 			pr.Get("/instances", s.handleListInstances)
 			pr.Post("/instances", s.handleCreateInstance)
+			pr.Get("/instances/{instanceId}", s.handleGetInstanceDetail)
+			pr.Put("/instances/{instanceId}", s.handleUpdateInstance)
 			pr.Delete("/instances/{instanceId}", s.handleDeleteInstance)
 			pr.Post("/instances/{instanceId}:plan", s.handlePlanInstance)
 			pr.Post("/instances/{instanceId}:apply", s.handleApplyInstance)
 
-			// Stacks (Live Validate / Create / Apply / Reverse Uninstall)
+			// Stacks (Live Validate / Create / Update / Delete / Apply / Reverse Uninstall)
 			pr.Get("/stacks", s.handleListStacks)
 			pr.Post("/stacks", s.handleCreateStack)
+			pr.Put("/stacks/{stackId}", s.handleUpdateStack)
+			pr.Delete("/stacks/{stackId}", s.handleDeleteStack)
 			pr.Post("/stacks:validate", s.handleValidateStack)
 			pr.Post("/stacks/{stackId}:apply", s.handleApplyStack)
 			pr.Post("/stacks/{stackId}:uninstall", s.handleUninstallStack)
@@ -196,6 +201,7 @@ func NewRouter(shutdownCtx context.Context, facade *app.Facade, authSvc *authz.S
 				s.handleDecideApproval(w, r, false)
 			})
 			pr.Post("/operations/{opId}:resume", s.handleResumeOperation)
+			pr.Post("/operations/{opId}:cancel", s.handleCancelOperation)
 			pr.Get("/approvals", s.handleListApprovals)
 
 			// Multi-Cluster Kubeconfigs
@@ -206,6 +212,7 @@ func NewRouter(shutdownCtx context.Context, facade *app.Facade, authSvc *authz.S
 			// Notification Channels & Storm-Folding Test (G2 §3)
 			pr.Get("/notification-channels", s.handleListNotificationChannels)
 			pr.Post("/notification-channels", s.handleCreateNotificationChannel)
+			pr.Delete("/notification-channels/{channelId}", s.handleDeleteNotificationChannel)
 			pr.Post("/notification-channels:test", s.handleTestNotificationChannels)
 
 			// GitOps Export/Diff, Support Bundle & Compliance Evidence Download
@@ -378,13 +385,17 @@ func (s *Server) handleListHosts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateHost(w http.ResponseWriter, r *http.Request) {
-	var h domain.Host
-	if err := json.NewDecoder(r.Body).Decode(&h); err != nil {
+	var body struct {
+		domain.Host
+		InlineCredential *app.InlineCredentialSpec `json:"inlineCredential,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err))
 		return
 	}
+	h := body.Host
 	h.ProjectID = chi.URLParam(r, "projectId")
-	created, err := s.app.CreateHost(r.Context(), ActorFromContext(r.Context()), &h)
+	created, err := s.app.CreateHostWithInlineCred(r.Context(), ActorFromContext(r.Context()), &h, body.InlineCredential)
 	if err != nil {
 		writeProblem(w, r, s.i18n, err)
 		return
@@ -572,7 +583,7 @@ func (s *Server) handleCreateStack(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListOperations(w http.ResponseWriter, r *http.Request) {
-	items, err := s.app.ListOperations(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), 50)
+	items, err := s.app.ListOperationsEnriched(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), 50)
 	if err != nil {
 		writeProblem(w, r, s.i18n, err)
 		return
@@ -610,7 +621,7 @@ func (s *Server) handleResumeOperation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListApprovals(w http.ResponseWriter, r *http.Request) {
-	items, err := s.app.ListPendingApprovals(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"))
+	items, err := s.app.ListPendingApprovalsEnriched(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"))
 	if err != nil {
 		writeProblem(w, r, s.i18n, err)
 		return

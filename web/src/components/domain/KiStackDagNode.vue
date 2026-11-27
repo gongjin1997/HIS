@@ -30,11 +30,11 @@ const extraOutputCount = computed(() => Math.max(0, (props.data.outputs || []).l
         <Box :size="14" class="ki-dag-node__icon" aria-hidden="true" />
         <strong class="ki-mono ki-truncate">{{ data.id }}</strong>
       </div>
-      <KiStatusBadge :status="data.status || 'ready'" />
+      <KiStatusBadge :status="data.status || 'draft'" />
     </header>
 
     <div class="ki-dag-node__body">
-      <div class="ki-flex-between ki-dag-meta">
+      <div class="ki-dag-meta">
         <span class="ki-dag-node__prod ki-mono">{{ data.product }} {{ data.version }}</span>
         <KiDomainTag kind="target" :value="data.target" />
       </div>
@@ -59,7 +59,7 @@ const extraOutputCount = computed(() => Math.max(0, (props.data.outputs || []).l
 
 <style scoped>
 .ki-dag-node {
-  width: 264px;
+  width: 286px;
   border-radius: var(--ki-radius-card);
   border: 1px solid var(--ki-border-default);
   border-top: 3px solid var(--ki-brand);
@@ -99,6 +99,10 @@ const extraOutputCount = computed(() => Math.max(0, (props.data.outputs || []).l
 }
 
 .ki-dag-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -106,9 +110,6 @@ const extraOutputCount = computed(() => Math.max(0, (props.data.outputs || []).l
   font-size: var(--ki-fs-xs);
   font-weight: var(--ki-fw-medium);
   color: var(--ki-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .ki-dag-ports {

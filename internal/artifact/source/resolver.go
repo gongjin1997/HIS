@@ -532,6 +532,7 @@ func (p *PolicyMediaResolver) ProbePolicy(ctx context.Context, policy domain.Med
 		}
 		switch strings.ToLower(sc.Type) {
 		case "local":
+			start := time.Now()
 			ok := false
 			for _, r := range sc.Roots {
 				if fi, err := os.Stat(r); err == nil && fi.IsDir() {
@@ -540,13 +541,16 @@ func (p *PolicyMediaResolver) ProbePolicy(ctx context.Context, policy domain.Med
 				}
 			}
 			item["status"] = boolStatus(ok)
+			item["latencyMs"] = time.Since(start).Milliseconds()
 		case "obs", "s3":
 			if sc.Endpoint == "" {
 				item["status"] = "unconfigured"
 			} else {
+				start := time.Now()
 				req, err := http.NewRequestWithContext(ctx, http.MethodHead, sc.Endpoint, nil)
 				if err == nil {
 					resp, derr := p.client.Do(req)
+					item["latencyMs"] = time.Since(start).Milliseconds()
 					if derr == nil {
 						_ = resp.Body.Close()
 						item["status"] = "reachable"
@@ -558,7 +562,24 @@ func (p *PolicyMediaResolver) ProbePolicy(ctx context.Context, policy domain.Med
 				}
 			}
 		case "online":
-			item["status"] = "configured"
+			if sc.BaseURL == "" {
+				item["status"] = "unconfigured"
+			} else {
+				start := time.Now()
+				req, err := http.NewRequestWithContext(ctx, http.MethodHead, sc.BaseURL, nil)
+				if err == nil {
+					resp, derr := p.client.Do(req)
+					item["latencyMs"] = time.Since(start).Milliseconds()
+					if derr == nil {
+						_ = resp.Body.Close()
+						item["status"] = "reachable"
+						item["httpStatus"] = resp.StatusCode
+					} else {
+						item["status"] = "unreachable"
+						item["error"] = derr.Error()
+					}
+				}
+			}
 		}
 		results = append(results, item)
 	}

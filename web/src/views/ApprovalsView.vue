@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ShieldAlert, Check, X } from 'lucide-vue-next'
+import { Ban, Check, ExternalLink, ShieldAlert, Terminal, Users, X } from 'lucide-vue-next'
 import { apiRequest } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -17,6 +18,10 @@ interface ApprovalItem {
   operationId: string
   envName: string
   requestedBy: string
+  requestedByName?: string
+  targetType?: string
+  targetName?: string
+  action?: string
   reason: string
   status: string
   expiresAt: string
@@ -24,6 +29,7 @@ interface ApprovalItem {
 
 const auth = useAuthStore()
 const ws = useWorkspaceStore()
+const router = useRouter()
 const { formatAbsTime } = useKiFormat()
 
 const loading = ref(false)
@@ -59,17 +65,40 @@ async function decide(opId: string, approve: boolean) {
   }
 }
 
+async function withdrawSelfRequest(opId: string) {
+  try {
+    await apiRequest('POST', `/api/v1/projects/${ws.currentProjectId}/operations/${opId}:cancel`, {
+      body: { reason: noteMap.value[opId] || '发起人主动撤回' },
+    })
+    ElMessage.success('已撤回变更请求并释放预占资源')
+    await loadApprovals()
+  } catch (e) {
+    ElMessage.error(String(e))
+  }
+}
+
 watch(() => ws.currentProjectId, loadApprovals)
 onMounted(loadApprovals)
 </script>
 
 <template>
   <div v-loading="loading">
-    <PageHeader title="变更审批" :refresh="loadApprovals" :refreshing="loading" />
+    <PageHeader
+      title="变更审批"
+      subtitle="生产环境与高危操作强制执行四眼双人复核，系统在界面、服务与数据库三层禁止发起人自审"
+      :refresh="loadApprovals"
+      :refreshing="loading"
+    >
+      <template #actions>
+        <el-button @click="router.push('/operations')">
+          <Terminal :size="14" class="btn-ico" /> 返回执行中心
+        </el-button>
+      </template>
+    </PageHeader>
 
     <KiBanner
       variant="info"
-      text="生产环境及高危变更强制执行双人复核（四眼原则），系统在界面、服务层与数据库层面三重禁止发起人自审。"
+      text="生产环境及高危变更强制执行双人复核（四眼原则）；发起人可在此主动「撤回」自己的待审申请，或由另一位审批员复核批准。"
       class="ki-mb-4"
     />
 
@@ -83,28 +112,40 @@ onMounted(loadApprovals)
 
     <div v-for="ap in approvals" :key="ap.operationId" class="ki-card ki-mb-3 approval-card">
       <div class="ki-card__title">
-        <div class="ki-flex-row">
-          <KiEnvBadge :env="ap.envName" />
-          <KiMonoText :value="ap.operationId" :head="14" :tail="6" />
+        <div class="ki-flex-row ki-flex-wrap">
+          <KiEnvBadge :env="ap.envName" compact />
+          <b class="ap-target">{{ ap.targetName || ap.operationId }}</b>
+          <span v-if="ap.action" class="ki-badge ki-mono action-chip">{{ ap.action }}</span>
           <KiStatusBadge :status="ap.status" />
         </div>
-        <span class="ki-muted ki-mono ap-meta">
-          发起人：{{ ap.requestedBy }} · 过期：{{ formatAbsTime(ap.expiresAt) }}
-        </span>
+        <div class="ki-flex-row">
+          <span class="ki-muted ap-meta">
+            发起人：<b>{{ ap.requestedByName || ap.requestedBy }}</b> · 截止：{{ formatAbsTime(ap.expiresAt) }}
+          </span>
+          <el-button link type="primary" size="small" @click="router.push(`/operations?id=${ap.operationId}`)">
+            <ExternalLink :size="13" class="btn-ico" /> 查看流水
+          </el-button>
+        </div>
       </div>
 
-      <p class="ap-reason">{{ ap.reason }}</p>
+      <div class="ap-reason-row ki-mb-3">
+        <span>{{ ap.reason }}</span>
+        <KiMonoText :value="ap.operationId" :head="14" :tail="6" />
+      </div>
 
       <div v-if="auth.user && ap.requestedBy === auth.user.id" class="self-guard ki-mb-3">
         <ShieldAlert :size="15" aria-hidden="true" />
-        <span>当前登录账号为变更发起人，依据双人复核安全策略禁止自审，请由另一位具备审批权限的成员复核。</span>
+        <span>当前登录账号为变更发起人，禁止自审。您可由另一位审批员账号复核，或直接点击右侧「撤回申请」取消。</span>
+        <el-button link type="primary" size="small" class="guard-link" @click="router.push('/settings')">
+          <Users :size="13" class="btn-ico" /> 管理审批员
+        </el-button>
       </div>
 
       <div class="ki-flex-row ki-flex-wrap">
-        <el-input v-model="noteMap[ap.operationId]" placeholder="填写审批复核意见（可选）" class="ap-note" />
+        <el-input v-model="noteMap[ap.operationId]" placeholder="填写审批复核或撤回意见（可选）" class="ap-note" />
         <el-tooltip
           :disabled="!(auth.user && ap.requestedBy === auth.user.id)"
-          content="遵循双人复核原则，发起人不可审批自己的请求"
+          content="遵循双人复核原则，发起人不可批准自己的请求"
         >
           <span>
             <el-button
@@ -118,7 +159,15 @@ onMounted(loadApprovals)
           </span>
         </el-tooltip>
         <el-button
-          v-if="auth.can('operation:approve', ws.currentProjectId)"
+          v-if="auth.user && ap.requestedBy === auth.user.id"
+          type="warning"
+          plain
+          @click="withdrawSelfRequest(ap.operationId)"
+        >
+          <Ban :size="14" class="btn-ico" /> 撤回申请
+        </el-button>
+        <el-button
+          v-else-if="auth.can('operation:approve', ws.currentProjectId)"
           type="danger"
           plain
           @click="decide(ap.operationId, false)"
@@ -135,18 +184,34 @@ onMounted(loadApprovals)
   border-left: 4px solid var(--ki-status-warn);
 }
 
+.ap-target {
+  font-size: var(--ki-fs-section);
+  color: var(--ki-text-primary);
+}
+
+.action-chip {
+  background-color: var(--ki-bg-subtle);
+  color: var(--ki-text-secondary);
+}
+
 .ap-meta {
   font-size: var(--ki-fs-xs);
 }
 
-.ap-reason {
-  margin: 0 0 12px;
-  color: var(--ki-text-primary);
+.ap-reason-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--ki-text-secondary);
+  font-size: var(--ki-fs-sm);
 }
 
 .self-guard {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 8px 12px;
   border-radius: var(--ki-radius-sm);
@@ -156,8 +221,12 @@ onMounted(loadApprovals)
   font-size: var(--ki-fs-xs);
 }
 
+.guard-link {
+  margin-left: auto;
+}
+
 .ap-note {
-  max-width: 360px;
+  max-width: 380px;
 }
 
 .btn-ico {

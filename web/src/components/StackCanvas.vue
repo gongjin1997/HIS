@@ -23,8 +23,8 @@ const props = defineProps<{
 
 const ws = useWorkspaceStore()
 
-const COL_WIDTH = 344
-const ROW_HEIGHT = 242
+const COL_WIDTH = 360
+const ROW_HEIGHT = 248
 const PAD_X = 48
 const PAD_Y = 36
 
@@ -72,7 +72,7 @@ const nodes = computed(() => {
         product: it.product,
         version: it.version,
         target: it.target,
-        status: it.status || 'ready',
+        status: it.status || 'draft',
         dependsOnCount: (it.dependsOn || []).length,
         outputs: it.outputs || [{ name: 'endpoint' }, { name: 'rootPassword', secret: true }],
       },
@@ -123,7 +123,7 @@ const flowKey = computed(() => props.instances.map((it) => `${it.id}:${(it.depen
         :color-mode="ws.theme"
         :min-zoom="0.45"
         :max-zoom="1.5"
-        :fit-view-options="{ padding: 0.2, maxZoom: 1 }"
+        :fit-view-options="{ padding: 0.24, maxZoom: 0.9 }"
         fit-view-on-init
       >
         <Background variant="dots" :gap="20" :size="1.2" />

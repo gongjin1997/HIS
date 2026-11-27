@@ -7,16 +7,16 @@ export const pageHeaderTargetKey: InjectionKey<Readonly<ShallowRef<HTMLElement |
 </script>
 
 <script setup lang="ts">
-import { inject, ref, shallowRef } from 'vue'
+import { ref } from 'vue'
 import { RefreshCw } from 'lucide-vue-next'
 
 const props = defineProps<{
   title?: string
+  subtitle?: string
   refresh?: () => unknown | Promise<unknown>
   refreshing?: boolean
 }>()
 
-const target = inject(pageHeaderTargetKey, shallowRef(null))
 const running = ref(false)
 
 async function runRefresh() {
@@ -31,17 +31,31 @@ async function runRefresh() {
 </script>
 
 <template>
-  <Teleport v-if="target && refresh" :to="target">
-    <el-tooltip content="刷新当前页面数据" placement="bottom">
+  <header class="ki-page-bar">
+    <div class="ki-page-bar__left">
+      <div class="ki-page-bar__title-row">
+        <h1 v-if="title" class="ki-page-bar__title">{{ title }}</h1>
+        <slot name="meta" />
+      </div>
+      <p v-if="subtitle" class="ki-page-bar__sub">{{ subtitle }}</p>
+    </div>
+    <div class="ki-page-bar__actions">
+      <slot name="actions" />
       <el-button
-        text
-        circle
-        aria-label="刷新当前页面"
+        v-if="refresh"
         :loading="refreshing || running"
+        aria-label="刷新当前页面"
         @click="runRefresh"
       >
-        <RefreshCw v-if="!(refreshing || running)" :size="15" />
+        <RefreshCw v-if="!(refreshing || running)" :size="14" class="ki-btn-ico" />
+        刷新
       </el-button>
-    </el-tooltip>
-  </Teleport>
+    </div>
+  </header>
 </template>
+
+<style scoped>
+.ki-btn-ico {
+  margin-right: 4px;
+}
+</style>

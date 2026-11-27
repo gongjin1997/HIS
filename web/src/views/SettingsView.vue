@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   KeyRound,
   RefreshCw,
@@ -12,11 +13,12 @@ import {
   Download,
   Trash2,
   Send,
-  Database,
+  ArrowRight,
+  Server,
 } from 'lucide-vue-next'
 import { apiDownload, apiRequest, apiRequestText } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
-import { useWorkspaceStore } from '@/stores/workspace'
+import { useWorkspaceStore, type ProjectItem } from '@/stores/workspace'
 import { useKiFormat } from '@/composables/useKiFormat'
 import PageHeader from '@/components/PageHeader.vue'
 import KiMonoText from '@/components/ki/KiMonoText.vue'
@@ -24,6 +26,7 @@ import KiStatusBadge from '@/components/ki/KiStatusBadge.vue'
 import KiSecretInput from '@/components/ki/KiSecretInput.vue'
 import KiDangerConfirmModal from '@/components/domain/KiDangerConfirmModal.vue'
 
+const router = useRouter()
 const auth = useAuthStore()
 const ws = useWorkspaceStore()
 const { formatAbsTime } = useKiFormat()
@@ -33,6 +36,7 @@ const loading = ref(false)
 
 // Tab 1: Project & Appearance
 const newProj = reactive({ name: '', description: '' })
+const deleteProjModal = reactive({ open: false, project: null as ProjectItem | null, loading: false })
 
 // Tab 2: Credentials Vault & KEK
 const credentials = ref<Array<Record<string, unknown>>>([])
@@ -59,18 +63,11 @@ const newUser = reactive({ username: '', displayName: '', password: '', role: 'o
 const tokName = ref('ci-deployer')
 const issuedToken = ref('')
 
-// Tab 5: GitOps, Support Bundle & CMDB Sync
+// Tab 5: GitOps & Support Bundle
 const gitopsYaml = ref('')
 const gitopsDiffEntries = ref<Array<Record<string, unknown>>>([])
 const gitopsExitCode = ref<number | null>(null)
 const downloadingBundle = ref(false)
-const cmdbPayload = ref(JSON.stringify({
-  source: 'external-cmdb',
-  hosts: [
-    { externalId: 'cmdb-001', name: 'sync-node-01', address: '10.20.9.11', faultZone: 'az-1' },
-  ],
-}, null, 2))
-const cmdbSyncResult = ref('')
 
 async function loadGovernance() {
   if (!ws.currentProjectId) return
@@ -92,15 +89,46 @@ async function loadGovernance() {
 }
 
 async function createProject() {
-  if (!newProj.name.trim()) return
+  if (!newProj.name.trim()) {
+    ElMessage.warning('请输入项目标识名称')
+    return
+  }
   try {
     await apiRequest('POST', '/api/v1/projects', { body: { ...newProj }, idempotent: true })
-    ElMessage.success('项目已创建')
+    ElMessage.success('交付项目已创建')
     newProj.name = ''
     newProj.description = ''
     await ws.loadProjects()
   } catch (e) {
     ElMessage.error(String(e))
+  }
+}
+
+function openDeleteProject(proj: ProjectItem) {
+  if (ws.projects.length <= 1) {
+    ElMessage.warning('系统至少需要保留一个交付项目')
+    return
+  }
+  deleteProjModal.project = proj
+  deleteProjModal.open = true
+}
+
+async function confirmDeleteProject() {
+  if (!deleteProjModal.project) return
+  deleteProjModal.loading = true
+  try {
+    await apiRequest('DELETE', `/api/v1/projects/${deleteProjModal.project.id}`)
+    ElMessage.success(`项目 ${deleteProjModal.project.name} 已删除`)
+    deleteProjModal.open = false
+    const deletedId = deleteProjModal.project.id
+    await ws.loadProjects()
+    if (ws.currentProjectId === deletedId && ws.projects.length > 0) {
+      ws.currentProjectId = ws.projects[0].id
+    }
+  } catch (e) {
+    ElMessage.error(String(e))
+  } finally {
+    deleteProjModal.loading = false
   }
 }
 
@@ -162,7 +190,10 @@ async function rewrapSecrets() {
 }
 
 async function createChannel() {
-  if (!newChan.name.trim()) return
+  if (!newChan.name.trim()) {
+    ElMessage.warning('请输入通知通道名称')
+    return
+  }
   try {
     await apiRequest('POST', `/api/v1/projects/${ws.currentProjectId}/notification-channels`, {
       body: {
@@ -179,6 +210,21 @@ async function createChannel() {
     await loadGovernance()
   } catch (e) {
     ElMessage.error(String(e))
+  }
+}
+
+async function deleteChannel(row: Record<string, unknown>) {
+  try {
+    await ElMessageBox.confirm(`确认删除通知通道「${row.name}」吗？`, '删除通知通道', {
+      type: 'warning',
+      confirmButtonText: '确认删除',
+      cancelButtonText: '取消',
+    })
+    await apiRequest('DELETE', `/api/v1/projects/${ws.currentProjectId}/notification-channels/${row.id}`)
+    ElMessage.success(`已删除通知通道 ${row.name}`)
+    await loadGovernance()
+  } catch (e) {
+    if (e !== 'cancel' && String(e) !== 'cancel') ElMessage.error(String(e))
   }
 }
 
@@ -288,28 +334,18 @@ async function downloadSupportBundle() {
   }
 }
 
-async function syncExternalCMDB() {
-  try {
-    const parsed = JSON.parse(cmdbPayload.value) as Record<string, unknown>
-    const { data } = await apiRequest<Record<string, unknown>>(
-      'POST',
-      `/api/v1/projects/${ws.currentProjectId}/cmdb:sync`,
-      { body: parsed, idempotent: true }
-    )
-    cmdbSyncResult.value = JSON.stringify(data, null, 2)
-    ElMessage.success('外部 CMDB 资产同步已完成')
-  } catch (e) {
-    ElMessage.error(String(e))
-  }
-}
-
 watch(() => ws.currentProjectId, loadGovernance)
 onMounted(loadGovernance)
 </script>
 
 <template>
   <div>
-    <PageHeader title="平台设置" :refresh="loadGovernance" :refreshing="loading" />
+    <PageHeader
+      title="平台设置"
+      subtitle="交付项目生命周期、信封加密凭据保险库、通知防风暴、用户权限与 GitOps 治理"
+      :refresh="loadGovernance"
+      :refreshing="loading"
+    />
 
     <div class="ki-card">
       <el-tabs v-model="activeTab">
@@ -319,12 +355,53 @@ onMounted(loadGovernance)
             <div class="ki-surface panel-box">
               <div class="section-title">新建交付项目</div>
               <el-form label-position="top">
-                <el-form-item label="项目标识"><el-input v-model="newProj.name" placeholder="his-prod" class="ki-mono" /></el-form-item>
-                <el-form-item label="项目说明"><el-input v-model="newProj.description" placeholder="核心生产集群" /></el-form-item>
+                <div class="ki-grid-2">
+                  <el-form-item label="项目标识"><el-input v-model="newProj.name" placeholder="his-prod" class="ki-mono" /></el-form-item>
+                  <el-form-item label="项目说明"><el-input v-model="newProj.description" placeholder="核心生产集群" /></el-form-item>
+                </div>
                 <el-button type="primary" @click="createProject">
                   <FolderPlus :size="14" class="btn-ico" /> 创建项目
                 </el-button>
               </el-form>
+
+              <div class="proj-list-block">
+                <div class="section-title">已创建交付项目 ({{ ws.projects.length }})</div>
+                <el-table :data="ws.projects" size="small">
+                  <el-table-column label="项目名称" min-width="130">
+                    <template #default="{ row }">
+                      <div class="ki-flex-row">
+                        <b class="ki-mono">{{ row.name }}</b>
+                        <KiStatusBadge v-if="row.id === ws.currentProjectId" status="ok" label="当前" />
+                      </div>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="description" label="说明" min-width="120" show-overflow-tooltip>
+                    <template #default="{ row }">{{ row.description || '—' }}</template>
+                  </el-table-column>
+                  <el-table-column label="操作" width="110" align="right">
+                    <template #default="{ row }">
+                      <el-button
+                        v-if="row.id !== ws.currentProjectId"
+                        link
+                        type="primary"
+                        size="small"
+                        @click="ws.currentProjectId = row.id"
+                      >
+                        切换
+                      </el-button>
+                      <el-button
+                        link
+                        type="danger"
+                        size="small"
+                        :disabled="ws.projects.length <= 1"
+                        @click="openDeleteProject(row)"
+                      >
+                        删除
+                      </el-button>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
             </div>
 
             <div class="ki-surface panel-box">
@@ -499,6 +576,13 @@ onMounted(loadGovernance)
             <el-table-column label="状态" width="100">
               <template #default="{ row }"><KiStatusBadge :status="row.enabled ? 'ok' : 'pending'" :label="row.enabled ? '启用' : '停用'" /></template>
             </el-table-column>
+            <el-table-column label="操作" width="90" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="danger" @click="deleteChannel(row)">
+                  <Trash2 :size="13" class="btn-ico" /> 删除
+                </el-button>
+              </template>
+            </el-table-column>
             <template #empty><el-empty description="尚未配置通知通道" :image-size="60" /></template>
           </el-table>
         </el-tab-pane>
@@ -555,8 +639,8 @@ onMounted(loadGovernance)
           </div>
         </el-tab-pane>
 
-        <!-- Tab 5: GitOps · 诊断包 · CMDB 同步 -->
-        <el-tab-pane label="GitOps · 诊断包 · CMDB" name="ops">
+        <!-- Tab 5: GitOps 与诊断工具 -->
+        <el-tab-pane label="GitOps 与诊断工具" name="ops">
           <div class="ki-grid-2">
             <div class="ki-surface panel-box">
               <div class="table-heading">
@@ -586,14 +670,13 @@ onMounted(loadGovernance)
               </div>
 
               <div class="ki-surface panel-box">
-                <div class="table-heading">
-                  <span class="section-title no-mb">外部 CMDB 资产同步</span>
-                  <el-button size="small" @click="syncExternalCMDB">
-                    <Database :size="13" class="btn-ico" /> 推送同步
-                  </el-button>
-                </div>
-                <el-input v-model="cmdbPayload" type="textarea" :rows="5" class="ki-mono" />
-                <pre v-if="cmdbSyncResult" class="ki-mono cmdb-out ki-mt-3">{{ cmdbSyncResult }}</pre>
+                <div class="section-title">CMDB 外部数据源同步</div>
+                <p class="ki-secondary settings-desc">
+                  华为云 HCS / OpenStack / Ansible / Excel-CSV 批量资产导入、动态分组与外部 CMDB 同步源已统一整合至「CMDB 资产中心」。
+                </p>
+                <el-button @click="router.push('/hosts')">
+                  <Server :size="14" class="btn-ico" /> 前往 CMDB 资产中心 <ArrowRight :size="14" class="btn-ico-right" />
+                </el-button>
               </div>
             </div>
           </div>
@@ -632,6 +715,17 @@ onMounted(loadGovernance)
       :loading="deleteCredModal.loading"
       @confirm="confirmDeleteCred"
     />
+
+    <KiDangerConfirmModal
+      v-model="deleteProjModal.open"
+      :env="ws.currentEnv"
+      title="确认删除交付项目"
+      :resource-name="String(deleteProjModal.project?.name || '')"
+      risk-summary="删除项目前请确保已清理项目下关联的主机与实例；该操作不可撤销并记入双哈希审计链。"
+      confirm-label="确认删除项目"
+      :loading="deleteProjModal.loading"
+      @confirm="confirmDeleteProject"
+    />
   </div>
 </template>
 
@@ -640,8 +734,18 @@ onMounted(loadGovernance)
   margin-right: 4px;
 }
 
+.btn-ico-right {
+  margin-left: 4px;
+}
+
 .panel-box {
   padding: 16px 18px;
+}
+
+.proj-list-block {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ki-border-subtle);
 }
 
 .no-mb {
@@ -671,15 +775,5 @@ onMounted(loadGovernance)
   border: 1px solid var(--ki-status-ok-border);
   color: var(--ki-status-ok-text);
   word-break: break-all;
-}
-
-.cmdb-out {
-  margin: 0;
-  padding: 10px;
-  border-radius: var(--ki-radius-sm);
-  background-color: var(--ki-bg-subtle);
-  color: var(--ki-text-secondary);
-  font-size: var(--ki-fs-xs);
-  overflow: auto;
 }
 </style>

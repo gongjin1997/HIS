@@ -341,6 +341,7 @@ type ApprovalRepo interface {
 	Get(ctx context.Context, opID string) (*domain.Approval, error)
 	ListPending(ctx context.Context, projectID string) ([]domain.Approval, error)
 	Decide(ctx context.Context, opID, decidedBy string, approve bool, note string) error
+	Cancel(ctx context.Context, opID, note string) error
 }
 
 type MediaPolicyRepo interface {
@@ -389,6 +390,7 @@ type StateBackupRepo interface {
 type NotificationRepo interface {
 	CreateChannel(ctx context.Context, ch *domain.NotificationChannel) error
 	ListChannels(ctx context.Context, projectID string) ([]domain.NotificationChannel, error)
+	DeleteChannel(ctx context.Context, id string) error
 	UpsertDelivery(ctx context.Context, d *domain.NotificationDelivery) (folded bool, err error)
 	MarkDelivery(ctx context.Context, id, status, lastErr string) error
 }

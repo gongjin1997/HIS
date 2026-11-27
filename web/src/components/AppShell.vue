@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, provide, ref, useTemplateRef } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   Bell,
@@ -20,8 +20,6 @@ import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useShortcuts } from '@/composables/useShortcuts'
 import { ALL_MENU_ITEMS, GROUP_OF_PATH, MENU_GROUPS, TITLE_OF_PATH } from '@/config/menu'
-import { pageHeaderTargetKey } from '@/components/PageHeader.vue'
-import WorkspaceNav from '@/components/WorkspaceNav.vue'
 import KiBrandLogo from '@/components/ki/KiBrandLogo.vue'
 import KiCommandPalette, { type CommandItem } from '@/components/ki/KiCommandPalette.vue'
 
@@ -32,8 +30,6 @@ const ws = useWorkspaceStore()
 
 const showCmdK = ref(false)
 const showHelp = ref(false)
-const pageHeaderTarget = useTemplateRef<HTMLElement>('pageHeaderTarget')
-provide(pageHeaderTargetKey, pageHeaderTarget)
 
 const currentGroup = computed(() => GROUP_OF_PATH[route.path] || '交付总览')
 const currentTitle = computed(() => TITLE_OF_PATH[route.path] || (route.meta.title as string) || '总览驾驶舱')
@@ -77,6 +73,7 @@ function onCommandSelect(item: CommandItem) {
 function onProjectSelect(id: string) {
   ws.currentProjectId = id
   void ws.refreshApprovalBadge()
+  void ws.refreshOfflineMode()
 }
 
 function onEnvSelect(env: 'prod' | 'staging' | 'dev' | 'sandbox') {
@@ -95,7 +92,7 @@ function onUserCommand(cmd: string) {
 
 onMounted(async () => {
   await ws.loadProjects()
-  await ws.refreshApprovalBadge()
+  await Promise.all([ws.refreshApprovalBadge(), ws.refreshOfflineMode()])
 })
 </script>
 
@@ -193,8 +190,6 @@ onMounted(async () => {
           </button>
 
           <div class="ki-toolbar-right">
-            <div ref="pageHeaderTarget" class="ki-refresh-host" />
-
             <!-- 项目上下文 -->
             <el-dropdown trigger="click" @command="onProjectSelect">
               <div class="ki-scope-pill">
@@ -226,7 +221,7 @@ onMounted(async () => {
               </div>
               <template #dropdown>
                 <el-dropdown-menu>
-                  <div class="ki-dd-header">目标环境上下文</div>
+                  <div class="ki-dd-header">默认交付环境上下文</div>
                   <el-dropdown-item command="prod">PROD 生产环境</el-dropdown-item>
                   <el-dropdown-item command="staging">STAGING 预发环境</el-dropdown-item>
                   <el-dropdown-item command="dev">DEV 开发环境</el-dropdown-item>
@@ -235,11 +230,19 @@ onMounted(async () => {
               </template>
             </el-dropdown>
 
-            <el-tooltip content="离线严格模式：零外网 CDN，介质与更新锁定内网" placement="bottom">
-              <span class="ki-live-pill">
-                <i class="ki-live-dot ki-dot-pulse" />
-                离线就绪
-              </span>
+            <el-tooltip
+              :content="ws.offlineStrict ? '当前项目已开启物理离线锁定（点击配置介质策略）' : '当前项目允许在线上游源（点击配置介质策略）'"
+              placement="bottom"
+            >
+              <button
+                type="button"
+                class="ki-live-pill"
+                :class="{ 'ki-live-pill--online': !ws.offlineStrict }"
+                @click="router.push('/artifacts/media-policies')"
+              >
+                <i class="ki-live-dot" :class="{ 'ki-dot-pulse': ws.offlineStrict }" />
+                {{ ws.offlineStrict ? '离线锁定' : '在线可用' }}
+              </button>
             </el-tooltip>
 
             <span class="ki-toolbar-sep" aria-hidden="true" />
@@ -295,7 +298,6 @@ onMounted(async () => {
 
       <el-main class="ki-content">
         <div class="ki-content-inner">
-          <WorkspaceNav />
           <router-view v-slot="{ Component }">
             <transition name="fade" mode="out-in">
               <component :is="Component" :key="`${ws.currentProjectId}:${route.path}`" />
@@ -656,17 +658,29 @@ onMounted(async () => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: var(--ki-radius-pill);
+  border: 1px solid var(--ki-status-ok-border);
+  background-color: var(--ki-status-ok-subtle);
   font-size: var(--ki-fs-xs);
+  font-weight: var(--ki-fw-medium);
   color: var(--ki-status-ok-text);
   white-space: nowrap;
+  cursor: pointer;
+}
+
+.ki-live-pill--online {
+  border-color: var(--ki-status-warn-border);
+  background-color: var(--ki-status-warn-subtle);
+  color: var(--ki-status-warn-text);
 }
 
 .ki-live-dot {
   width: 7px;
   height: 7px;
   border-radius: var(--ki-radius-pill);
-  background-color: var(--ki-status-ok);
-  box-shadow: var(--ki-live-halo);
+  background-color: currentcolor;
 }
 
 .ki-bell {

@@ -324,12 +324,11 @@ async function runBulkImport(dryRun: boolean) {
       </el-radio-group>
       <div class="ki-flex-row">
         <el-button size="small" @click="fillSample">填入示例 CSV</el-button>
-        <label class="file-upload-btn">
+        <label class="ki-upload-btn ki-upload-btn--sm">
           <Upload :size="13" /> 上传文件
           <input
             type="file"
             accept=".xlsx,.csv,.yaml,.yml,.json,.ini,.hosts"
-            class="hidden-file"
             @change="onImportFileSelected"
           />
         </label>
