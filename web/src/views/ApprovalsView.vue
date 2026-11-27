@@ -5,8 +5,13 @@ import { ShieldAlert, Check, X } from 'lucide-vue-next'
 import { apiRequest } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceStore } from '@/stores/workspace'
-import KiEnvBadge from '@/components/KiEnvBadge.vue'
-import KiStatusBadge from '@/components/KiStatusBadge.vue'
+import { useKiFormat } from '@/composables/useKiFormat'
+import PageHeader from '@/components/PageHeader.vue'
+import KiEnvBadge from '@/components/ki/KiEnvBadge.vue'
+import KiStatusBadge from '@/components/ki/KiStatusBadge.vue'
+import KiMonoText from '@/components/ki/KiMonoText.vue'
+import KiEmptyState from '@/components/ki/KiEmptyState.vue'
+import KiBanner from '@/components/ki/KiBanner.vue'
 
 interface ApprovalItem {
   operationId: string
@@ -19,17 +24,25 @@ interface ApprovalItem {
 
 const auth = useAuthStore()
 const ws = useWorkspaceStore()
+const { formatAbsTime } = useKiFormat()
+
+const loading = ref(false)
 const approvals = ref<ApprovalItem[]>([])
 const noteMap = ref<Record<string, string>>({})
 
 async function loadApprovals() {
   if (!ws.currentProjectId) return
-  const { data } = await apiRequest<{ items: ApprovalItem[] }>(
-    'GET',
-    `/api/v1/projects/${ws.currentProjectId}/approvals`
-  )
-  approvals.value = data.items || []
-  await ws.refreshApprovalBadge()
+  loading.value = true
+  try {
+    const { data } = await apiRequest<{ items: ApprovalItem[] }>(
+      'GET',
+      `/api/v1/projects/${ws.currentProjectId}/approvals`
+    )
+    approvals.value = data.items || []
+    await ws.refreshApprovalBadge()
+  } finally {
+    loading.value = false
+  }
 }
 
 async function decide(opId: string, approve: boolean) {
@@ -51,60 +64,103 @@ onMounted(loadApprovals)
 </script>
 
 <template>
-  <div>
-    <div class="ki-page-header">
-      <div>
-        <h1 class="ki-page-title">四眼审批工作台 (Four-Eyes Approval)</h1>
-        <div class="ki-muted" style="font-size: 12px">高危/生产变更强制双人复核，前端 + 服务层 + 数据库 chk_no_self_approval 三重防自审 (ADR-037)</div>
-      </div>
-      <el-button @click="loadApprovals">刷新待审队列</el-button>
+  <div v-loading="loading">
+    <PageHeader title="四眼审批台" :refresh="loadApprovals" :refreshing="loading" />
+
+    <KiBanner
+      variant="info"
+      text="高危与生产环境变更强制双人复核，前端 + 服务层 + 数据库 chk_no_self_approval 约束三重防止自审 (ADR-037)。"
+      class="ki-mb-4"
+    />
+
+    <div v-if="approvals.length === 0" class="ki-card">
+      <KiEmptyState
+        variant="first-run"
+        title="当前项目暂无待审批变更"
+        description="当生产环境实例提交 Apply 或强行覆盖配置漂移时，待复核工单将自动出现在此处。"
+      />
     </div>
 
-    <div v-if="approvals.length === 0" class="ki-panel" style="text-align: center; padding: 48px">
-      <div class="ki-secondary">当前项目暂无待审批变更</div>
-    </div>
-
-    <div v-for="ap in approvals" :key="ap.operationId" class="ki-panel" style="margin-bottom: 12px">
-      <div class="ki-flex-between" style="margin-bottom: 10px">
+    <div v-for="ap in approvals" :key="ap.operationId" class="ki-card ki-mb-3 approval-card">
+      <div class="ki-card__title">
         <div class="ki-flex-row">
           <KiEnvBadge :env="ap.envName" />
-          <span class="ki-mono" style="font-weight: 600">{{ ap.operationId }}</span>
+          <KiMonoText :value="ap.operationId" :head="14" :tail="6" />
           <KiStatusBadge :status="ap.status" />
         </div>
-        <span class="ki-muted ki-mono" style="font-size: 12px">发起人: {{ ap.requestedBy }}</span>
+        <span class="ki-muted ki-mono ap-meta">
+          发起人：{{ ap.requestedBy }} · 过期：{{ formatAbsTime(ap.expiresAt) }}
+        </span>
       </div>
 
-      <div style="margin-bottom: 12px">{{ ap.reason }}</div>
+      <p class="ap-reason">{{ ap.reason }}</p>
 
-      <div
-        v-if="auth.user && ap.requestedBy === auth.user.id"
-        class="ki-flex-row"
-        style="padding: 8px 12px; margin-bottom: 10px; border-radius: 4px; background: var(--ki-status-warn-subtle); color: var(--ki-status-warn-text); font-size: 12px"
-      >
-        <ShieldAlert :size="14" />
+      <div v-if="auth.user && ap.requestedBy === auth.user.id" class="self-guard ki-mb-3">
+        <ShieldAlert :size="15" aria-hidden="true" />
         <span>遵循四眼原则 (ADR-037)：当前登录用户为发起人，物理禁止审批自己的高危变更，请由另一位具备审批权限的成员复核。</span>
       </div>
 
-      <div class="ki-flex-row">
-        <el-input v-model="noteMap[ap.operationId]" placeholder="审批意见（可选）" style="max-width: 360px" />
+      <div class="ki-flex-row ki-flex-wrap">
+        <el-input v-model="noteMap[ap.operationId]" placeholder="填写审批复核意见（可选）" class="ap-note" />
         <el-tooltip
           :disabled="!(auth.user && ap.requestedBy === auth.user.id)"
           content="遵循四眼原则（ADR-037），发起人不可审批自己的请求"
         >
           <span>
             <el-button
+              v-if="auth.can('operation:approve', ws.currentProjectId)"
               type="primary"
               :disabled="Boolean(auth.user && ap.requestedBy === auth.user.id)"
               @click="decide(ap.operationId, true)"
             >
-              <Check :size="14" style="margin-right: 4px" /> 批准执行
+              <Check :size="14" class="btn-ico" /> 批准执行
             </el-button>
           </span>
         </el-tooltip>
-        <el-button type="danger" plain @click="decide(ap.operationId, false)">
-          <X :size="14" style="margin-right: 4px" /> 驳回
+        <el-button
+          v-if="auth.can('operation:approve', ws.currentProjectId)"
+          type="danger"
+          plain
+          @click="decide(ap.operationId, false)"
+        >
+          <X :size="14" class="btn-ico" /> 驳回
         </el-button>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.approval-card {
+  border-left: 4px solid var(--ki-status-warn);
+}
+
+.ap-meta {
+  font-size: var(--ki-fs-xs);
+}
+
+.ap-reason {
+  margin: 0 0 12px;
+  color: var(--ki-text-primary);
+}
+
+.self-guard {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--ki-radius-sm);
+  background-color: var(--ki-status-warn-subtle);
+  border: 1px solid var(--ki-status-warn-border);
+  color: var(--ki-status-warn-text);
+  font-size: var(--ki-fs-xs);
+}
+
+.ap-note {
+  max-width: 360px;
+}
+
+.btn-ico {
+  margin-right: 4px;
+}
+</style>

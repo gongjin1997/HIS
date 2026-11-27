@@ -6,6 +6,39 @@ export interface OperationEventFrame {
   data: Record<string, unknown>
 }
 
+export function parseSSEBlock(
+  rawBlock: string,
+  lastEventId: number
+): { frame: OperationEventFrame | null; nextLastEventId: number; terminal: boolean } {
+  if (!rawBlock.trim() || rawBlock.startsWith(':')) {
+    return { frame: null, nextLastEventId: lastEventId, terminal: false }
+  }
+  let id = 0
+  let event = 'message'
+  const dataLines: string[] = []
+  for (const line of rawBlock.split('\n')) {
+    if (line.startsWith('id:')) id = Number(line.slice(3).trim()) || 0
+    else if (line.startsWith('event:')) event = line.slice(6).trim()
+    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart())
+  }
+  if (event !== 'operation.done' && id > 0 && id <= lastEventId) {
+    return { frame: null, nextLastEventId: lastEventId, terminal: false }
+  }
+  const nextLastEventId = id > 0 ? id : lastEventId
+  const payload = dataLines.join('\n')
+  let data: Record<string, unknown>
+  try {
+    data = payload ? (JSON.parse(payload) as Record<string, unknown>) : {}
+  } catch {
+    data = { raw: payload }
+  }
+  return {
+    frame: { id, event, data },
+    nextLastEventId,
+    terminal: event === 'operation.done',
+  }
+}
+
 /**
  * Lossless SSE client over native fetch ReadableStream (WEB_DESIGN §4.3 A, G1 §3.2):
  * - Supports Authorization Bearer header + Same-Origin Cookie

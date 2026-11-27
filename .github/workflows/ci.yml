@@ -27,8 +27,10 @@ jobs:
       - name: Dependency blacklist check (Redline 5)
         run: |
           ! grep -rn "openapi-typescript-codegen" web/package.json || (echo "CVE-2026-108551 forbidden"; exit 1)
+          ! grep -rnE '"(tailwindcss|unocss)"' web/package.json || (echo "Tailwind/UnoCSS forbidden"; exit 1)
           ! grep -rn "tjfoc/gmsm" go.mod || (echo "tjfoc/gmsm forbidden"; exit 1)
           ! grep -rn "mattn/go-sqlite3" go.mod || (echo "CGO sqlite forbidden"; exit 1)
+          ! grep -rn "gorm.io/" go.mod || (echo "GORM forbidden"; exit 1)
 
   test-and-build:
     runs-on: ubuntu-24.04
@@ -37,12 +39,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27.4"
-      - name: Unit & Golden Tests (-race)
+      - name: Unit, Chaos, Scale & Contract Tests (-race)
         run: go test -race -count=1 ./...
-      - name: Cross-Build Static Binaries (CGO_ENABLED=0)
+      - name: Cross-Build Static Binaries (CGO_ENABLED=0 + noui)
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o bin/kinstall-linux-amd64 ./cmd/kinstall
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o bin/kinstall-linux-arm64 ./cmd/kinstall
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags=noui -trimpath -o bin/kinstall-noui ./cmd/kinstall
           ls -lh bin/
 
   web-ci:
@@ -52,10 +55,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Build & Verify Offline Web UI (Zero External CDN)
+      - name: OpenAPI Codegen, Design System Gates, Unit Tests & Offline Build
         working-directory: web
         run: |
-          npm install
+          npm ci --ignore-scripts 2>/dev/null || npm install
+          npm run openapi-ts
+          npm run lint:css
+          npm run contrast-check
+          npm run tokens:export
+          npm run test
           npm run typecheck
           npm run build
           ! grep -rnE 'https?://(cdn\.|fonts\.googleapis|unpkg\.com|jsdelivr\.net)' dist/ || (echo "External CDN forbidden"; exit 1)

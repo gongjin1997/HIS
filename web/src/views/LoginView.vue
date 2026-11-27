@@ -1,39 +1,49 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Lock, ShieldCheck, KeyRound } from 'lucide-vue-next'
+import { Lock, User, KeyRound } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { APIError } from '@/api/client'
+import { APIError, type ProblemDetail } from '@/api/client'
+import KiProblemBanner from '@/components/domain/KiProblemBanner.vue'
 
+const LAST_USER_KEY = 'ki.last_user'
 const router = useRouter()
 const auth = useAuthStore()
 const ws = useWorkspaceStore()
 
-const username = ref('admin')
-const password = ref('')
+const form = reactive({
+  username: localStorage.getItem(LAST_USER_KEY) || 'admin',
+  password: '',
+  remember: true,
+})
 const loading = ref(false)
-const errMsg = ref('')
-const errCode = ref('')
-const suggestion = ref('')
+const problem = ref<ProblemDetail | null>(null)
+
+function fillDefault() {
+  form.username = 'admin'
+  form.password = 'Kinstall#2026!'
+}
 
 async function onSubmit() {
+  if (loading.value) return
+  if (!form.username.trim() || !form.password) {
+    problem.value = { code: 'KI-AUTH-0001', title: '请输入账号和密码' }
+    return
+  }
   loading.value = true
-  errMsg.value = ''
-  errCode.value = ''
-  suggestion.value = ''
+  problem.value = null
   try {
-    await auth.loginLocal(username.value.trim(), password.value)
+    await auth.loginLocal(form.username.trim(), form.password)
+    if (form.remember) localStorage.setItem(LAST_USER_KEY, form.username.trim())
     await ws.loadProjects()
     await ws.refreshApprovalBadge()
-    await router.push('/dashboard')
+    await router.replace('/dashboard')
   } catch (e) {
     if (e instanceof APIError) {
-      errMsg.value = e.message
-      errCode.value = e.code
-      suggestion.value = e.suggestion
+      problem.value = e.problem
     } else {
-      errMsg.value = String(e)
+      problem.value = { code: 'KI-AUTH-0001', title: '登录失败', detail: String(e) }
     }
   } finally {
     loading.value = false
@@ -42,43 +52,192 @@ async function onSubmit() {
 </script>
 
 <template>
-  <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--ki-bg-canvas); padding: 24px">
-    <div class="ki-panel" style="width: 420px; padding: 28px">
-      <div class="ki-flex-row" style="margin-bottom: 18px">
-        <ShieldCheck :size="24" style="color: var(--ki-brand)" />
+  <div class="ki-login">
+    <div class="ki-login-bg" aria-hidden="true" />
+    <div class="ki-login-card">
+      <div class="ki-login-brand">
+        <span class="ki-login-emblem" aria-hidden="true">
+          <svg viewBox="0 0 32 32" width="40" height="40">
+            <rect width="32" height="32" rx="9" fill="currentColor" />
+            <path d="M16 6l8 3v6c0 5-3.4 9.3-8 11-4.6-1.7-8-6-8-11V9z" fill="none" stroke="var(--ki-text-on-solid)" stroke-width="2" />
+            <path d="M12 16l3 3 5-6" fill="none" stroke="var(--ki-text-on-solid)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </span>
         <div>
-          <h1 style="font-size: 18px">kinstall 控制平面</h1>
-          <div class="ki-muted" style="font-size: 12px">企业离线基础设施自动化交付平台</div>
+          <h1>kinstall 交付平台</h1>
+          <p class="ki-login-sub">企业离线基础设施与全栈中间件控制台</p>
         </div>
       </div>
 
-      <div
-        v-if="errMsg"
-        style="padding: 10px 12px; margin-bottom: 14px; border-radius: 4px; background: var(--ki-status-danger-subtle); color: var(--ki-status-danger-text); font-size: 12.5px"
-      >
-        <div class="ki-mono" style="font-weight: 600">{{ errCode }} · {{ errMsg }}</div>
-        <div v-if="suggestion" style="margin-top: 4px; opacity: 0.9">{{ suggestion }}</div>
-      </div>
+      <KiProblemBanner v-if="problem" :problem="problem" compact class="ki-mb-3" />
 
-      <el-form label-position="top" @submit.prevent="onSubmit">
-        <el-form-item label="用户名">
-          <el-input v-model="username" placeholder="admin" class="ki-mono" />
+      <el-form size="large" class="ki-login-form" @submit.prevent="onSubmit">
+        <el-form-item>
+          <el-input
+            v-model="form.username"
+            placeholder="运维账号"
+            autocomplete="username"
+          >
+            <template #prefix><User :size="15" class="ki-muted" /></template>
+          </el-input>
         </el-form-item>
-        <el-form-item label="密码 (Argon2id · 5次失败锁定15分钟)">
-          <el-input v-model="password" type="password" show-password placeholder="请输入登录密码" />
+        <el-form-item>
+          <el-input
+            v-model="form.password"
+            type="password"
+            placeholder="登录密码"
+            show-password
+            autocomplete="current-password"
+          >
+            <template #prefix><Lock :size="15" class="ki-muted" /></template>
+          </el-input>
         </el-form-item>
-        <el-button type="primary" native-type="submit" :loading="loading" style="width: 100%; margin-top: 4px">
-          <Lock :size="14" style="margin-right: 6px" />
-          本地安全登录
+
+        <div class="ki-login-row">
+          <el-checkbox v-model="form.remember">记住登录账号</el-checkbox>
+          <el-tooltip content="Argon2id 加密校验，连续 5 次失败自动锁定 15 分钟" placement="top">
+            <span class="ki-login-help">安全策略说明</span>
+          </el-tooltip>
+        </div>
+
+        <el-button type="primary" native-type="submit" class="ki-login-submit" :loading="loading">
+          登 录
         </el-button>
       </el-form>
 
-      <div style="margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--ki-border-subtle)">
-        <el-button plain disabled style="width: 100%">
-          <KeyRound :size="14" style="margin-right: 6px" />
-          企业 OIDC / PKCE 单点登录（按需在服务端配置）
+      <div class="ki-login-oidc">
+        <el-button plain disabled class="ki-w-full">
+          <KeyRound :size="14" class="ki-oidc-icon" />
+          企业 OIDC / PKCE 单点登录（服务端配置后启用）
         </el-button>
       </div>
+
+      <button type="button" class="ki-login-hint" @click="fillDefault">
+        <span class="ki-muted">初始管理员：</span>
+        <b class="ki-mono">admin / Kinstall#2026!</b>
+        <em class="ki-muted">点击填充</em>
+      </button>
     </div>
   </div>
 </template>
+
+<style scoped>
+.ki-login {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--ki-bg-canvas);
+  overflow: hidden;
+  padding: var(--ki-space-4);
+}
+
+.ki-login-bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: var(--ki-login-radials);
+}
+
+.ki-login-bg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0.55;
+  background: var(--ki-login-grid-bg);
+  background-size: 36px 36px;
+}
+
+.ki-login-card {
+  position: relative;
+  width: min(408px, calc(100vw - 32px));
+  padding: 36px 36px 24px;
+  background-color: var(--ki-bg-surface);
+  border: 1px solid var(--ki-border-default);
+  border-radius: var(--ki-radius-xl);
+  box-shadow: var(--ki-shadow-modal);
+}
+
+.ki-login-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 26px;
+}
+
+.ki-login-emblem {
+  display: inline-flex;
+  color: var(--ki-brand);
+  flex: none;
+}
+
+.ki-login-brand h1 {
+  font-size: 20px;
+  font-weight: var(--ki-fw-bold);
+  color: var(--ki-text-primary);
+}
+
+.ki-login-sub {
+  margin: 3px 0 0;
+  font-size: var(--ki-fs-xs);
+  color: var(--ki-text-muted);
+}
+
+.ki-login-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: -4px 0 18px;
+}
+
+.ki-login-help {
+  font-size: var(--ki-fs-xs);
+  color: var(--ki-text-muted);
+  cursor: help;
+}
+
+.ki-login-help:hover {
+  color: var(--ki-brand);
+}
+
+.ki-login-submit {
+  width: 100%;
+  height: 42px;
+  font-size: var(--ki-fs-section);
+}
+
+.ki-login-oidc {
+  margin-top: 12px;
+}
+
+.ki-oidc-icon {
+  margin-right: 6px;
+}
+
+.ki-login-hint {
+  margin-top: 18px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px dashed var(--ki-border-default);
+  border-radius: var(--ki-radius-sm);
+  background-color: var(--ki-bg-subtle);
+  color: var(--ki-text-secondary);
+  font-size: var(--ki-fs-xs);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.ki-login-hint:hover {
+  border-color: var(--ki-brand-border);
+  color: var(--ki-brand);
+}
+
+.ki-login-hint em {
+  font-style: normal;
+}
+</style>

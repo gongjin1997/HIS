@@ -42,7 +42,7 @@ test-contract:
 	go test -tags=contract -v ./test/contract/...
 
 web-build:
-	cd web && npm ci --ignore-scripts 2>/dev/null || npm install && npm run build
+	cd web && (npm ci --ignore-scripts 2>/dev/null || npm install) && npm run openapi-ts && npm run lint:css && npm run contrast-check && npm run tokens:export && npm run test && npm run build
 
 build:
 	mkdir -p bin

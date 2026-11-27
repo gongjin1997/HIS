@@ -14,7 +14,7 @@
     "function-disallowed-list": ["rgb", "rgba", "hsl", "hsla"],
     "scale-unlimited/declaration-strict-value": [
       ["/color$/", "fill", "stroke", "background", "z-index", "font-family", "box-shadow"],
-      { "ignoreValues": ["transparent", "currentColor", "inherit", "none", "0", "CanvasText", "Highlight"] }
+      { "ignoreValues": ["transparent", "currentcolor", "currentColor", "inherit", "none", "0", "CanvasText", "Highlight"] }
     ],
     "declaration-property-value-disallowed-list": {
       "outline": ["none", "0"],
@@ -24,6 +24,7 @@
     "declaration-no-important": true,
     "selector-class-pattern": null,
     "no-empty-source": null,
-    "media-feature-range-notation": null
+    "media-feature-range-notation": null,
+    "custom-property-empty-line-before": null
   }
 }

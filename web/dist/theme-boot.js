@@ -1,10 +1,14 @@
-/* CSP-compliant external theme & density boot script (zero inline script, DESIGN.md §6.5) */
+/* CSP-compliant external theme & density boot script (DESIGN.md v3.0, Light-First default) */
 (function () {
   try {
     var html = document.documentElement;
-    var theme = localStorage.getItem('kinstall.theme') || 'dark';
-    var density = localStorage.getItem('kinstall.density') || 'comfortable';
-    var lang = localStorage.getItem('kinstall.lang') || 'zh-CN';
+    var rawTheme = localStorage.getItem('ki.theme') || 'light';
+    var theme = rawTheme;
+    if (rawTheme === 'system') {
+      theme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    var density = localStorage.getItem('ki.density') || 'comfortable';
+    var lang = localStorage.getItem('ki.lang') || 'zh-CN';
     html.setAttribute('data-theme', theme);
     if (theme === 'dark') {
       html.classList.add('dark');
@@ -14,6 +18,6 @@
     html.setAttribute('data-density', density);
     html.setAttribute('lang', lang);
   } catch (_) {
-    /* ignore storage errors in restricted contexts */
+    /* ignore restricted storage */
   }
 })();

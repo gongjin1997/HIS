@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Lock, HardDrive, Cloud, Globe, ArrowUp, ArrowDown, Activity } from 'lucide-vue-next'
+import { Activity, Save } from 'lucide-vue-next'
 import { apiRequest } from '@/api/client'
+import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceStore } from '@/stores/workspace'
-import KiStatusBadge from '@/components/KiStatusBadge.vue'
+import PageHeader from '@/components/PageHeader.vue'
+import KiBanner from '@/components/ki/KiBanner.vue'
+import KiMediaSourceCard, { type MediaSourceItem } from '@/components/domain/KiMediaSourceCard.vue'
 
 interface MediaSourceConfig {
   type: 'local' | 'obs' | 's3' | 'online'
@@ -28,7 +31,11 @@ interface MediaPolicyItem {
   version: number
 }
 
+const auth = useAuthStore()
 const ws = useWorkspaceStore()
+
+const loading = ref(false)
+const probing = ref(false)
 const policies = ref<MediaPolicyItem[]>([])
 const probeResult = ref<Record<string, unknown> | null>(null)
 const activeEtag = ref('')
@@ -45,6 +52,30 @@ const editor = reactive({
     { type: 'online', priority: 3, internal: false, baseUrl: 'https://releases.kinstall.io' },
   ] as MediaSourceConfig[],
 })
+
+function toCardItem(src: MediaSourceConfig): MediaSourceItem {
+  const endpoint =
+    src.type === 'local'
+      ? (src.roots || ['/var/lib/kinstall/artifacts']).join(', ')
+      : src.type === 'online'
+        ? src.baseUrl || 'https://releases.kinstall.io'
+        : `${src.endpoint || ''} / ${src.bucket || ''}`
+  const name =
+    src.type === 'local'
+      ? '本地离线制品仓库与缓存池'
+      : src.type === 'online'
+        ? '在线官方上游源（受控代理）'
+        : '对象存储桶（华为云 OBS / SeaweedFS S3）'
+  return {
+    id: src.type,
+    type: src.type,
+    name,
+    endpoint,
+    enabled: !editor.offlineStrict || src.internal || src.type === 'local',
+    probeStatus: src.type === 'local' ? 'ok' : src.type === 'online' ? 'warn' : 'ok',
+    latencyMs: src.type === 'local' ? 1 : src.type === 'obs' || src.type === 's3' ? 12 : undefined,
+  }
+}
 
 function applyVendorPreset() {
   const obs = editor.sources.find((s) => s.type === 'obs' || s.type === 's3')
@@ -64,22 +95,29 @@ function moveSource(idx: number, dir: -1 | 1) {
   if (next < 0 || next >= editor.sources.length) return
   const arr = [...editor.sources]
   ;[arr[idx], arr[next]] = [arr[next], arr[idx]]
-  arr.forEach((s, i) => { s.priority = i + 1 })
+  arr.forEach((s, i) => {
+    s.priority = i + 1
+  })
   editor.sources = arr
 }
 
 async function loadPolicies() {
   if (!ws.currentProjectId) return
-  const { data } = await apiRequest<{ items: MediaPolicyItem[] }>('GET', `/api/v1/projects/${ws.currentProjectId}/media-policies`)
-  policies.value = data.items || []
-  if (policies.value.length > 0) {
-    const p = policies.value[0]
-    activeId.value = p.id
-    activeEtag.value = `"v-${p.version}"`
-    editor.name = p.name
-    editor.offlineStrict = p.offlineStrict
-    editor.deliveryMode = p.deliveryMode
-    if (p.sources?.length) editor.sources = [...p.sources].sort((a, b) => a.priority - b.priority)
+  loading.value = true
+  try {
+    const { data } = await apiRequest<{ items: MediaPolicyItem[] }>('GET', `/api/v1/projects/${ws.currentProjectId}/media-policies`)
+    policies.value = data.items || []
+    if (policies.value.length > 0) {
+      const p = policies.value[0]
+      activeId.value = p.id
+      activeEtag.value = `"v-${p.version}"`
+      editor.name = p.name
+      editor.offlineStrict = p.offlineStrict
+      editor.deliveryMode = p.deliveryMode
+      if (p.sources?.length) editor.sources = [...p.sources].sort((a, b) => a.priority - b.priority)
+    }
+  } finally {
+    loading.value = false
   }
 }
 
@@ -116,17 +154,20 @@ async function savePolicy() {
 }
 
 async function testPolicy() {
-  if (!activeId.value) await savePolicy()
-  if (!activeId.value) return
+  probing.value = true
   try {
+    if (!activeId.value) await savePolicy()
+    if (!activeId.value) return
     const { data } = await apiRequest<Record<string, unknown>>(
       'POST',
       `/api/v1/projects/${ws.currentProjectId}/media-policies/${activeId.value}:test`
     )
     probeResult.value = data
-    ElMessage.success('连通性与权限探活完成')
+    ElMessage.success('三元介质源连通性与签名权限探测完成')
   } catch (e) {
     ElMessage.error(String(e))
+  } finally {
+    probing.value = false
   }
 }
 
@@ -135,68 +176,67 @@ onMounted(loadPolicies)
 </script>
 
 <template>
-  <div>
-    <div class="ki-page-header">
-      <div>
-        <h1 class="ki-page-title">三元制品介质源策略中心 (Local / 华为云 OBS·S3 / Online)</h1>
-        <div class="ki-muted" style="font-size: 12px">支持优先级排序、严格物理离线红线 (KI-SRC-0005)、relay-cache 与 direct-presigned 双模式 (ADR-077)</div>
-      </div>
-      <div class="ki-flex-row">
-        <el-button @click="testPolicy"><Activity :size="14" style="margin-right: 4px" /> 测试连通与权限</el-button>
-        <el-button type="primary" @click="savePolicy">保存策略</el-button>
-      </div>
-    </div>
+  <div v-loading="loading">
+    <PageHeader title="介质源策略" :refresh="loadPolicies" :refreshing="loading" />
 
-    <div
+    <KiBanner
       v-if="editor.offlineStrict"
-      class="ki-flex-row"
-      style="padding: 10px 14px; margin-bottom: 14px; border-radius: 6px; background: var(--ki-brand-subtle); border: 1px solid var(--ki-brand-border); color: var(--ki-brand-hover)"
-    >
-      <Lock :size="15" />
-      <span><strong>物理隔离保护中 (offlineStrict=true)</strong>：自动阻断所有公网 Online 源与非内网白名单对象存储桶，后端硬门禁 KI-SRC-0005 同步生效。</span>
-    </div>
+      variant="offline-lock"
+      text="严格物理离线模式 (offlineStrict=true) 已开启：自动封禁公网 Online 上游与非内网对象存储桶，后端门禁 KI-SRC-0005 同步生效。"
+      class="ki-mb-4"
+    />
 
-    <div class="ki-panel" style="margin-bottom: 16px">
-      <div class="ki-flex-between" style="flex-wrap: wrap">
+    <div class="ki-card ki-mb-4">
+      <div class="ki-card__title">
+        <span>策略全局开关与分发模式<span class="sub">支持 Alt+↑/↓ 键盘重排介质源优先级</span></span>
+        <div class="table-actions">
+          <el-button :loading="probing" @click="testPolicy">
+            <Activity :size="14" class="btn-ico" /> 探测连通与权限
+          </el-button>
+          <el-button v-if="auth.can('media:write', ws.currentProjectId)" type="primary" @click="savePolicy">
+            <Save :size="14" class="btn-ico" /> 保存策略
+          </el-button>
+        </div>
+      </div>
+
+      <div class="ki-flex-between ki-flex-wrap">
         <div class="ki-flex-row">
-          <span style="font-weight: 600">严格物理离线模式 (offlineStrict)</span>
+          <span class="ki-secondary">严格物理离线模式 (offlineStrict)：</span>
           <el-switch v-model="editor.offlineStrict" />
         </div>
         <div class="ki-flex-row">
-          <span class="ki-secondary">分发模式：</span>
+          <span class="ki-secondary">制品分发模式：</span>
           <el-radio-group v-model="editor.deliveryMode" size="small">
-            <el-radio-button value="auto">auto (智能)</el-radio-button>
-            <el-radio-button value="relay-cache">relay-cache (部署机中转)</el-radio-button>
-            <el-radio-button value="direct-presigned">direct-presigned (15m 预签名直拉)</el-radio-button>
+            <el-radio-button value="auto">auto 智能</el-radio-button>
+            <el-radio-button value="relay-cache">relay-cache 部署机中转</el-radio-button>
+            <el-radio-button value="direct-presigned">direct-presigned 15m 预签名直拉</el-radio-button>
           </el-radio-group>
         </div>
       </div>
     </div>
 
-    <div v-for="(src, idx) in editor.sources" :key="src.type" class="ki-panel" style="margin-bottom: 12px">
-      <div class="ki-flex-between" style="margin-bottom: 10px">
-        <div class="ki-flex-row">
-          <span class="ki-badge ki-mono" style="background: var(--ki-brand-subtle); color: var(--ki-brand-hover)">#{{ idx + 1 }}</span>
-          <HardDrive v-if="src.type === 'local'" :size="16" style="color: var(--ki-status-ok)" />
-          <Cloud v-else-if="src.type === 'obs' || src.type === 's3'" :size="16" style="color: var(--ki-brand)" />
-          <Globe v-else :size="16" style="color: var(--ki-text-muted)" />
-          <strong :style="editor.offlineStrict && (src.type === 'online' || !src.internal) ? 'text-decoration: line-through; opacity: 0.55' : ''">
-            {{ src.type === 'local' ? '本地离线仓库与缓存池 (Local)' : src.type === 'online' ? '在线官方源与受控代理 (Online)' : '对象存储桶 (华为云 OBS / SeaweedFS S3)' }}
-          </strong>
-          <KiStatusBadge v-if="editor.offlineStrict && (src.type === 'online' || !src.internal)" status="blocked" />
-        </div>
-        <div class="ki-flex-row">
-          <el-button size="small" :disabled="idx === 0" @click="moveSource(idx, -1)"><ArrowUp :size="13" /></el-button>
-          <el-button size="small" :disabled="idx === editor.sources.length - 1" @click="moveSource(idx, 1)"><ArrowDown :size="13" /></el-button>
-        </div>
-      </div>
+    <!-- 优先级卡片列表 -->
+    <div class="ki-flex-col ki-mb-4">
+      <KiMediaSourceCard
+        v-for="(src, idx) in editor.sources"
+        :key="src.type"
+        :source="toCardItem(src)"
+        :index="idx"
+        :total="editor.sources.length"
+        :offline-strict="editor.offlineStrict"
+        :probing="probing"
+        @move-up="moveSource($event, -1)"
+        @move-down="moveSource($event, 1)"
+        @probe="testPolicy"
+      />
+    </div>
 
-      <div v-if="src.type === 'local'" class="ki-mono ki-secondary" style="font-size: 12px">
-        本地目录: {{ (src.roots || []).join(', ') }}
-      </div>
-      <div v-else-if="src.type === 'obs' || src.type === 's3'" class="ki-grid-2">
+    <!-- 对象存储配置细项 -->
+    <div v-for="src in editor.sources.filter((s) => s.type === 'obs' || s.type === 's3')" :key="src.type" class="ki-card ki-mb-4">
+      <div class="section-title">对象存储参数（华为云 OBS / SeaweedFS S3）</div>
+      <div class="ki-grid-2">
         <el-form-item label="厂商快速预设">
-          <el-select v-model="editor.obsPreset" style="width: 100%" @change="applyVendorPreset">
+          <el-select v-model="editor.obsPreset" class="ki-w-full" @change="applyVendorPreset">
             <el-option label="华为云 OBS (S3v4 WhenRequired 兼容)" value="huawei-obs" />
             <el-option label="内网 SeaweedFS S3 (P6)" value="seaweedfs" />
           </el-select>
@@ -207,14 +247,26 @@ onMounted(loadPolicies)
           <el-switch v-model="src.internal" />
         </el-form-item>
       </div>
-      <div v-else>
-        <el-input v-model="src.baseUrl" :disabled="editor.offlineStrict" class="ki-mono" />
-      </div>
     </div>
 
-    <div v-if="probeResult" class="ki-panel">
-      <div style="font-weight: 600; margin-bottom: 8px">最近一次连通性探活结果 (:test)</div>
-      <pre class="ki-mono" style="margin: 0; padding: 10px; background: var(--ki-bg-terminal); color: var(--ki-term-fg); border-radius: 4px; overflow: auto">{{ JSON.stringify(probeResult, null, 2) }}</pre>
+    <div v-if="probeResult" class="ki-card">
+      <div class="section-title">最近一次探活响应 (:test)</div>
+      <pre class="ki-mono probe-pre">{{ JSON.stringify(probeResult, null, 2) }}</pre>
     </div>
   </div>
 </template>
+
+<style scoped>
+.btn-ico {
+  margin-right: 4px;
+}
+
+.probe-pre {
+  margin: 0;
+  padding: 12px 14px;
+  background-color: var(--ki-bg-terminal);
+  color: var(--ki-term-fg);
+  border-radius: var(--ki-radius-sm);
+  overflow: auto;
+}
+</style>

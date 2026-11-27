@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { computed } from 'vue'
 import { VueFlow } from '@xyflow/vue'
 import '@xyflow/vue/dist/style.css'
 import { useWorkspaceStore } from '@/stores/workspace'
-
-const ws = useWorkspaceStore()
+import { detectDagCycle } from '@/utils/dag'
+import KiBanner from '@/components/ki/KiBanner.vue'
+import KiStackDagNode, { type StackDagNodeData } from '@/components/domain/KiStackDagNode.vue'
 
 export interface StackNodeInput {
   id: string
@@ -13,11 +14,18 @@ export interface StackNodeInput {
   target: string
   dependsOn: string[]
   status?: string
+  outputs?: Array<{ name: string; secret?: boolean }>
 }
 
 const props = defineProps<{
   instances: StackNodeInput[]
 }>()
+
+const ws = useWorkspaceStore()
+
+const cycleInfo = computed(() =>
+  detectDagCycle(props.instances.map((it) => ({ id: it.id, dependsOn: it.dependsOn || [] })))
+)
 
 const nodes = computed(() => {
   const depthMap = new Map<string, number>()
@@ -43,50 +51,65 @@ const nodes = computed(() => {
     colCount.set(col, row + 1)
     return {
       id: it.id,
-      position: { x: 40 + col * 270, y: 40 + row * 120 },
-      data: { label: `${it.id}\n${it.product} ${it.version} [${it.target}]` },
-      style: {
-        background: 'var(--ki-bg-elevated)',
-        color: 'var(--ki-text-primary)',
-        border: '1px solid var(--ki-brand-border)',
-        borderRadius: '6px',
-        padding: '10px 14px',
-        fontFamily: 'var(--ki-font-mono)',
-        fontSize: '12px',
-        whiteSpace: 'pre-line',
-        width: '220px',
+      type: 'kiStackNode',
+      position: { x: 36 + col * 300, y: 36 + row * 148 },
+      data: {
+        id: it.id,
+        product: it.product,
+        version: it.version,
+        target: it.target,
+        status: it.status || 'ready',
+        dependsOnCount: (it.dependsOn || []).length,
+        outputs: it.outputs || [{ name: 'endpoint' }, { name: 'rootPassword', secret: true }],
       },
     }
   })
 })
 
 const edges = computed(() => {
-  const out: Array<{ id: string; source: string; target: string; animated: boolean; style: Record<string, string> }> = []
+  const out: Array<{ id: string; source: string; target: string; animated: boolean }> = []
   for (const it of props.instances) {
-    for (const dep of it.dependsOn) {
+    for (const dep of it.dependsOn || []) {
       out.push({
         id: `${dep}->${it.id}`,
         source: dep,
         target: it.id,
         animated: it.status === 'running',
-        style: { stroke: 'var(--ki-brand)', strokeWidth: '1.8' },
       })
     }
   }
   return out
 })
-
-const flowKey = ref(0)
 </script>
 
 <template>
-  <div class="ki-surface" style="height: 420px; width: 100%; overflow: hidden">
-    <VueFlow
-      :key="flowKey"
-      :nodes="nodes"
-      :edges="edges"
-      :color-mode="ws.theme"
-      fit-view-on-init
+  <div class="ki-dag-wrap">
+    <KiBanner
+      v-if="cycleInfo.hasCycle"
+      variant="danger"
+      :text="`检测到 Stack DAG 循环依赖：${cycleInfo.cyclePath.join(' → ')}，已阻断部署计划生成`"
+      class="ki-mb-3"
     />
+    <div class="ki-dag-canvas ki-surface">
+      <VueFlow
+        :nodes="nodes"
+        :edges="edges"
+        :color-mode="ws.theme"
+        fit-view-on-init
+      >
+        <template #node-kiStackNode="nodeProps">
+          <KiStackDagNode :data="(nodeProps.data as StackDagNodeData)" />
+        </template>
+      </VueFlow>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.ki-dag-canvas {
+  height: 440px;
+  width: 100%;
+  overflow: hidden;
+  background-color: var(--ki-bg-canvas);
+}
+</style>

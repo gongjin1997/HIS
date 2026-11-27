@@ -1,4 +1,4 @@
-/* web/src/styles/utilities.css — Minimal zero-Tailwind layout utilities (DESIGN.md §11.1, zero color literals) */
+/* web/src/styles/utilities.css — Layout & spacing utilities (zero color literals) */
 .ki-grid-4 {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -15,6 +15,24 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--ki-space-4);
+}
+
+@media (max-width: 1199px) {
+  .ki-grid-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ki-grid-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 767px) {
+  .ki-grid-4,
+  .ki-grid-3,
+  .ki-grid-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .ki-flex-row {
@@ -38,6 +56,27 @@
 
 .ki-flex-wrap {
   flex-wrap: wrap;
+}
+
+.ki-flex-1 {
+  flex: 1;
+  min-width: 0;
+}
+
+.ki-mt-3 {
+  margin-top: var(--ki-space-3);
+}
+
+.ki-mt-4 {
+  margin-top: var(--ki-space-4);
+}
+
+.ki-mb-3 {
+  margin-bottom: var(--ki-space-3);
+}
+
+.ki-mb-4 {
+  margin-bottom: var(--ki-space-4);
 }
 
 .ki-w-full {

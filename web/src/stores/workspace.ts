@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
 import { apiRequest } from '@/api/client'
+import { useTheme } from '@/composables/useTheme'
 
 export interface ProjectItem {
   id: string
@@ -9,37 +10,46 @@ export interface ProjectItem {
 }
 
 export const useWorkspaceStore = defineStore('workspace', () => {
+  const themeCtl = useTheme()
+
   const projects = ref<ProjectItem[]>([])
   const currentProjectId = ref<string>(localStorage.getItem('kinstall.projectId') || '')
   const currentEnv = ref<'prod' | 'staging' | 'dev' | 'sandbox'>(
     (localStorage.getItem('kinstall.env') as 'prod' | 'staging' | 'dev' | 'sandbox') || 'prod'
   )
-  const theme = ref<'dark' | 'light'>((localStorage.getItem('kinstall.theme') as 'dark' | 'light') || 'dark')
   const density = ref<'comfortable' | 'compact'>(
-    (localStorage.getItem('kinstall.density') as 'comfortable' | 'compact') || 'comfortable'
+    ((localStorage.getItem('ki.density') || localStorage.getItem('kinstall.density')) as 'comfortable' | 'compact') || 'comfortable'
   )
-  const lang = ref<'zh-CN' | 'en-US'>((localStorage.getItem('kinstall.lang') as 'zh-CN' | 'en-US') || 'zh-CN')
+  const lang = ref<'zh-CN' | 'en-US'>(
+    ((localStorage.getItem('ki.lang') || localStorage.getItem('kinstall.lang')) as 'zh-CN' | 'en-US') || 'zh-CN'
+  )
   const pendingApprovalCount = ref<number>(0)
   const sidebarCollapsed = ref<boolean>(false)
+  const offlineStrict = ref<boolean>(true)
 
   function applyDOMAttributes() {
+    if (typeof document === 'undefined') return
     const html = document.documentElement
-    html.setAttribute('data-theme', theme.value)
-    html.classList.toggle('dark', theme.value === 'dark')
     html.setAttribute('data-density', density.value)
     html.setAttribute('lang', lang.value)
-    document.title = currentEnv.value === 'prod'
-      ? '[PROD] kinstall — 基础设施交付控制台'
-      : 'kinstall — 基础设施交付控制台'
+    document.title =
+      currentEnv.value === 'prod'
+        ? '[PROD] kinstall — 基础设施交付控制台'
+        : 'kinstall — 基础设施交付控制台'
   }
 
-  watch([theme, density, lang, currentEnv], () => {
-    localStorage.setItem('kinstall.theme', theme.value)
-    localStorage.setItem('kinstall.density', density.value)
-    localStorage.setItem('kinstall.lang', lang.value)
-    localStorage.setItem('kinstall.env', currentEnv.value)
-    applyDOMAttributes()
-  }, { immediate: true })
+  watch(
+    [density, lang, currentEnv],
+    () => {
+      localStorage.setItem('ki.density', density.value)
+      localStorage.setItem('kinstall.density', density.value)
+      localStorage.setItem('ki.lang', lang.value)
+      localStorage.setItem('kinstall.lang', lang.value)
+      localStorage.setItem('kinstall.env', currentEnv.value)
+      applyDOMAttributes()
+    },
+    { immediate: true }
+  )
 
   watch(currentProjectId, (v) => {
     if (v) localStorage.setItem('kinstall.projectId', v)
@@ -74,7 +84,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   function toggleTheme() {
-    theme.value = theme.value === 'dark' ? 'light' : 'dark'
+    themeCtl.toggleTheme()
+  }
+
+  function cycleTheme() {
+    themeCtl.cycleTheme()
   }
 
   function toggleDensity() {
@@ -89,14 +103,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     projects,
     currentProjectId,
     currentEnv,
-    theme,
+    theme: themeCtl.resolvedTheme,
+    themePreference: themeCtl.preference,
     density,
     lang,
     pendingApprovalCount,
     sidebarCollapsed,
+    offlineStrict,
     loadProjects,
     refreshApprovalBadge,
     toggleTheme,
+    cycleTheme,
+    setTheme: themeCtl.setTheme,
     toggleDensity,
     toggleLang,
   }
