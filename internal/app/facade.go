@@ -19,6 +19,7 @@ import (
 	"github.com/kinstall/kinstall/internal/hostinit"
 	"github.com/kinstall/kinstall/internal/inventory"
 	"github.com/kinstall/kinstall/internal/multicluster"
+	"github.com/kinstall/kinstall/internal/notify"
 	"github.com/kinstall/kinstall/internal/osadapter"
 	"github.com/kinstall/kinstall/internal/ports"
 	"github.com/kinstall/kinstall/internal/registry"
@@ -40,6 +41,7 @@ type Facade struct {
 	worker    *engine.Worker
 	osEngine  *osadapter.Engine
 	kcMgr     *multicluster.KubeconfigManager
+	notifier  *notify.Dispatcher
 	enableGM  bool
 	kekKind   string
 	cipherAlg string
@@ -61,6 +63,10 @@ func NewFacade(
 	enableGM bool,
 	kekKind, cipherAlg string,
 ) *Facade {
+	var disp *notify.Dispatcher
+	if st != nil {
+		disp = notify.NewDispatcher(st.Notifications(), 5*time.Minute)
+	}
 	return &Facade{
 		store:     st,
 		reg:       reg,
@@ -73,6 +79,7 @@ func NewFacade(
 		worker:    worker,
 		osEngine:  osEng,
 		kcMgr:     kcMgr,
+		notifier:  disp,
 		enableGM:  enableGM,
 		kekKind:   kekKind,
 		cipherAlg: cipherAlg,
@@ -149,6 +156,11 @@ func (f *Facade) CreateHost(ctx context.Context, actor domain.Actor, h *domain.H
 	if err := authz.Authorize(actor, h.ProjectID, "host.write"); err != nil {
 		return nil, err
 	}
+	credID, err := f.resolveHostCredentialID(ctx, h.ProjectID, h.CredentialID)
+	if err != nil {
+		return nil, err
+	}
+	h.CredentialID = credID
 	if err := f.store.Hosts().Create(ctx, h); err != nil {
 		return nil, err
 	}
@@ -402,8 +414,16 @@ func (f *Facade) PlanInstance(ctx context.Context, actor domain.Actor, projectID
 		pl = &sdk.Pipeline{}
 	}
 
+	configDiffs, hasDrift := buildPlanConfigDiffs(inst, pl)
+	diffEnv := PlanDiffEnvelope{
+		Summary:     planRes.Summary,
+		Outputs:     planRes.Outputs,
+		Warnings:    planRes.Warnings,
+		ConfigDiffs: configDiffs,
+		HasDrift:    hasDrift,
+	}
 	inputHash := computeInstanceInputHash(inst, action)
-	diffJSON, _ := json.Marshal(planRes)
+	diffJSON, _ := json.Marshal(diffEnv)
 	warnJSON, _ := json.Marshal(planRes.Warnings)
 	pipeJSON, _ := json.Marshal(pl)
 	plan := &domain.Plan{
@@ -485,6 +505,7 @@ func (f *Facade) ApplyInstance(ctx context.Context, actor domain.Actor, projectI
 		if err := f.store.Approvals().Create(ctx, ap); err != nil {
 			return nil, err
 		}
+		f.dispatchNotification(ctx, projectID, "approval.requested", "warn", "approval:"+op.ID, ap.Reason)
 	}
 	f.recordAudit(ctx, actor, projectID, "instance.apply", "instance", inst.ID, "success", "", map[string]any{"opId": op.ID, "state": op.State})
 	return op, nil

@@ -578,6 +578,308 @@ export type GenerateComplianceReportResponses = {
     200: unknown;
 };
 
+export type DownloadComplianceEvidenceData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/projects/{projectId}/compliance:download';
+};
+
+export type DownloadComplianceEvidenceResponses = {
+    /**
+     * Gzip evidence archive
+     */
+    200: unknown;
+};
+
+export type GetPluginMetadataData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/plugins/{product}';
+};
+
+export type GetPluginMetadataResponses = {
+    /**
+     * Plugin metadata
+     */
+    200: unknown;
+};
+
+export type ListUsersData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/users';
+};
+
+export type ListUsersResponses = {
+    /**
+     * User list
+     */
+    200: unknown;
+};
+
+export type CreateUserData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/users';
+};
+
+export type CreateUserResponses = {
+    /**
+     * Created user
+     */
+    201: unknown;
+};
+
+export type RevokeApiTokenData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/auth/tokens/{tokenId}';
+};
+
+export type RevokeApiTokenResponses = {
+    /**
+     * Revoked
+     */
+    204: void;
+};
+
+export type RevokeApiTokenResponse = RevokeApiTokenResponses[keyof RevokeApiTokenResponses];
+
+export type ListCredentialsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/projects/{projectId}/credentials';
+};
+
+export type ListCredentialsResponses = {
+    /**
+     * Credential metadata list
+     */
+    200: unknown;
+};
+
+export type DeleteCredentialData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/projects/{projectId}/credentials/{credId}';
+};
+
+export type DeleteCredentialResponses = {
+    /**
+     * Deleted
+     */
+    204: void;
+};
+
+export type DeleteCredentialResponse = DeleteCredentialResponses[keyof DeleteCredentialResponses];
+
+export type ImportHostsBulkData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/projects/{projectId}/hosts:import';
+};
+
+export type ImportHostsBulkResponses = {
+    /**
+     * Import result with row-level errors
+     */
+    200: unknown;
+};
+
+export type DeleteHostData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/projects/{projectId}/hosts/{hostId}';
+};
+
+export type DeleteHostResponses = {
+    /**
+     * Deleted
+     */
+    204: void;
+};
+
+export type DeleteHostResponse = DeleteHostResponses[keyof DeleteHostResponses];
+
+export type CheckHostBaselineData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/projects/{projectId}/hosts/{hostId}:check';
+};
+
+export type CheckHostBaselineResponses = {
+    /**
+     * Drift findings
+     */
+    200: unknown;
+};
+
+export type InitHostData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/projects/{projectId}/hosts/{hostId}:init';
+};
+
+export type InitHostResponses = {
+    /**
+     * Accepted Operation
+     */
+    202: unknown;
+};
+
+export type DeleteInstanceData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/projects/{projectId}/instances/{instanceId}';
+};
+
+export type DeleteInstanceResponses = {
+    /**
+     * Deleted
+     */
+    204: void;
+};
+
+export type DeleteInstanceResponse = DeleteInstanceResponses[keyof DeleteInstanceResponses];
+
+export type ValidateStackYamlData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/projects/{projectId}/stacks:validate';
+};
+
+export type ValidateStackYamlResponses = {
+    /**
+     * Validated DAG
+     */
+    200: unknown;
+};
+
+export type ApplyStackData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/projects/{projectId}/stacks/{stackId}:apply';
+};
+
+export type ApplyStackResponses = {
+    /**
+     * Accepted Operation
+     */
+    202: unknown;
+};
+
+export type UninstallStackData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/projects/{projectId}/stacks/{stackId}:uninstall';
+};
+
+export type UninstallStackResponses = {
+    /**
+     * Accepted Operation
+     */
+    202: unknown;
+};
+
+export type ListNotificationChannelsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/projects/{projectId}/notification-channels';
+};
+
+export type ListNotificationChannelsResponses = {
+    /**
+     * Channel list
+     */
+    200: unknown;
+};
+
+export type CreateNotificationChannelData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/projects/{projectId}/notification-channels';
+};
+
+export type CreateNotificationChannelResponses = {
+    /**
+     * Created channel
+     */
+    201: unknown;
+};
+
+export type TestNotificationChannelsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/projects/{projectId}/notification-channels:test';
+};
+
+export type TestNotificationChannelsResponses = {
+    /**
+     * Delivery counts
+     */
+    200: unknown;
+};
+
+export type ExportGitOpsYamlData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/projects/{projectId}/gitops/export';
+};
+
+export type ExportGitOpsYamlResponses = {
+    /**
+     * GitOps YAML
+     */
+    200: unknown;
+};
+
+export type DiffGitOpsYamlData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/projects/{projectId}/gitops:diff';
+};
+
+export type DiffGitOpsYamlResponses = {
+    /**
+     * Diff entries and CI exit code
+     */
+    200: unknown;
+};
+
+export type DownloadSupportBundleData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/projects/{projectId}/support-bundle';
+};
+
+export type DownloadSupportBundleResponses = {
+    /**
+     * Gzip diagnostic bundle
+     */
+    200: unknown;
+};
+
 export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
 };

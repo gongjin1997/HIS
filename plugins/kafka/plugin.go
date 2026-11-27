@@ -83,7 +83,16 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 			Targets:     []sdk.DeployTarget{sdk.TargetHostBinary, sdk.TargetHostContainer, sdk.TargetKubernetes},
 			LicenseTier: "green",
 		}},
-		Platforms: sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Platforms:  sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Operations: []string{"install", "scale", "upgrade", "uninstall"},
+		ParamSchema: map[string]any{
+			"title": "Apache Kafka 4.x KRaft 集群参数",
+			"properties": map[string]any{
+				"mode":      map[string]any{"type": "string", "enum": []string{"kraft"}, "default": "kraft", "x-kinstall-ui": map[string]any{"group": "basic", "order": 1, "label": "元数据模式（Kafka 4.x 纯 KRaft）"}},
+				"port":      map[string]any{"type": "integer", "default": 9092, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 2, "label": "Broker 监听端口"}},
+				"jvmHeapGB": map[string]any{"type": "integer", "default": 6, "minimum": 2, "maximum": 8, "x-kinstall-ui": map[string]any{"group": "storage", "order": 3, "label": "JVM 堆上限 (GiB · 硬限 ≤ 8G 保 PageCache)", "riskWarning": "超过 8 GiB 将挤占 Linux Page Cache，导致 Broker 磁盘顺序吞吐断崖下降"}},
+			},
+		},
 		OutputSchema: map[string]string{
 			"bootstrapServers": "string",
 			"clientCreds":      "object",

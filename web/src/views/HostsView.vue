@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Plus, RefreshCw, Search, Server, Cpu, ShieldCheck } from 'lucide-vue-next'
+import { Plus, RefreshCw, Search, Server, Cpu, ShieldCheck, Upload, Wrench, Activity, Trash2 } from 'lucide-vue-next'
 import { apiRequest } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -10,18 +11,50 @@ import KiStatusBadge from '@/components/ki/KiStatusBadge.vue'
 import KiDomainTag from '@/components/ki/KiDomainTag.vue'
 import KiMonoText from '@/components/ki/KiMonoText.vue'
 import KiDrawer from '@/components/ki/KiDrawer.vue'
+import KiBanner from '@/components/ki/KiBanner.vue'
+import KiDangerConfirmModal from '@/components/domain/KiDangerConfirmModal.vue'
+
+interface ImportRow {
+  rowNumber: number
+  name: string
+  address: string
+  port: number
+  user: string
+  zone?: string
+}
+
+interface ImportRowError {
+  rowNumber: number
+  field: string
+  code: string
+  message: string
+}
+
+interface DriftFinding {
+  category: string
+  key: string
+  expected: string
+  observed: string
+  severity: string
+}
 
 const auth = useAuthStore()
 const ws = useWorkspaceStore()
+const router = useRouter()
 
 const loading = ref(false)
 const hosts = ref<Array<Record<string, unknown>>>([])
-const profiles = ref<Record<string, unknown>>({})
+const credentials = ref<Array<{ id: string; name: string; kind: string }>>([])
+const profiles = ref<Record<string, { name: string; description: string }>>({})
 const modules = ref<Array<Record<string, unknown>>>([])
 const activeTab = ref('hosts')
 const showAdd = ref(false)
+const showImport = ref(false)
 const selectedHost = ref<Record<string, unknown> | null>(null)
 const drawerOpen = ref(false)
+const checkingBaseline = ref(false)
+const baselineDrifts = ref<DriftFinding[] | null>(null)
+const baselineCompliant = ref<boolean | null>(null)
 
 const filterArch = ref<string>('ALL')
 const filterZone = ref<string>('ALL')
@@ -32,9 +65,33 @@ const newHost = reactive({
   address: '',
   sshPort: 22,
   sshUser: 'root',
+  credentialId: '',
   faultZone: 'az-1',
   arch: 'amd64',
   pageSize: 4096,
+})
+
+const importState = reactive({
+  format: 'csv' as 'csv' | 'yaml' | 'xlsx',
+  data: '',
+  fileName: '',
+  busy: false,
+  previewRows: [] as ImportRow[],
+  previewErrors: [] as ImportRowError[],
+  checked: false,
+})
+
+const initDialog = reactive({
+  open: false,
+  host: null as Record<string, unknown> | null,
+  selectedProfiles: ['base'] as string[],
+  submitting: false,
+})
+
+const deleteModal = reactive({
+  open: false,
+  host: null as Record<string, unknown> | null,
+  loading: false,
 })
 
 const zones = computed(() => {
@@ -62,13 +119,18 @@ async function loadAll() {
   if (!ws.currentProjectId) return
   loading.value = true
   try {
-    const [hRes, pRes] = await Promise.all([
+    const [hRes, pRes, cRes] = await Promise.all([
       apiRequest<{ items: Array<Record<string, unknown>> }>('GET', `/api/v1/projects/${ws.currentProjectId}/hosts`),
-      apiRequest<{ profiles: Record<string, unknown>; modules: Array<Record<string, unknown>> }>('GET', '/api/v1/hostinit/profiles'),
+      apiRequest<{ profiles: Record<string, { name: string; description: string }>; modules: Array<Record<string, unknown>> }>('GET', '/api/v1/hostinit/profiles'),
+      apiRequest<{ items: Array<{ id: string; name: string; kind: string }> }>('GET', `/api/v1/projects/${ws.currentProjectId}/credentials`).catch(() => ({ data: { items: [] } })),
     ])
     hosts.value = hRes.data.items || []
     profiles.value = pRes.data.profiles || {}
     modules.value = pRes.data.modules || []
+    credentials.value = cRes.data.items || []
+    if (!newHost.credentialId && credentials.value.length > 0) {
+      newHost.credentialId = credentials.value[0].id
+    }
   } finally {
     loading.value = false
   }
@@ -100,9 +162,149 @@ async function probeHost(hostId: string) {
   }
 }
 
+async function checkHostBaseline(hostId: string) {
+  checkingBaseline.value = true
+  try {
+    const { data } = await apiRequest<{ drifts: DriftFinding[]; compliant: boolean }>(
+      'POST',
+      `/api/v1/projects/${ws.currentProjectId}/hosts/${hostId}:check`
+    )
+    baselineDrifts.value = data.drifts || []
+    baselineCompliant.value = data.compliant
+    if (data.compliant) ElMessage.success('基线巡检通过：无 Sysctl/Swap/THP 漂移')
+    else ElMessage.warning(`发现 ${baselineDrifts.value.length} 项内核/基线漂移`)
+  } catch (e) {
+    ElMessage.error(String(e))
+  } finally {
+    checkingBaseline.value = false
+  }
+}
+
 function openHostDetail(row: Record<string, unknown>) {
   selectedHost.value = row
+  baselineDrifts.value = null
+  baselineCompliant.value = null
   drawerOpen.value = true
+}
+
+function openInitDialog(row: Record<string, unknown>) {
+  initDialog.host = row
+  const cur = String(row.initProfile || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  initDialog.selectedProfiles = cur.length > 0 ? cur : ['base']
+  initDialog.open = true
+}
+
+async function submitHostInit() {
+  if (!initDialog.host) return
+  initDialog.submitting = true
+  try {
+    const { data } = await apiRequest<{ id: string }>(
+      'POST',
+      `/api/v1/projects/${ws.currentProjectId}/hosts/${initDialog.host.id}:init`,
+      { body: { profiles: initDialog.selectedProfiles }, idempotent: true }
+    )
+    initDialog.open = false
+    ElMessage.success(`22-模块 HostInit 操作 ${data.id} 已下发`)
+    await router.push(`/operations?id=${data.id}`)
+  } catch (e) {
+    ElMessage.error(String(e))
+  } finally {
+    initDialog.submitting = false
+  }
+}
+
+function openDeleteHost(row: Record<string, unknown>) {
+  deleteModal.host = row
+  deleteModal.open = true
+}
+
+async function confirmDeleteHost() {
+  if (!deleteModal.host) return
+  deleteModal.loading = true
+  try {
+    await apiRequest('DELETE', `/api/v1/projects/${ws.currentProjectId}/hosts/${deleteModal.host.id}`)
+    ElMessage.success(`主机 ${deleteModal.host.name} 已从 CMDB 移除`)
+    deleteModal.open = false
+    drawerOpen.value = false
+    await loadAll()
+  } catch (e) {
+    ElMessage.error(String(e))
+  } finally {
+    deleteModal.loading = false
+  }
+}
+
+function fillSampleCSV() {
+  importState.format = 'csv'
+  importState.fileName = 'sample-hosts.csv'
+  importState.data = 'name,address,port,user,zone,rack\nnode-app-01,10.20.1.21,22,root,az-1,rack-a\nnode-app-02,10.20.1.22,22,root,az-2,rack-b\n'
+  importState.checked = false
+}
+
+function onImportFileSelected(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  importState.fileName = file.name
+  importState.checked = false
+  const low = file.name.toLowerCase()
+  if (low.endsWith('.xlsx')) {
+    importState.format = 'xlsx'
+    const reader = new FileReader()
+    reader.onload = () => {
+      const res = String(reader.result || '')
+      importState.data = res.includes(',') ? res.split(',')[1] : res
+    }
+    reader.readAsDataURL(file)
+  } else {
+    importState.format = low.endsWith('.yaml') || low.endsWith('.yml') ? 'yaml' : 'csv'
+    const reader = new FileReader()
+    reader.onload = () => {
+      importState.data = String(reader.result || '')
+    }
+    reader.readAsText(file)
+  }
+}
+
+async function runBulkImport(dryRun: boolean) {
+  if (!importState.data.trim()) {
+    ElMessage.warning('请上传文件或粘贴主机清单内容')
+    return
+  }
+  importState.busy = true
+  try {
+    const { data } = await apiRequest<{
+      result: { rows?: ImportRow[]; errors?: ImportRowError[] }
+      imported: number
+      dryRun: boolean
+    }>('POST', `/api/v1/projects/${ws.currentProjectId}/hosts:import`, {
+      body: { format: importState.format, data: importState.data, dryRun },
+      idempotent: !dryRun,
+    })
+    importState.previewRows = data.result?.rows || []
+    importState.previewErrors = data.result?.errors || []
+    importState.checked = true
+    if (dryRun) {
+      if (importState.previewErrors.length === 0) {
+        ElMessage.success(`Dry-Run 预检通过：识别 ${importState.previewRows.length} 台主机，0 行错误`)
+      } else {
+        ElMessage.warning(`Dry-Run 检测到 ${importState.previewErrors.length} 行错误，请按行号修正`)
+      }
+    } else if (data.imported > 0) {
+      ElMessage.success(`成功批量导入 ${data.imported} 台主机`)
+      if (importState.previewErrors.length === 0) showImport.value = false
+      await loadAll()
+    } else {
+      ElMessage.warning('未导入任何主机，请检查下方错误行')
+    }
+  } catch (e) {
+    ElMessage.error(String(e))
+  } finally {
+    importState.busy = false
+  }
 }
 
 watch(() => ws.currentProjectId, loadAll)
@@ -113,7 +315,7 @@ onMounted(loadAll)
   <div class="hosts-page">
     <PageHeader title="CMDB 主机" :refresh="loadAll" :refreshing="loading" />
 
-    <!-- 顶部可点击统计条（HCS LedgerView 风格） -->
+    <!-- 顶部可点击统计条 -->
     <div class="ki-chips">
       <div class="ki-chip" :class="{ 'ki-chip--active': filterArch === 'ALL' }" @click="filterArch = 'ALL'">
         <span class="ki-chip__bar" />
@@ -145,7 +347,7 @@ onMounted(loadAll)
       </div>
     </div>
 
-    <!-- 左右结构：左侧分类导航 + 右侧卡片主表（对标 HCS LedgerView） -->
+    <!-- 左右结构：左侧分类导航 + 右侧卡片主表 -->
     <div class="ledger-body">
       <aside class="ki-card ledger-nav">
         <div class="nav-root" :class="{ 'is-active': filterZone === 'ALL' && filterArch === 'ALL' }" @click="filterZone = 'ALL'; filterArch = 'ALL'">
@@ -187,9 +389,12 @@ onMounted(loadAll)
 
       <section class="ki-card ledger-main">
         <div class="table-heading">
-          <span class="ki-secondary">支持 1-RTT POSIX Facts 探测与 {{ Object.keys(profiles).length }} 套内核 Profile 基线检查</span>
+          <span class="ki-secondary">1-RTT POSIX Facts · 批量导入 (.xlsx/CSV/YAML) · {{ Object.keys(profiles).length }} 套内核 Profile 22-模块初始化</span>
           <div class="table-actions">
             <el-button @click="loadAll"><RefreshCw :size="14" class="btn-ico" /> 刷新</el-button>
+            <el-button v-if="auth.can('host:write', ws.currentProjectId)" @click="showImport = true">
+              <Upload :size="14" class="btn-ico" /> 批量导入
+            </el-button>
             <el-button v-if="auth.can('host:write', ws.currentProjectId)" type="primary" @click="showAdd = true">
               <Plus :size="14" class="btn-ico" /> 新增纳管主机
             </el-button>
@@ -205,7 +410,7 @@ onMounted(loadAll)
             </div>
 
             <el-table v-loading="loading" :data="filteredHosts" @row-click="openHostDetail">
-              <el-table-column label="主机名称" min-width="190">
+              <el-table-column label="主机名称" min-width="180">
                 <template #default="{ row }">
                   <div class="host-name ki-mono">{{ row.name }}</div>
                   <div class="ki-muted ki-mono host-sub">{{ row.id }}</div>
@@ -221,13 +426,13 @@ onMounted(loadAll)
                   <KiDomainTag kind="arch" :value="String(row.arch || 'amd64')" :page-size="Number(row.pageSize || 4096)" />
                 </template>
               </el-table-column>
-              <el-table-column prop="faultZone" label="故障域" width="100" />
-              <el-table-column label="状态" width="120">
+              <el-table-column prop="faultZone" label="故障域" width="90" />
+              <el-table-column label="状态" width="110">
                 <template #default="{ row }">
                   <KiStatusBadge :status="String(row.state || 'pending')" />
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="150" fixed="right">
+              <el-table-column label="操作" width="230" fixed="right">
                 <template #default="{ row }">
                   <el-button link type="primary" @click.stop="openHostDetail(row)">详情</el-button>
                   <el-button
@@ -236,7 +441,23 @@ onMounted(loadAll)
                     type="primary"
                     @click.stop="probeHost(String(row.id))"
                   >
-                    Facts 探活
+                    Facts
+                  </el-button>
+                  <el-button
+                    v-if="auth.can('host:write', ws.currentProjectId)"
+                    link
+                    type="primary"
+                    @click.stop="openInitDialog(row)"
+                  >
+                    初始化
+                  </el-button>
+                  <el-button
+                    v-if="auth.can('host:write', ws.currentProjectId)"
+                    link
+                    type="danger"
+                    @click.stop="openDeleteHost(row)"
+                  >
+                    删除
                   </el-button>
                 </template>
               </el-table-column>
@@ -245,52 +466,184 @@ onMounted(loadAll)
           </el-tab-pane>
 
           <el-tab-pane :label="`主机初始化基线 (${modules.length} 模块)`" name="init">
-            <div class="section-title">内置生产 Profile 集合<span class="sub">按业务角色自动叠加参数</span></div>
+            <div class="section-title">内置生产 Profile 集合<span class="sub">按业务角色自动叠加参数与互斥检查</span></div>
             <div class="profile-list ki-mb-3">
-              <span v-for="name in Object.keys(profiles)" :key="name" class="ki-badge ki-mono profile-pill">
+              <span v-for="(p, name) in profiles" :key="name" class="ki-badge ki-mono profile-pill" :title="p.description">
                 profile: {{ name }}
               </span>
             </div>
             <el-table :data="modules" size="small">
-              <el-table-column prop="order" label="#" width="60" />
-              <el-table-column prop="id" label="模块 ID" width="170">
-                <template #default="{ row }"><span class="ki-mono">{{ row.id }}</span></template>
+              <el-table-column prop="order" label="#" width="56" />
+              <el-table-column prop="name" label="模块标识" width="170">
+                <template #default="{ row }"><span class="ki-mono">{{ row.name }}</span></template>
               </el-table-column>
-              <el-table-column prop="title" label="名称" width="200" />
               <el-table-column prop="description" label="功能与安全基线" />
+              <el-table-column label="默认开启" width="90">
+                <template #default="{ row }">
+                  <KiStatusBadge :status="row.defaultOn ? 'ok' : 'pending'" :label="row.defaultOn ? '开启' : '按需'" />
+                </template>
+              </el-table-column>
             </el-table>
           </el-tab-pane>
         </el-tabs>
       </section>
     </div>
 
-    <!-- 主机详情抽屉（HCS ResourceDrawer 风格：section-title + kv-grid） -->
-    <KiDrawer v-model="drawerOpen" :title="String(selectedHost?.name || '主机详情')" subtitle="CMDB 资产元数据与 POSIX Facts" size="md">
+    <!-- 主机详情抽屉：资产元数据 + 实时基线漂移巡检 (:check) -->
+    <KiDrawer v-model="drawerOpen" :title="String(selectedHost?.name || '主机详情')" subtitle="CMDB 资产元数据 · POSIX Facts · 内核基线漂移巡检" size="md">
       <template v-if="selectedHost">
         <div class="section-title">基本连接信息</div>
-        <div class="kv-grid">
+        <div class="kv-grid ki-mb-4">
           <div class="k">主机 ID</div><div><KiMonoText :value="String(selectedHost.id || '')" /></div>
           <div class="k">运行状态</div><div><KiStatusBadge :status="String(selectedHost.state || 'pending')" /></div>
           <div class="k">IP 地址</div><div class="ki-mono">{{ selectedHost.address }}:{{ selectedHost.sshPort || 22 }}</div>
           <div class="k">SSH 用户</div><div class="ki-mono">{{ selectedHost.sshUser || 'root' }}</div>
+          <div class="k">凭据引用</div><div><KiMonoText :value="String(selectedHost.credentialId || '')" /></div>
           <div class="k">架构 / 页</div><div><KiDomainTag kind="arch" :value="String(selectedHost.arch || 'amd64')" :page-size="Number(selectedHost.pageSize || 4096)" /></div>
           <div class="k">故障域</div><div>{{ selectedHost.faultZone || '—' }}</div>
+          <div class="k">初始化 Profile</div><div class="ki-mono">{{ selectedHost.initProfile || 'base' }}</div>
         </div>
+
+        <div class="section-title">基线漂移巡检 (hosts:check)</div>
+        <div class="ki-mb-3">
+          <el-button size="small" :loading="checkingBaseline" @click="checkHostBaseline(String(selectedHost.id))">
+            <Activity :size="13" class="btn-ico" /> 立即检查内核与安全基线漂移
+          </el-button>
+        </div>
+
+        <KiBanner
+          v-if="baselineCompliant === true"
+          variant="info"
+          text="巡检通过：该主机 Swap / THP / Sysctl 全部符合所选 Profile 生产基线，0 项漂移。"
+        />
+        <el-table v-else-if="baselineDrifts && baselineDrifts.length > 0" :data="baselineDrifts" size="small">
+          <el-table-column prop="category" label="类别" width="85" />
+          <el-table-column prop="key" label="基线键" min-width="150">
+            <template #default="{ row }"><span class="ki-mono">{{ row.key }}</span></template>
+          </el-table-column>
+          <el-table-column prop="expected" label="期望值" width="90" />
+          <el-table-column prop="observed" label="当前值" width="90" />
+          <el-table-column label="级别" width="90">
+            <template #default="{ row }"><KiStatusBadge :status="row.severity" /></template>
+          </el-table-column>
+        </el-table>
       </template>
       <template #footer>
-        <el-button @click="drawerOpen = false">关闭</el-button>
+        <el-button
+          v-if="selectedHost && auth.can('host:write', ws.currentProjectId)"
+          type="danger"
+          plain
+          @click="openDeleteHost(selectedHost)"
+        >
+          <Trash2 :size="13" class="btn-ico" /> 删除主机
+        </el-button>
+        <el-button
+          v-if="selectedHost && auth.can('host:write', ws.currentProjectId)"
+          @click="openInitDialog(selectedHost)"
+        >
+          <Wrench :size="13" class="btn-ico" /> 22-模块 HostInit
+        </el-button>
         <el-button v-if="selectedHost && auth.can('host:probe', ws.currentProjectId)" type="primary" @click="probeHost(String(selectedHost.id))">
           执行 1-RTT Facts 探活
         </el-button>
       </template>
     </KiDrawer>
 
-    <el-dialog v-model="showAdd" title="新增 CMDB 纳管主机" width="520px">
+    <!-- 批量导入抽屉 (.xlsx / CSV / YAML + Dry-Run 精确行号报错) -->
+    <KiDrawer v-model="showImport" title="CMDB 批量导入主机" subtitle="支持 Excel (.xlsx) / CSV / YAML · Dry-Run 逐行字段级预检 (T-M1-04)" size="md">
+      <div class="ki-flex-between ki-mb-3">
+        <el-radio-group v-model="importState.format" size="small">
+          <el-radio-button value="csv">CSV</el-radio-button>
+          <el-radio-button value="yaml">YAML</el-radio-button>
+          <el-radio-button value="xlsx">Excel (.xlsx)</el-radio-button>
+        </el-radio-group>
+        <div class="ki-flex-row">
+          <el-button size="small" @click="fillSampleCSV">填入示例 CSV</el-button>
+          <label class="file-upload-btn">
+            <Upload :size="13" /> 选择文件
+            <input type="file" accept=".xlsx,.csv,.yaml,.yml" class="hidden-file" @change="onImportFileSelected" />
+          </label>
+        </div>
+      </div>
+
+      <div v-if="importState.fileName" class="ki-muted ki-mono ki-mb-3">已加载文件：{{ importState.fileName }}</div>
+      <el-input
+        v-model="importState.data"
+        type="textarea"
+        :rows="7"
+        class="ki-mono ki-mb-3"
+        placeholder="name,address,port,user,zone,rack&#10;node-01,10.20.1.11,22,root,az-1,rack-1"
+      />
+
+      <KiBanner
+        v-if="importState.previewErrors.length > 0"
+        variant="danger"
+        :text="`发现 ${importState.previewErrors.length} 处字段校验错误，请根据下方行号修正后重试`"
+        class="ki-mb-3"
+      />
+      <el-table v-if="importState.previewErrors.length > 0" :data="importState.previewErrors" size="small" class="ki-mb-3">
+        <el-table-column prop="rowNumber" label="行号" width="65" />
+        <el-table-column prop="field" label="字段" width="100" />
+        <el-table-column prop="code" label="错误码" width="130">
+          <template #default="{ row }"><span class="ki-mono">{{ row.code }}</span></template>
+        </el-table-column>
+        <el-table-column prop="message" label="错误说明" />
+      </el-table>
+
+      <div v-if="importState.previewRows.length > 0">
+        <div class="section-title">解析预览<span class="sub">共 {{ importState.previewRows.length }} 台</span></div>
+        <el-table :data="importState.previewRows" size="small">
+          <el-table-column prop="rowNumber" label="#" width="52" />
+          <el-table-column prop="name" label="主机名" />
+          <el-table-column prop="address" label="IP" />
+          <el-table-column prop="zone" label="故障域" width="85" />
+        </el-table>
+      </div>
+
+      <template #footer>
+        <el-button @click="showImport = false">关闭</el-button>
+        <el-button :loading="importState.busy" @click="runBulkImport(true)">预检 Dry-Run</el-button>
+        <el-button type="primary" :loading="importState.busy" @click="runBulkImport(false)">确认批量入库</el-button>
+      </template>
+    </KiDrawer>
+
+    <!-- 22-模块 HostInit Profile 选择弹窗 -->
+    <el-dialog v-model="initDialog.open" :title="`HostInit 22-模块初始化 · ${initDialog.host?.name || ''}`" width="520px">
+      <p class="ki-secondary ki-mb-3">
+        选择需要叠加的内置生产 Profile（系统将自动执行互斥 sysctl 冲突检测，例如 database-pg 与 cache 不可混部）：
+      </p>
+      <el-checkbox-group v-model="initDialog.selectedProfiles" class="profile-check-list">
+        <el-checkbox v-for="(p, name) in profiles" :key="name" :value="name">
+          <b class="ki-mono">{{ name }}</b> — <span class="ki-secondary">{{ p.description }}</span>
+        </el-checkbox>
+      </el-checkbox-group>
+      <template #footer>
+        <el-button @click="initDialog.open = false">取消</el-button>
+        <el-button type="primary" :loading="initDialog.submitting" @click="submitHostInit">下发 HostInit 操作</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 新增单台主机弹窗 -->
+    <el-dialog v-model="showAdd" title="新增 CMDB 纳管主机" width="540px">
+      <KiBanner
+        v-if="credentials.length === 0"
+        variant="warn"
+        text="当前项目尚无加密凭据，请先在「系统设置 → 凭据保险库」创建 SSH 凭据。"
+        class="ki-mb-3"
+      />
       <el-form label-position="top">
         <el-form-item label="主机名 (DNS-1123)"><el-input v-model="newHost.name" placeholder="node-kunpeng-01" class="ki-mono" /></el-form-item>
         <div class="ki-grid-2">
           <el-form-item label="IP / 主机地址"><el-input v-model="newHost.address" placeholder="10.20.1.11" class="ki-mono" /></el-form-item>
           <el-form-item label="SSH 端口"><el-input-number v-model="newHost.sshPort" :min="1" :max="65535" class="ki-w-full" /></el-form-item>
+        </div>
+        <div class="ki-grid-2">
+          <el-form-item label="SSH 用户名"><el-input v-model="newHost.sshUser" class="ki-mono" /></el-form-item>
+          <el-form-item label="加密凭据引用">
+            <el-select v-model="newHost.credentialId" class="ki-w-full" placeholder="选择项目凭据">
+              <el-option v-for="c in credentials" :key="c.id" :label="`${c.name} (${c.kind})`" :value="c.id" />
+            </el-select>
+          </el-form-item>
         </div>
         <div class="ki-grid-2">
           <el-form-item label="CPU 架构">
@@ -313,6 +666,17 @@ onMounted(loadAll)
         <el-button type="primary" @click="createHost">保存主机</el-button>
       </template>
     </el-dialog>
+
+    <KiDangerConfirmModal
+      v-model="deleteModal.open"
+      :env="ws.currentEnv"
+      title="确认移除 CMDB 主机"
+      :resource-name="String(deleteModal.host?.name || '')"
+      risk-summary="移除后该主机将不再受平台纳管；若仍有活跃实例 Claim 占用端口或目录，后端将自动拒绝删除 (409)。"
+      confirm-label="解锁并移除主机"
+      :loading="deleteModal.loading"
+      @confirm="confirmDeleteHost"
+    />
   </div>
 </template>
 
@@ -413,6 +777,29 @@ onMounted(loadAll)
 .profile-pill {
   background-color: var(--ki-brand-subtle);
   color: var(--ki-brand);
+}
+
+.file-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: var(--ki-radius-sm);
+  border: 1px solid var(--ki-border-control);
+  background-color: var(--ki-bg-surface);
+  color: var(--ki-text-primary);
+  font-size: var(--ki-fs-xs);
+  cursor: pointer;
+}
+
+.hidden-file {
+  display: none;
+}
+
+.profile-check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 @media (max-width: 900px) {

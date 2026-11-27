@@ -69,7 +69,20 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 			{Product: "seata", Versions: ">=2.5.0, <3.0.0", DefaultVer: "2.6.0", Targets: []sdk.DeployTarget{sdk.TargetHostBinary, sdk.TargetHostContainer, sdk.TargetKubernetes}, LicenseTier: "green"},
 			{Product: "zookeeper", Versions: ">=3.9.0, <4.0.0", DefaultVer: "3.9.7", Targets: []sdk.DeployTarget{sdk.TargetHostBinary, sdk.TargetHostContainer}, LicenseTier: "green"},
 		},
-		Platforms:     sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Platforms:  sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Operations: []string{"install", "uninstall"},
+		ParamSchema: map[string]any{
+			"title": "业务消息与分布式事务参数 (RocketMQ / Seata / ZooKeeper)",
+			"properties": map[string]any{
+				"port":       map[string]any{"type": "integer", "default": 9876, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 1, "label": "监听端口"}},
+				"jvmHeapGB":  map[string]any{"type": "integer", "default": 4, "minimum": 1, "maximum": 8, "x-kinstall-ui": map[string]any{"group": "storage", "order": 2, "label": "JVM 堆上限 (GiB · 硬限 ≤ 8G)"}},
+				"brokerIP1":  map[string]any{"type": "string", "default": "", "x-kinstall-ui": map[string]any{"group": "network", "order": 3, "label": "RocketMQ 显式宿主机 IP（防注册 172.x）"}},
+				"storeMode":  map[string]any{"type": "string", "enum": []string{"raft", "db"}, "default": "raft", "x-kinstall-ui": map[string]any{"group": "basic", "order": 4, "label": "Seata 事务存储模式"}},
+				"dataDir":    map[string]any{"type": "string", "default": "/data/messaging/data", "x-kinstall-ui": map[string]any{"group": "storage", "order": 5, "label": "快照数据目录"}},
+				"dataLogDir": map[string]any{"type": "string", "default": "/data/messaging/wal", "x-kinstall-ui": map[string]any{"group": "storage", "order": 6, "label": "独立 WAL 日志盘（ZK 必分离）"}},
+				"enableAcl":  map[string]any{"type": "boolean", "default": true, "x-kinstall-ui": map[string]any{"group": "security", "order": 7, "label": "开启访问控制 ACL"}},
+			},
+		},
 		OutputSchema:  map[string]string{"endpoints": "string", "authSecretRef": "string"},
 		SchemaVersion: 1,
 	}

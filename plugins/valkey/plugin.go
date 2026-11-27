@@ -205,6 +205,7 @@ func New() *Plugin {
 		"install":   &vkOp{name: "install", mutating: true, build: p.buildInstall},
 		"scale":     &vkOp{name: "scale", mutating: true, build: p.buildScale},
 		"upgrade":   &vkOp{name: "upgrade", mutating: true, build: p.buildUpgrade},
+		"failover":  &vkOp{name: "failover", mutating: true, build: p.buildFailover},
 		"backup":    &vkOp{name: "backup", mutating: false, build: p.buildBackup},
 		"restore":   &vkOp{name: "restore", mutating: true, build: p.buildRestore},
 		"uninstall": &vkOp{name: "uninstall", mutating: true, build: p.buildUninstall},
@@ -238,6 +239,18 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 		Platforms: sdk.Platforms{
 			Arch:      []string{"amd64", "arm64"},
 			PageSizes: []int{4096, 65536},
+		},
+		Operations: []string{"install", "scale", "upgrade", "failover", "backup", "restore", "uninstall"},
+		ParamSchema: map[string]any{
+			"title": "Valkey / Redis 全拓扑交付参数",
+			"properties": map[string]any{
+				"topology":         map[string]any{"type": "string", "enum": []string{"standalone", "replication-sentinel", "cluster"}, "default": "replication-sentinel", "x-kinstall-ui": map[string]any{"group": "basic", "order": 1, "label": "高可用拓扑"}},
+				"port":             map[string]any{"type": "integer", "default": 6379, "minimum": 1024, "maximum": 55535, "x-kinstall-ui": map[string]any{"group": "network", "order": 2, "label": "服务监听端口"}},
+				"sentinelPort":     map[string]any{"type": "integer", "default": 26379, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 3, "label": "Sentinel 端口", "visibleWhen": "topology == 'replication-sentinel'"}},
+				"tlsEnabled":       map[string]any{"type": "boolean", "default": true, "x-kinstall-ui": map[string]any{"group": "security", "order": 4, "label": "启用全链路 TLS 1.3"}},
+				"credentialRef":    map[string]any{"type": "string", "default": "", "x-kinstall-ui": map[string]any{"group": "security", "order": 5, "widget": "credential-select", "label": "ACL 管理员凭据引用"}},
+				"acceptRedLicense": map[string]any{"type": "boolean", "default": false, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 6, "label": "确认红灯许可证（仅 Redis 8.x 需勾选）", "riskWarning": "Redis 8.x 含 SSPL/RSAL 限制协议，禁止打入公共离线包，默认推荐使用 Valkey BSD-3"}},
+			},
 		},
 		OutputSchema: map[string]string{
 			"endpoints":         "string",
@@ -575,6 +588,17 @@ func (p *Plugin) buildUpgrade(_ context.Context, req *sdk.OpRequest) (*sdk.Pipel
 		Tasks: []sdk.TaskSpec{
 			sdk.CmdRun(fmt.Sprintf("REDISCLI_AUTH=\"$KINSTALL_VALKEY_ADMIN_PASS\" valkey-cli -p %d CLUSTER FAILOVER || true", spec.Port), "").WithKey("vk-upg-failover"),
 		},
+	})
+	return pb.Build(), nil
+}
+
+func (p *Plugin) buildFailover(_ context.Context, req *sdk.OpRequest) (*sdk.Pipeline, error) {
+	spec := parseSpec(req.Instance.Spec)
+	pb := sdk.NewPipelineBuilder()
+	cmd := fmt.Sprintf("valkey-cli -p %d SENTINEL failover %s || valkey-cli -p %d CLUSTER FAILOVER", spec.SentinelPort, req.Instance.Name, spec.Port)
+	pb.Phase(sdk.PhaseSpec{
+		Name: "valkey-controlled-failover", Disruptive: true,
+		Tasks: []sdk.TaskSpec{sdk.CmdRun(cmd, "").WithKey("valkey-failover")},
 	})
 	return pb.Build(), nil
 }

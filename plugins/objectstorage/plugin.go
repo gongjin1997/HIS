@@ -69,7 +69,19 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 			Targets:     []sdk.DeployTarget{sdk.TargetHostBinary, sdk.TargetHostContainer, sdk.TargetKubernetes},
 			LicenseTier: "green",
 		}},
-		Platforms: sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Platforms:  sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Operations: []string{"install", "ec-encode", "uninstall"},
+		ParamSchema: map[string]any{
+			"title": "多引擎 S3 对象存储参数 (SeaweedFS / Ceph / RustFS)",
+			"properties": map[string]any{
+				"engine":           map[string]any{"type": "string", "enum": []string{"seaweedfs", "ceph-rgw", "rustfs", "garage"}, "default": "seaweedfs", "x-kinstall-ui": map[string]any{"group": "basic", "order": 1, "label": "对象存储引擎（禁 MinIO CE）"}},
+				"s3Port":           map[string]any{"type": "integer", "default": 8333, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 2, "label": "S3 HTTPS 网关端口"}},
+				"filerCount":       map[string]any{"type": "integer", "default": 2, "minimum": 1, "maximum": 16, "x-kinstall-ui": map[string]any{"group": "storage", "order": 3, "label": "Filer 副本数"}},
+				"filerMetaBackend": map[string]any{"type": "string", "enum": []string{"postgresql", "valkey", "raft"}, "default": "postgresql", "x-kinstall-ui": map[string]any{"group": "storage", "order": 4, "label": "Filer 元数据后端（多副本禁 LevelDB）"}},
+				"enableEC104":      map[string]any{"type": "boolean", "default": true, "x-kinstall-ui": map[string]any{"group": "storage", "order": 5, "label": "启用冷卷 Reed-Solomon EC 10+4 纠删码"}},
+				"acceptRedLicense": map[string]any{"type": "boolean", "default": false, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 6, "label": "确认红灯许可证（仅 AGPLv3 Garage）"}},
+			},
+		},
 		OutputSchema: map[string]string{
 			"s3Endpoint":     "string",
 			"caCertSecretId": "string",

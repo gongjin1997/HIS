@@ -89,7 +89,20 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 			Targets:     []sdk.DeployTarget{sdk.TargetHostBinary, sdk.TargetHostContainer, sdk.TargetKubernetes},
 			LicenseTier: "green",
 		}},
-		Platforms:     sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Platforms:  sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Operations: []string{"install", "uninstall"},
+		ParamSchema: map[string]any{
+			"title": "ELK / Data Prepper 2.16 日志采集清洗管道参数",
+			"properties": map[string]any{
+				"engine":             map[string]any{"type": "string", "enum": []string{"data-prepper", "logstash"}, "default": "data-prepper", "x-kinstall-ui": map[string]any{"group": "basic", "order": 1, "label": "清洗消费引擎"}},
+				"workersPerNode":     map[string]any{"type": "integer", "default": 6, "minimum": 1, "maximum": 32, "x-kinstall-ui": map[string]any{"group": "basic", "order": 2, "label": "单节点消费线程数"}},
+				"topicPartitions":    map[string]any{"type": "integer", "default": 24, "minimum": 1, "maximum": 256, "x-kinstall-ui": map[string]any{"group": "network", "order": 3, "label": "Kafka Topic 分区数（需 ≥ 总线程数）"}},
+				"acknowledgments":    map[string]any{"type": "boolean", "default": true, "x-kinstall-ui": map[string]any{"group": "security", "order": 4, "label": "端到端 ACK 防丢日志 (P3 §3.3)"}},
+				"dlqBucket":          map[string]any{"type": "string", "default": "logging-dlq", "x-kinstall-ui": map[string]any{"group": "storage", "order": 5, "label": "S3/OBS 死信队列 (DLQ) 桶名"}},
+				"fluentBitMemMaxMB":  map[string]any{"type": "integer", "default": 256, "minimum": 64, "maximum": 2048, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 6, "label": "Fluent Bit 内存硬限 (MiB)"}},
+				"fluentBitDiskBufGB": map[string]any{"type": "integer", "default": 5, "minimum": 1, "maximum": 50, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 7, "label": "Fluent Bit 磁盘缓冲 (GiB)"}},
+			},
+		},
 		OutputSchema:  map[string]string{"dlqBucket": "string", "pipelineHealth": "string"},
 		SchemaVersion: 1,
 	}

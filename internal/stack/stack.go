@@ -42,11 +42,12 @@ type ExternalRef struct {
 }
 
 type InstanceNode struct {
-	ID           string           `json:"id" yaml:"id"`
-	Product      string           `json:"product" yaml:"product"`
-	DeployTarget sdk.DeployTarget `json:"deployTarget" yaml:"deployTarget"`
-	DependsOn    []string         `json:"dependsOn,omitempty" yaml:"dependsOn,omitempty"`
-	Spec         map[string]any   `json:"spec" yaml:"spec"`
+	ID             string           `json:"id" yaml:"id"`
+	Product        string           `json:"product" yaml:"product"`
+	ProductVersion string           `json:"productVersion,omitempty" yaml:"productVersion,omitempty"`
+	DeployTarget   sdk.DeployTarget `json:"deployTarget" yaml:"deployTarget"`
+	DependsOn      []string         `json:"dependsOn,omitempty" yaml:"dependsOn,omitempty"`
+	Spec           map[string]any   `json:"spec" yaml:"spec"`
 }
 
 // ResolvedDAG contains topologically layered install order and reverse uninstall order.

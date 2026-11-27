@@ -95,7 +95,19 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 			{Product: "zabbix", Versions: ">=7.0.0, <8.0.0", DefaultVer: "7.4.0", Targets: []sdk.DeployTarget{sdk.TargetHostBinary, sdk.TargetHostContainer}, LicenseTier: "red"},
 			{Product: "generic-app", Versions: ">=1.0.0, <10.0.0", DefaultVer: "1.0.0", Targets: []sdk.DeployTarget{sdk.TargetHostContainer}, LicenseTier: "green"},
 		},
-		Platforms:     sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Platforms:  sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Operations: []string{"install", "uninstall"},
+		ParamSchema: map[string]any{
+			"title": "数据/AI/办公与应用栈参数 (Milvus / MongoDB / Neo4j / OnlyOffice / Zabbix / generic-app)",
+			"properties": map[string]any{
+				"port":                 map[string]any{"type": "integer", "default": 19530, "minimum": 80, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 1, "label": "主服务端口"}},
+				"attuPort":             map[string]any{"type": "integer", "default": 19001, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 2, "label": "Milvus Attu 端口（默认 19001 避开 Sonar 9000）"}},
+				"authorizationEnabled": map[string]any{"type": "boolean", "default": true, "x-kinstall-ui": map[string]any{"group": "security", "order": 3, "label": "强制鉴权（防 CVE-2026-26190）"}},
+				"dockerSubnet":         map[string]any{"type": "string", "default": "172.28.0.0/24", "x-kinstall-ui": map[string]any{"group": "network", "order": 4, "widget": "cidr-allocator", "label": "Docker 自定义网桥子网（防撞网预检）"}},
+				"onlyOfficeMode":       map[string]any{"type": "string", "enum": []string{"docs", "legacy-workspace"}, "default": "docs", "x-kinstall-ui": map[string]any{"group": "basic", "order": 5, "label": "OnlyOffice 形态"}},
+				"acceptRedLicense":     map[string]any{"type": "boolean", "default": false, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 6, "label": "确认红灯许可证（SSPLv1/AGPLv3 客户自建）", "riskWarning": "MongoDB/Neo4j/OnlyOffice/Zabbix 属于红灯协议，禁止进入公共离线交付包"}},
+			},
+		},
 		OutputSchema:  map[string]string{"endpoint": "string", "attuUrl": "string"},
 		SchemaVersion: 1,
 	}

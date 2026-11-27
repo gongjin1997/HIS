@@ -355,6 +355,7 @@ type AuthRepo interface {
 	GetUserByID(ctx context.Context, id string) (*domain.User, error)
 	GetUserByUsername(ctx context.Context, username string) (*domain.User, error)
 	GetUserByOIDC(ctx context.Context, issuer, subject string) (*domain.User, error)
+	ListUsers(ctx context.Context) ([]domain.User, error)
 	RecordLoginFailure(ctx context.Context, userID string, maxAttempts int, lockDuration time.Duration) (attempts int, lockedUntil *time.Time, err error)
 	ResetLoginFailures(ctx context.Context, userID string) error
 	CreateSession(ctx context.Context, s *domain.UserSession) error

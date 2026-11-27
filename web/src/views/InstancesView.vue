@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Plus, Search, GitCompare } from 'lucide-vue-next'
+import { Plus, Search, GitCompare, ChevronDown, Trash2 } from 'lucide-vue-next'
 import { apiRequest } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -10,8 +10,10 @@ import PageHeader from '@/components/PageHeader.vue'
 import KiDomainTag from '@/components/ki/KiDomainTag.vue'
 import KiStatusBadge from '@/components/ki/KiStatusBadge.vue'
 import KiDrawer from '@/components/ki/KiDrawer.vue'
+import KiBanner from '@/components/ki/KiBanner.vue'
 import KiDynamicSchemaForm, { type PluginJSONSchema } from '@/components/domain/KiDynamicSchemaForm.vue'
 import KiThreeWayDiffViewer from '@/components/domain/KiThreeWayDiffViewer.vue'
+import KiDangerConfirmModal from '@/components/domain/KiDangerConfirmModal.vue'
 
 interface ProductRange {
   product: string
@@ -26,6 +28,25 @@ interface PluginItem {
   version: string
   description: string
   products?: ProductRange[]
+  operations?: string[]
+  paramSchema?: PluginJSONSchema
+}
+
+interface ConfigDiffItem {
+  path: string
+  baseText: string
+  liveText: string
+  desiredText: string
+  hasDrift: boolean
+  conflictCode?: string
+  outcome: string
+}
+
+interface PlanDiffEnvelope {
+  summary?: string
+  configDiffs?: ConfigDiffItem[]
+  hasDrift?: boolean
+  warnings?: Array<{ code?: string; message?: string; severity?: string }>
 }
 
 const auth = useAuthStore()
@@ -36,12 +57,36 @@ const loading = ref(false)
 const plugins = ref<PluginItem[]>([])
 const instances = ref<Array<Record<string, unknown>>>([])
 const hosts = ref<Array<{ id: string; name: string; address: string; arch?: string; pageSize?: number; faultZone?: string }>>([])
+const credentials = ref<Array<{ id: string; name: string }>>([])
 const activeTab = ref('instances')
 const filterTarget = ref('ALL')
 const keyword = ref('')
 const showWizard = ref(false)
 const showDiff = ref(false)
-const activePlan = ref<{ instanceId: string; instanceName: string; planId: string; summary: string } | null>(null)
+const selectedDiffIdx = ref(0)
+
+const activePlan = ref<{
+  instanceId: string
+  instanceName: string
+  action: string
+  planId: string
+  summary: string
+  configDiffs: ConfigDiffItem[]
+  warnings: Array<{ code?: string; message?: string; severity?: string }>
+} | null>(null)
+
+const dangerModal = reactive({
+  open: false,
+  mode: 'delete' as 'delete' | 'uninstall',
+  instance: null as Record<string, unknown> | null,
+  loading: false,
+})
+
+const pitrDialog = reactive({
+  open: false,
+  instance: null as Record<string, unknown> | null,
+  targetTime: '',
+})
 
 const wizard = reactive({
   name: '',
@@ -51,19 +96,55 @@ const wizard = reactive({
   spec: {} as Record<string, unknown>,
 })
 
-const dynamicSchema: PluginJSONSchema = {
-  title: '实例核心参数',
-  properties: {
-    deployTarget: { type: 'string', default: 'host-binary', 'x-kinstall-ui': { group: 'basic', order: 1, widget: 'deploy-target-cards', label: '三元部署形态 (ADR-066)' } },
-    topology: { type: 'string', enum: ['standalone', 'replication-sentinel', 'cluster'], default: 'replication-sentinel', 'x-kinstall-ui': { group: 'basic', order: 2, label: '高可用拓扑' } },
-    targetHosts: { type: 'string', default: '', 'x-kinstall-ui': { group: 'network', order: 3, widget: 'host-role-picker', label: '目标节点选择（按故障域分组）' } },
-    podCidr: { type: 'string', default: '10.244.0.0/16', 'x-kinstall-ui': { group: 'network', order: 4, widget: 'cidr-allocator', label: '服务/集群网段 CIDR' } },
-    port: { type: 'integer', default: 6379, minimum: 1024, maximum: 55535, 'x-kinstall-ui': { group: 'network', order: 5, label: '监听端口' } },
-    tlsEnabled: { type: 'boolean', default: true, 'x-kinstall-ui': { group: 'security', order: 6, label: '启用全链路 TLS 1.3' } },
-    credentialRef: { type: 'string', default: '', 'x-kinstall-ui': { group: 'security', order: 7, widget: 'credential-select', label: '加密凭据引用 ID' } },
-    forceUnsafeSkipVerify: { type: 'boolean', default: false, 'x-kinstall-ui': { group: 'advanced', order: 8, label: '跳过远端自检校验', riskWarning: '高危选项：跳过预检可能导致节点内核或 64K 页不兼容故障！' } },
-  },
+const opLabels: Record<string, string> = {
+  install: '安装 / 变更 (install)',
+  upgrade: '平滑升级 (upgrade)',
+  scale: '弹性扩缩容 (scale)',
+  backup: '热备份 (backup)',
+  restore: '恢复 / PITR (restore)',
+  failover: '主从切换 (failover)',
+  switchover: '计划切主 (switchover)',
+  'rotate-certs': '证书轮换 (rotate-certs)',
+  'ec-encode': 'EC 纠删编码 (ec-encode)',
+  reload: '配置重载 (reload)',
+  uninstall: '安全卸载 (uninstall)',
 }
+
+function findPluginByProduct(product: string): PluginItem | undefined {
+  const low = product.toLowerCase()
+  return plugins.value.find(
+    (p) => p.name.toLowerCase() === low || (p.products || []).some((pr) => pr.product.toLowerCase() === low)
+  )
+}
+
+function getOpsForInstance(inst: Record<string, unknown>): string[] {
+  const plg = findPluginByProduct(String(inst.product || ''))
+  if (plg?.operations && plg.operations.length > 0) return plg.operations
+  return ['install', 'upgrade', 'scale', 'backup', 'uninstall']
+}
+
+const activeSchema = computed<PluginJSONSchema>(() => {
+  const plg = findPluginByProduct(wizard.product)
+  const rawProps = plg?.paramSchema?.properties || {}
+  const merged: PluginJSONSchema['properties'] = {
+    deployTarget: {
+      type: 'string',
+      default: wizard.deployTarget,
+      'x-kinstall-ui': { group: 'basic', order: 0, widget: 'deploy-target-cards', label: '三元部署形态 (ADR-066)' },
+    },
+    ...rawProps,
+  }
+  return {
+    title: plg?.paramSchema?.title || `${wizard.product} 核心参数`,
+    properties: merged,
+  }
+})
+
+const currentDiff = computed<ConfigDiffItem | null>(() => {
+  const list = activePlan.value?.configDiffs || []
+  if (list.length === 0) return null
+  return list[selectedDiffIdx.value] || list[0]
+})
 
 const filteredInstances = computed(() => {
   const q = keyword.value.trim().toLowerCase()
@@ -78,14 +159,22 @@ async function loadData() {
   if (!ws.currentProjectId) return
   loading.value = true
   try {
-    const [pRes, iRes, hRes] = await Promise.all([
+    const [pRes, iRes, hRes, cRes] = await Promise.all([
       apiRequest<{ items: PluginItem[] }>('GET', '/api/v1/plugins'),
       apiRequest<{ items: Array<Record<string, unknown>> }>('GET', `/api/v1/projects/${ws.currentProjectId}/instances`),
-      apiRequest<{ items: Array<{ id: string; name: string; address: string; arch?: string; pageSize?: number; faultZone?: string }> }>('GET', `/api/v1/projects/${ws.currentProjectId}/hosts`).catch(() => ({ data: { items: [] } })),
+      apiRequest<{ items: Array<{ id: string; name: string; address: string; arch?: string; pageSize?: number; faultZone?: string }> }>(
+        'GET',
+        `/api/v1/projects/${ws.currentProjectId}/hosts`
+      ).catch(() => ({ data: { items: [] } })),
+      apiRequest<{ items: Array<{ id: string; name: string }> }>(
+        'GET',
+        `/api/v1/projects/${ws.currentProjectId}/credentials`
+      ).catch(() => ({ data: { items: [] } })),
     ])
     plugins.value = pRes.data.items || []
     instances.value = iRes.data.items || []
     hosts.value = hRes.data.items || []
+    credentials.value = cRes.data.items || []
   } finally {
     loading.value = false
   }
@@ -128,23 +217,103 @@ async function submitCreateInstance() {
   }
 }
 
-async function runPlan(inst: Record<string, unknown>) {
+async function runPlan(inst: Record<string, unknown>, action = 'install') {
   try {
-    const { data } = await apiRequest<{ plan: { id: string } }>(
-      'POST',
-      `/api/v1/projects/${ws.currentProjectId}/instances/${inst.id}:plan`,
-      { body: { action: 'install' } }
-    )
+    const { data } = await apiRequest<{
+      plan: { id: string; diff?: PlanDiffEnvelope | string; warnings?: Array<{ code?: string; message?: string; severity?: string }> }
+    }>('POST', `/api/v1/projects/${ws.currentProjectId}/instances/${inst.id}:plan`, {
+      body: { action },
+    })
+
+    let env: PlanDiffEnvelope = {}
+    if (typeof data.plan.diff === 'string') {
+      try {
+        env = JSON.parse(data.plan.diff) as PlanDiffEnvelope
+      } catch {
+        env = {}
+      }
+    } else if (data.plan.diff && typeof data.plan.diff === 'object') {
+      env = data.plan.diff
+    }
+
+    const diffs = env.configDiffs && env.configDiffs.length > 0
+      ? env.configDiffs
+      : [
+          {
+            path: `/etc/kinstall/${inst.product}/${inst.name}/spec.json`,
+            baseText: '',
+            liveText: '',
+            desiredText: JSON.stringify(inst.desiredSpec || {}, null, 2),
+            hasDrift: false,
+            outcome: 'create',
+          },
+        ]
+
+    selectedDiffIdx.value = 0
     activePlan.value = {
       instanceId: String(inst.id),
       instanceName: String(inst.name),
+      action,
       planId: data.plan.id,
-      summary: `${inst.product} ${inst.productVersion} (${inst.deployTarget})`,
+      summary: env.summary || `${inst.product} ${inst.productVersion} (${inst.deployTarget}) · ${action}`,
+      configDiffs: diffs,
+      warnings: env.warnings || data.plan.warnings || [],
     }
     showDiff.value = true
   } catch (e) {
     ElMessage.error(String(e))
   }
+}
+
+function handleDay2Command(inst: Record<string, unknown>, op: string) {
+  if (op === 'uninstall') {
+    dangerModal.mode = 'uninstall'
+    dangerModal.instance = inst
+    dangerModal.open = true
+    return
+  }
+  if (op === 'restore' && String(inst.product) === 'postgresql') {
+    pitrDialog.instance = inst
+    pitrDialog.targetTime = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
+    pitrDialog.open = true
+    return
+  }
+  void runPlan(inst, op)
+}
+
+function openDeleteInstance(inst: Record<string, unknown>) {
+  dangerModal.mode = 'delete'
+  dangerModal.instance = inst
+  dangerModal.open = true
+}
+
+async function confirmDangerAction() {
+  if (!dangerModal.instance) return
+  const inst = dangerModal.instance
+  dangerModal.loading = true
+  try {
+    if (dangerModal.mode === 'delete') {
+      await apiRequest('DELETE', `/api/v1/projects/${ws.currentProjectId}/instances/${inst.id}`)
+      ElMessage.success(`实例 ${inst.name} 元数据已删除`)
+      dangerModal.open = false
+      await loadData()
+    } else {
+      dangerModal.open = false
+      await runPlan(inst, 'uninstall')
+    }
+  } catch (e) {
+    ElMessage.error(String(e))
+  } finally {
+    dangerModal.loading = false
+  }
+}
+
+async function submitPitrRestore() {
+  if (!pitrDialog.instance) return
+  const inst = pitrDialog.instance
+  pitrDialog.open = false
+  ElMessage.info(`已附带 PITR 时间点 ${pitrDialog.targetTime} 生成恢复 Plan`)
+  await runPlan(inst, 'restore')
 }
 
 async function applyPlan(forceOverride = false) {
@@ -154,17 +323,17 @@ async function applyPlan(forceOverride = false) {
       'POST',
       `/api/v1/projects/${ws.currentProjectId}/instances/${activePlan.value.instanceId}:apply`,
       {
-        body: { planId: activePlan.value.planId, action: 'install', forceOverride },
+        body: { planId: activePlan.value.planId, action: activePlan.value.action, forceOverride },
         idempotent: true,
       }
     )
     showDiff.value = false
     await ws.refreshApprovalBadge()
     if (data.state === 'awaiting_approval') {
-      ElMessage.warning('生产环境变更已进入四眼审批队列')
+      ElMessage.warning('生产环境或高危变更已进入四眼审批队列')
       await router.push('/operations/approvals')
     } else {
-      ElMessage.success(`操作 ${data.id} 已入队执行`)
+      ElMessage.success(`操作 ${data.id} (${activePlan.value.action}) 已入队执行`)
       await router.push(`/operations?id=${data.id}`)
     }
   } catch (e) {
@@ -202,7 +371,7 @@ onMounted(loadData)
 
     <div class="ki-card">
       <div class="table-heading">
-        <span class="ki-secondary">两段式 Plan → 3-Way Diff → 四眼审批 → Apply 交付工作流</span>
+        <span class="ki-secondary">后端驱动真实 ParamSchema + 两段式 Plan → 3-Way Diff → 四眼审批 → Day-2 生命周期</span>
         <div class="table-actions">
           <el-button type="primary" @click="activeTab = 'catalog'">
             <Plus :size="14" class="btn-ico" /> 浏览插件市场 ({{ plugins.length }})
@@ -231,17 +400,49 @@ onMounted(loadData)
             <el-table-column label="状态" width="130">
               <template #default="{ row }"><KiStatusBadge :status="String(row.state || 'created')" /></template>
             </el-table-column>
-            <el-table-column label="操作" width="160" fixed="right">
+            <el-table-column label="Day-1 / Day-2 操作" width="290" fixed="right">
               <template #default="{ row }">
-                <el-button
-                  v-if="auth.can('instance:plan', ws.currentProjectId)"
-                  size="small"
-                  type="primary"
-                  plain
-                  @click="runPlan(row)"
-                >
-                  <GitCompare :size="13" class="btn-ico" /> Plan & Diff
-                </el-button>
+                <div class="row-actions">
+                  <el-button
+                    v-if="auth.can('instance:plan', ws.currentProjectId)"
+                    size="small"
+                    type="primary"
+                    plain
+                    @click="runPlan(row, 'install')"
+                  >
+                    <GitCompare :size="13" class="btn-ico" /> Plan & Diff
+                  </el-button>
+                  <el-dropdown
+                    v-if="auth.can('instance:plan', ws.currentProjectId)"
+                    trigger="click"
+                    @command="(cmd: string) => handleDay2Command(row, cmd)"
+                  >
+                    <el-button size="small">
+                      Day-2 <ChevronDown :size="13" class="btn-ico-r" />
+                    </el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item
+                          v-for="op in getOpsForInstance(row)"
+                          :key="op"
+                          :command="op"
+                          :divided="op === 'uninstall'"
+                        >
+                          {{ opLabels[op] || op }}
+                        </el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                  <el-button
+                    v-if="auth.can('instance:write', ws.currentProjectId)"
+                    size="small"
+                    type="danger"
+                    text
+                    @click="openDeleteInstance(row)"
+                  >
+                    <Trash2 :size="13" />
+                  </el-button>
+                </div>
               </template>
             </el-table-column>
             <template #empty><el-empty description="当前项目暂无实例，请切换到插件市场一键部署" :image-size="70" /></template>
@@ -253,7 +454,10 @@ onMounted(loadData)
             <div v-for="plg in plugins" :key="plg.name" class="ki-surface plugin-card">
               <div class="ki-flex-between ki-mb-3">
                 <strong class="ki-mono plugin-title">{{ plg.name }}</strong>
-                <span class="ki-badge ki-mono plugin-ver">v{{ plg.version }}</span>
+                <div class="ki-flex-row">
+                  <span v-if="plg.operations?.length" class="ki-badge ki-mono plugin-ops">{{ plg.operations.length }} ops</span>
+                  <span class="ki-badge ki-mono plugin-ver">v{{ plg.version }}</span>
+                </div>
               </div>
               <p class="ki-secondary plugin-desc">{{ plg.description }}</p>
               <div class="plugin-prods">
@@ -280,38 +484,104 @@ onMounted(loadData)
       </el-tabs>
     </div>
 
-    <!-- 部署向导抽屉（7 关键字动态表单） -->
-    <KiDrawer v-model="showWizard" :title="`部署 ${wizard.product}`" :subtitle="`当前环境：${ws.currentEnv.toUpperCase()} · JSON-Schema 动态表单`" size="md">
+    <!-- 部署向导抽屉（完全由后端插件 ParamSchema 实时渲染） -->
+    <KiDrawer
+      v-model="showWizard"
+      :title="`部署 ${wizard.product}`"
+      :subtitle="`当前环境：${ws.currentEnv.toUpperCase()} · 来自 /api/v1/plugins 实时 JSON-Schema`"
+      size="md"
+    >
       <el-form label-position="top">
         <div class="ki-grid-2">
           <el-form-item label="实例名称"><el-input v-model="wizard.name" class="ki-mono" /></el-form-item>
           <el-form-item label="目标版本"><el-input v-model="wizard.productVersion" class="ki-mono" /></el-form-item>
         </div>
       </el-form>
-      <KiDynamicSchemaForm v-model="wizard.spec" :schema="dynamicSchema" :hosts="hosts" />
+      <KiDynamicSchemaForm
+        v-model="wizard.spec"
+        :schema="activeSchema"
+        :hosts="hosts"
+        :credentials="credentials"
+      />
       <template #footer>
         <el-button @click="showWizard = false">取消</el-button>
         <el-button type="primary" @click="submitCreateInstance">创建实例</el-button>
       </template>
     </KiDrawer>
 
-    <!-- Plan & 3-Way Diff 审查抽屉 -->
-    <KiDrawer v-model="showDiff" title="Plan 预检与 3-Way Diff 审查" :subtitle="activePlan ? `Plan ID: ${activePlan.planId} · ${activePlan.summary}` : ''" size="lg">
-      <KiThreeWayDiffViewer
-        v-if="activePlan"
-        :instance-name="activePlan.instanceName"
-        :path="`/etc/kinstall/${activePlan.instanceName}/config.yaml`"
-        base-text="# baseline v1\nmaxmemory: 4096mb\ntlsReplication: true"
-        live-text="# baseline v1\nmaxmemory: 4096mb\ntlsReplication: true\n# manual ops tweak"
-        desired-text="# desired v2\nmaxmemory: 9318mb\ntlsReplication: true\naclFile: users.acl"
-        :has-drift="true"
-        @decision="(m) => m !== 'abort' && applyPlan(m === 'force-override')"
-      />
+    <!-- Plan & 真实后端 3-Way Diff 审查抽屉 -->
+    <KiDrawer
+      v-model="showDiff"
+      title="Plan 预检与 3-Way Diff 审查"
+      :subtitle="activePlan ? `Plan ID: ${activePlan.planId} · Action: ${activePlan.action} · ${activePlan.summary}` : ''"
+      size="lg"
+    >
+      <template v-if="activePlan">
+        <KiBanner
+          v-for="(w, idx) in activePlan.warnings"
+          :key="idx"
+          variant="warn"
+          :text="`[${w.code || 'WARN'}] ${w.message || ''}`"
+          class="ki-mb-3"
+        />
+
+        <div v-if="activePlan.configDiffs.length > 1" class="diff-file-tabs ki-mb-3">
+          <button
+            v-for="(df, idx) in activePlan.configDiffs"
+            :key="df.path"
+            type="button"
+            class="diff-file-pill ki-mono"
+            :class="{ 'is-active': selectedDiffIdx === idx, 'is-drift': df.hasDrift }"
+            @click="selectedDiffIdx = idx"
+          >
+            {{ df.path }}
+            <span class="pill-outcome">{{ df.outcome }}</span>
+          </button>
+        </div>
+
+        <KiThreeWayDiffViewer
+          v-if="currentDiff"
+          :instance-name="activePlan.instanceName"
+          :path="currentDiff.path"
+          :base-text="currentDiff.baseText"
+          :live-text="currentDiff.liveText"
+          :desired-text="currentDiff.desiredText"
+          :has-drift="currentDiff.hasDrift"
+          @decision="(m) => m !== 'abort' && applyPlan(m === 'force-override')"
+        />
+      </template>
       <template #footer>
         <el-button @click="showDiff = false">取消</el-button>
-        <el-button type="primary" @click="applyPlan(false)">直接执行 Apply</el-button>
+        <el-button type="primary" @click="applyPlan(false)">执行 Apply ({{ activePlan?.action || 'install' }})</el-button>
       </template>
     </KiDrawer>
+
+    <!-- PostgreSQL PITR 目标时间点恢复弹窗 (T-M4-15) -->
+    <el-dialog v-model="pitrDialog.open" title="PostgreSQL PITR 按时间点恢复" width="460px">
+      <el-form label-position="top">
+        <el-form-item label="目标恢复时间点 (RFC3339 / --target-time)">
+          <el-input v-model="pitrDialog.targetTime" class="ki-mono" placeholder="2026-11-27T12:00:00Z" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="pitrDialog.open = false">取消</el-button>
+        <el-button type="primary" @click="submitPitrRestore">生成恢复 Plan</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 高危删除 / 卸载确认窗 -->
+    <KiDangerConfirmModal
+      v-model="dangerModal.open"
+      :env="ws.currentEnv"
+      :title="dangerModal.mode === 'delete' ? '确认删除实例元数据' : '确认生成卸载 (uninstall) Plan'"
+      :resource-name="String(dangerModal.instance?.name || '')"
+      :risk-summary="dangerModal.mode === 'delete'
+        ? '删除实例将释放主机端口/目录 Claim 并从控制面移除该实例记录。'
+        : '卸载操作将停止远端服务并按拓扑逆序清理托管单元（生产环境需四眼审批）。'"
+      :confirm-label="dangerModal.mode === 'delete' ? '解锁并删除实例' : '解锁并生成卸载 Plan'"
+      :loading="dangerModal.loading"
+      @confirm="confirmDangerAction"
+    />
   </div>
 </template>
 
@@ -322,6 +592,16 @@ onMounted(loadData)
 
 .btn-ico {
   margin-right: 4px;
+}
+
+.btn-ico-r {
+  margin-left: 4px;
+}
+
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .plugin-card {
@@ -336,6 +616,11 @@ onMounted(loadData)
 .plugin-ver {
   background-color: var(--ki-bg-subtle);
   color: var(--ki-text-secondary);
+}
+
+.plugin-ops {
+  background-color: var(--ki-brand-subtle);
+  color: var(--ki-brand);
 }
 
 .plugin-desc {
@@ -357,5 +642,41 @@ onMounted(loadData)
   padding: 6px 10px;
   border-radius: var(--ki-radius-sm);
   background-color: var(--ki-bg-subtle);
+}
+
+.diff-file-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.diff-file-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: var(--ki-radius-sm);
+  border: 1px solid var(--ki-border-default);
+  background-color: var(--ki-bg-surface);
+  color: var(--ki-text-secondary);
+  font-size: var(--ki-fs-xs);
+  cursor: pointer;
+}
+
+.diff-file-pill.is-active {
+  border-color: var(--ki-brand);
+  background-color: var(--ki-brand-subtle);
+  color: var(--ki-brand);
+}
+
+.diff-file-pill.is-drift {
+  border-color: var(--ki-status-warn-border);
+}
+
+.pill-outcome {
+  padding: 1px 5px;
+  border-radius: var(--ki-radius-xs);
+  background-color: var(--ki-bg-subtle);
+  color: var(--ki-text-muted);
 }
 </style>

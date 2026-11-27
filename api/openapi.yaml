@@ -256,6 +256,130 @@ paths:
       summary: Generate DJCP Level-3 & GM/T-0054 compliance evidence summary
       responses:
         "200": { description: Compliance report }
+  /api/v1/projects/{projectId}/compliance:download:
+    get:
+      operationId: downloadComplianceEvidence
+      summary: Download signed compliance evidence.tar.gz archive
+      responses:
+        "200": { description: Gzip evidence archive }
+  /api/v1/plugins/{product}:
+    get:
+      operationId: getPluginMetadata
+      summary: Get plugin metadata, supported Day-2 operations, and x-kinstall-ui ParamSchema
+      responses:
+        "200": { description: Plugin metadata }
+  /api/v1/users:
+    get:
+      operationId: listUsers
+      summary: List platform users and RBAC role bindings (admin only)
+      responses:
+        "200": { description: User list }
+    post:
+      operationId: createUser
+      summary: Create local user with Argon2id password and role bindings
+      responses:
+        "201": { description: Created user }
+  /api/v1/auth/tokens/{tokenId}:
+    delete:
+      operationId: revokeApiToken
+      summary: Revoke an API token immediately
+      responses:
+        "204": { description: Revoked }
+  /api/v1/projects/{projectId}/credentials:
+    get:
+      operationId: listCredentials
+      summary: List project encrypted credential metadata (never returns secrets)
+      responses:
+        "200": { description: Credential metadata list }
+  /api/v1/projects/{projectId}/credentials/{credId}:
+    delete:
+      operationId: deleteCredential
+      summary: Delete credential from project vault
+      responses:
+        "204": { description: Deleted }
+  /api/v1/projects/{projectId}/hosts:import:
+    post:
+      operationId: importHostsBulk
+      summary: Bulk validate/import CMDB hosts from XLSX, CSV, or YAML
+      responses:
+        "200": { description: Import result with row-level errors }
+  /api/v1/projects/{projectId}/hosts/{hostId}:
+    delete:
+      operationId: deleteHost
+      summary: Remove unclaimed host from CMDB
+      responses:
+        "204": { description: Deleted }
+  /api/v1/projects/{projectId}/hosts/{hostId}:check:
+    post:
+      operationId: checkHostBaseline
+      summary: Check CMDB host against merged hostinit baseline profiles
+      responses:
+        "200": { description: Drift findings }
+  /api/v1/projects/{projectId}/hosts/{hostId}:init:
+    post:
+      operationId: initHost
+      summary: Schedule 22-module hostinit Operation for a CMDB host
+      responses:
+        "202": { description: Accepted Operation }
+  /api/v1/projects/{projectId}/instances/{instanceId}:
+    delete:
+      operationId: deleteInstance
+      summary: Delete instance record and release host claims
+      responses:
+        "204": { description: Deleted }
+  /api/v1/projects/{projectId}/stacks:validate:
+    post:
+      operationId: validateStackYaml
+      summary: Live Kahn topological sort & OutputSchema validation for Stack YAML
+      responses:
+        "200": { description: Validated DAG }
+  /api/v1/projects/{projectId}/stacks/{stackId}:apply:
+    post:
+      operationId: applyStack
+      summary: Queue layered Stack install Operation (with four-eyes guard in prod)
+      responses:
+        "202": { description: Accepted Operation }
+  /api/v1/projects/{projectId}/stacks/{stackId}:uninstall:
+    post:
+      operationId: uninstallStack
+      summary: Queue reverse-layer Stack uninstall Operation (externalRefs untouched)
+      responses:
+        "202": { description: Accepted Operation }
+  /api/v1/projects/{projectId}/notification-channels:
+    get:
+      operationId: listNotificationChannels
+      summary: List project notification channels (webhook/email/wecom/dingtalk/feishu)
+      responses:
+        "200": { description: Channel list }
+    post:
+      operationId: createNotificationChannel
+      summary: Register a new notification channel
+      responses:
+        "201": { description: Created channel }
+  /api/v1/projects/{projectId}/notification-channels:test:
+    post:
+      operationId: testNotificationChannels
+      summary: Dispatch a test notification through storm-folding dispatcher
+      responses:
+        "200": { description: Delivery counts }
+  /api/v1/projects/{projectId}/gitops/export:
+    get:
+      operationId: exportGitOpsYaml
+      summary: Export project instances as deterministic GitOps YAML
+      responses:
+        "200": { description: GitOps YAML }
+  /api/v1/projects/{projectId}/gitops:diff:
+    post:
+      operationId: diffGitOpsYaml
+      summary: Diff desired GitOps YAML against live instances
+      responses:
+        "200": { description: Diff entries and CI exit code }
+  /api/v1/projects/{projectId}/support-bundle:
+    post:
+      operationId: downloadSupportBundle
+      summary: Collect and download redacted diagnostic support-bundle .tar.gz
+      responses:
+        "200": { description: Gzip diagnostic bundle }
 
 components:
   parameters:

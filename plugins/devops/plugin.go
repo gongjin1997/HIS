@@ -80,7 +80,20 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 			{Product: "verdaccio", Versions: ">=6.0.0, <8.0.0", DefaultVer: "6.1.0", Targets: []sdk.DeployTarget{sdk.TargetHostBinary, sdk.TargetHostContainer}, LicenseTier: "green"},
 			{Product: "nginx", Versions: ">=1.26.0, <2.0.0", DefaultVer: "1.28.0", Targets: []sdk.DeployTarget{sdk.TargetHostBinary, sdk.TargetHostContainer}, LicenseTier: "green"},
 		},
-		Platforms:     sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Platforms:  sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Operations: []string{"install", "reload", "uninstall"},
+		ParamSchema: map[string]any{
+			"title": "DevOps 交付栈组件参数 (Harbor / GitLab / Jenkins / Sonar / Nginx)",
+			"properties": map[string]any{
+				"port":           map[string]any{"type": "integer", "default": 8080, "minimum": 80, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 1, "label": "服务端口（Harbor 443 / Sonar 9000）"}},
+				"externalValkey": map[string]any{"type": "boolean", "default": true, "x-kinstall-ui": map[string]any{"group": "storage", "order": 2, "label": "外置 64K Valkey（Harbor 鲲鹏必选）"}},
+				"externalPG":     map[string]any{"type": "boolean", "default": true, "x-kinstall-ui": map[string]any{"group": "storage", "order": 3, "label": "复用外置高可用 PostgreSQL"}},
+				"jdkVersion":     map[string]any{"type": "integer", "default": 21, "minimum": 17, "maximum": 25, "x-kinstall-ui": map[string]any{"group": "basic", "order": 4, "label": "隔离运行时 JDK 版本 (Jenkins ≥ 21)"}},
+				"useJCasC":       map[string]any{"type": "boolean", "default": true, "x-kinstall-ui": map[string]any{"group": "basic", "order": 5, "label": "启用 Jenkins JCasC 声明式配置"}},
+				"enableTlcp":     map[string]any{"type": "boolean", "default": false, "x-kinstall-ui": map[string]any{"group": "security", "order": 6, "label": "启用 Tongsuo TLCP 国密双证书"}},
+				"upstreamUrl":    map[string]any{"type": "string", "default": "http://127.0.0.1:8080", "x-kinstall-ui": map[string]any{"group": "advanced", "order": 7, "label": "Nginx 反代上游地址"}},
+			},
+		},
 		OutputSchema:  map[string]string{"url": "string", "product": "string"},
 		SchemaVersion: 1,
 	}

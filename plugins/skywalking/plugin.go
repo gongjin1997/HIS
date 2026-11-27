@@ -71,7 +71,19 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 			Targets:     []sdk.DeployTarget{sdk.TargetHostBinary, sdk.TargetHostContainer, sdk.TargetKubernetes},
 			LicenseTier: "green",
 		}},
-		Platforms: sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Platforms:  sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Operations: []string{"install", "uninstall"},
+		ParamSchema: map[string]any{
+			"title": "Apache SkyWalking 11.x APM 与 BanyanDB 参数",
+			"properties": map[string]any{
+				"storageEngine":      map[string]any{"type": "string", "enum": []string{"banyandb", "opensearch"}, "default": "banyandb", "x-kinstall-ui": map[string]any{"group": "basic", "order": 1, "label": "APM 底层存储引擎"}},
+				"enableSatellite":    map[string]any{"type": "boolean", "default": true, "x-kinstall-ui": map[string]any{"group": "network", "order": 2, "label": "启用 Satellite 1.4 L7 gRPC 均衡"}},
+				"enableOapAuth":      map[string]any{"type": "boolean", "default": true, "x-kinstall-ui": map[string]any{"group": "security", "order": 3, "label": "强制开启 OAP 探针 Token 鉴权"}},
+				"traceSqlParameters": map[string]any{"type": "boolean", "default": false, "x-kinstall-ui": map[string]any{"group": "security", "order": 4, "label": "采集明文 SQL 参数（严禁生产开启）", "riskWarning": "开启将导致敏感 PII/口令明文落入 Trace 库，Validate() 强拦截"}},
+				"tailSampleSlowMs":   map[string]any{"type": "integer", "default": 2000, "minimum": 100, "maximum": 30000, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 5, "label": "慢调用全采样阈值 (ms)"}},
+				"traceTtlDays":       map[string]any{"type": "integer", "default": 7, "minimum": 1, "maximum": 180, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 6, "label": "Trace 保留天数"}},
+			},
+		},
 		OutputSchema: map[string]string{
 			"collectorGRPC": "string",
 			"horizonUIURL":  "string",

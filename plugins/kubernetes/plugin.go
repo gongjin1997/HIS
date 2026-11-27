@@ -203,6 +203,20 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 			Arch:       []string{"amd64", "arm64"},
 			PageSizes:  []int{4096, 65536},
 		},
+		Operations: []string{"install", "scale", "upgrade", "rotate-certs", "etcd-backup", "etcd-restore", "uninstall"},
+		ParamSchema: map[string]any{
+			"title": "Kubernetes 生产级高可用集群参数",
+			"properties": map[string]any{
+				"apiServerVIP":   map[string]any{"type": "string", "default": "10.20.0.100", "x-kinstall-ui": map[string]any{"group": "basic", "order": 1, "label": "控制面 VIP / LB 入口"}},
+				"podCIDR":        map[string]any{"type": "string", "default": "10.244.0.0/16", "x-kinstall-ui": map[string]any{"group": "network", "order": 2, "widget": "cidr-allocator", "label": "Pod 网段 CIDR"}},
+				"serviceCIDR":    map[string]any{"type": "string", "default": "10.96.0.0/12", "x-kinstall-ui": map[string]any{"group": "network", "order": 3, "widget": "cidr-allocator", "label": "Service 网段 CIDR"}},
+				"cni":            map[string]any{"type": "string", "enum": []string{"calico", "cilium", "flannel", "kube-ovn"}, "default": "calico", "x-kinstall-ui": map[string]any{"group": "network", "order": 4, "label": "CNI 网络插件"}},
+				"cri":            map[string]any{"type": "string", "enum": []string{"containerd", "cri-dockerd"}, "default": "containerd", "x-kinstall-ui": map[string]any{"group": "basic", "order": 5, "label": "容器运行时 (CRI)"}},
+				"dualStack":      map[string]any{"type": "boolean", "default": false, "x-kinstall-ui": map[string]any{"group": "network", "order": 6, "label": "启用 IPv4/IPv6 双栈"}},
+				"maxPods":        map[string]any{"type": "integer", "default": 110, "minimum": 30, "maximum": 250, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 7, "label": "单节点 MaxPods"}},
+				"localProxyPort": map[string]any{"type": "integer", "default": 8443, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 8, "label": "节点本地 APIServer 代理端口"}},
+			},
+		},
 		OutputSchema: map[string]string{
 			"apiServerVIP":   "string",
 			"caCertSecretId": "string",

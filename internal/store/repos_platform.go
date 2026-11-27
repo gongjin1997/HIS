@@ -482,6 +482,24 @@ func (r *authRepo) GetUserByOIDC(ctx context.Context, issuer, subject string) (*
 	return u, err
 }
 
+func (r *authRepo) ListUsers(ctx context.Context) ([]domain.User, error) {
+	rows, err := r.s.readDB.QueryContext(ctx, `SELECT `+userCols+` FROM users ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []domain.User
+	for rows.Next() {
+		u, err := scanUser(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		u.PasswordHash = "" // never leak password hashes
+		out = append(out, *u)
+	}
+	return out, rows.Err()
+}
+
 func (r *authRepo) RecordLoginFailure(ctx context.Context, userID string, maxAttempts int, lockDuration time.Duration) (int, *time.Time, error) {
 	tx, err := r.s.writeDB.BeginTx(ctx, nil)
 	if err != nil {

@@ -105,12 +105,17 @@ func NewRouter(shutdownCtx context.Context, facade *app.Facade, authSvc *authz.S
 		ar.Get("/plugins", func(w http.ResponseWriter, _ *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{"items": s.app.ListPlugins()})
 		})
+		ar.Get("/plugins/{product}", s.handleGetPlugin)
 		ar.Get("/hostinit/profiles", func(w http.ResponseWriter, _ *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{"profiles": s.app.ListHostInitProfiles(), "modules": s.app.ListHostInitModules()})
 		})
 
-		// Auth tokens
+		// Auth users & tokens
+		ar.Get("/users", s.handleListUsers)
+		ar.Post("/users", s.handleCreateUser)
+		ar.Get("/auth/tokens", s.handleListAPITokens)
 		ar.Post("/auth/tokens", s.handleCreateAPIToken)
+		ar.Delete("/auth/tokens/{tokenId}", s.handleRevokeAPIToken)
 
 		// Projects
 		ar.Get("/projects", s.handleListProjects)
@@ -121,13 +126,19 @@ func NewRouter(shutdownCtx context.Context, facade *app.Facade, authSvc *authz.S
 
 		ar.Route("/projects/{projectId}", func(pr chi.Router) {
 			// Credentials & Secrets Rewrap (T-M1-02)
+			pr.Get("/credentials", s.handleListCredentials)
 			pr.Post("/credentials", s.handleCreateCredential)
+			pr.Delete("/credentials/{credId}", s.handleDeleteCredential)
 			pr.Post("/secrets:rewrap", s.handleRewrapSecrets)
 
-			// Hosts & External CMDB Sync (T-M3-11)
+			// Hosts, Bulk Import, Baseline Check, HostInit & External CMDB Sync
 			pr.Get("/hosts", s.handleListHosts)
 			pr.Post("/hosts", s.handleCreateHost)
+			pr.Post("/hosts:import", s.handleImportHosts)
+			pr.Delete("/hosts/{hostId}", s.handleDeleteHost)
 			pr.Post("/hosts/{hostId}:probe", s.handleProbeHost)
+			pr.Post("/hosts/{hostId}:check", s.handleCheckHostBaseline)
+			pr.Post("/hosts/{hostId}:init", s.handleInitHost)
 			pr.Post("/cmdb:sync", s.handleCMDBSync)
 
 			// Media Policies (Local / Huawei OBS·S3 / Online, ADR-077)
@@ -136,15 +147,19 @@ func NewRouter(shutdownCtx context.Context, facade *app.Facade, authSvc *authz.S
 			pr.Put("/media-policies/{policyId}", s.handleUpdateMediaPolicy)
 			pr.Post("/media-policies/{policyId}:test", s.handleTestMediaPolicy)
 
-			// Instances + 2-phase Plan / Apply
+			// Instances + 2-phase Plan / Apply / Delete
 			pr.Get("/instances", s.handleListInstances)
 			pr.Post("/instances", s.handleCreateInstance)
+			pr.Delete("/instances/{instanceId}", s.handleDeleteInstance)
 			pr.Post("/instances/{instanceId}:plan", s.handlePlanInstance)
 			pr.Post("/instances/{instanceId}:apply", s.handleApplyInstance)
 
-			// Stacks
+			// Stacks (Live Validate / Create / Apply / Reverse Uninstall)
 			pr.Get("/stacks", s.handleListStacks)
 			pr.Post("/stacks", s.handleCreateStack)
+			pr.Post("/stacks:validate", s.handleValidateStack)
+			pr.Post("/stacks/{stackId}:apply", s.handleApplyStack)
+			pr.Post("/stacks/{stackId}:uninstall", s.handleUninstallStack)
 
 			// Operations, SSE, Reports & Four-Eyes Approvals
 			pr.Get("/operations", s.handleListOperations)
@@ -167,9 +182,18 @@ func NewRouter(shutdownCtx context.Context, facade *app.Facade, authSvc *authz.S
 			pr.Post("/clusters/{instanceId}/kubeconfigs", s.handleIssueKubeconfig)
 			pr.Delete("/clusters/kubeconfigs/{kcId}", s.handleRevokeKubeconfig)
 
-			// Audit & Compliance
+			// Notification Channels & Storm-Folding Test (G2 §3)
+			pr.Get("/notification-channels", s.handleListNotificationChannels)
+			pr.Post("/notification-channels", s.handleCreateNotificationChannel)
+			pr.Post("/notification-channels:test", s.handleTestNotificationChannels)
+
+			// GitOps Export/Diff, Support Bundle & Compliance Evidence Download
+			pr.Get("/gitops/export", s.handleGitOpsExport)
+			pr.Post("/gitops:diff", s.handleGitOpsDiff)
+			pr.Post("/support-bundle", s.handleSupportBundle)
 			pr.Get("/audit", s.handleListAuditLogs)
 			pr.Post("/compliance:report", s.handleComplianceReport)
+			pr.Get("/compliance:download", s.handleComplianceDownload)
 		})
 	})
 

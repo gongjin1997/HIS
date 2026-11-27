@@ -60,7 +60,11 @@ const advancedOpen = ref(false)
 watch(
   () => props.schema,
   (s) => {
-    for (const [k, def] of Object.entries(s?.properties || {})) {
+    const nextProps = s?.properties || {}
+    for (const existing of Object.keys(form)) {
+      if (!(existing in nextProps)) delete form[existing]
+    }
+    for (const [k, def] of Object.entries(nextProps)) {
       if (props.modelValue[k] !== undefined) form[k] = props.modelValue[k]
       else if (def.default !== undefined) form[k] = def.default
       else form[k] = def.type === 'boolean' ? false : def.type === 'integer' ? 0 : ''

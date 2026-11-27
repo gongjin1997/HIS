@@ -77,7 +77,18 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 			{Product: "opensearch", Versions: ">=3.0.0, <4.0.0", DefaultVer: "3.10.0", Targets: []sdk.DeployTarget{sdk.TargetHostBinary, sdk.TargetHostContainer, sdk.TargetKubernetes}, LicenseTier: "green"},
 			{Product: "elasticsearch", Versions: ">=8.19.0, <10.0.0", DefaultVer: "9.5.7", Targets: []sdk.DeployTarget{sdk.TargetHostContainer, sdk.TargetKubernetes}, LicenseTier: "red"},
 		},
-		Platforms: sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Platforms:  sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Operations: []string{"install", "upgrade", "backup", "uninstall"},
+		ParamSchema: map[string]any{
+			"title": "OpenSearch / Elasticsearch 搜索引擎参数",
+			"properties": map[string]any{
+				"port":             map[string]any{"type": "integer", "default": 9200, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 1, "label": "HTTPS 端口"}},
+				"dataPath":         map[string]any{"type": "string", "default": "/data/opensearch", "x-kinstall-ui": map[string]any{"group": "storage", "order": 2, "label": "本地 SSD 数据目录（禁止 NFS）"}},
+				"heapGB":           map[string]any{"type": "integer", "default": 16, "minimum": 1, "maximum": 31, "x-kinstall-ui": map[string]any{"group": "storage", "order": 3, "label": "JVM 堆大小 (GiB · 硬限 ≤ 31G)"}},
+				"archiveDays":      map[string]any{"type": "integer", "default": 180, "minimum": 30, "maximum": 1095, "x-kinstall-ui": map[string]any{"group": "storage", "order": 4, "label": "等保冷归档天数 (≥ 180 天)"}},
+				"acceptRedLicense": map[string]any{"type": "boolean", "default": false, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 5, "label": "确认红灯许可证（仅 Elasticsearch）", "riskWarning": "Elasticsearch 涉及 SSPLv1/ELv2，推荐默认使用 Apache-2.0 OpenSearch"}},
+			},
+		},
 		OutputSchema: map[string]string{
 			"httpEndpoints": "string",
 			"caCertRef":     "string",

@@ -150,6 +150,20 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 			Arch:      []string{"amd64", "arm64"},
 			PageSizes: []int{4096, 65536},
 		},
+		Operations: []string{"install", "upgrade", "switchover", "backup", "restore", "uninstall"},
+		ParamSchema: map[string]any{
+			"title": "PostgreSQL 18/19 Patroni HA 与 pgBackRest 参数",
+			"properties": map[string]any{
+				"topology":          map[string]any{"type": "string", "enum": []string{"standalone", "patroni-ha"}, "default": "patroni-ha", "x-kinstall-ui": map[string]any{"group": "basic", "order": 1, "label": "高可用架构"}},
+				"port":              map[string]any{"type": "integer", "default": 5432, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 2, "label": "PostgreSQL 端口"}},
+				"haproxyRWPort":     map[string]any{"type": "integer", "default": 5000, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 3, "label": "HAProxy 主写端口", "visibleWhen": "topology == 'patroni-ha'"}},
+				"haproxyROPort":     map[string]any{"type": "integer", "default": 5001, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 4, "label": "HAProxy 只读端口", "visibleWhen": "topology == 'patroni-ha'"}},
+				"pgBackRestVersion": map[string]any{"type": "string", "default": "2.60.0", "x-kinstall-ui": map[string]any{"group": "storage", "order": 5, "label": "pgBackRest 版本 (>= 2.60.0)"}},
+				"backupRepoType":    map[string]any{"type": "string", "enum": []string{"local", "s3", "obs"}, "default": "local", "x-kinstall-ui": map[string]any{"group": "storage", "order": 6, "label": "PITR 备份仓库类型"}},
+				"credentialRef":     map[string]any{"type": "string", "default": "", "x-kinstall-ui": map[string]any{"group": "security", "order": 7, "widget": "credential-select", "label": "超级管理员加密凭据引用"}},
+				"osReserveMB":       map[string]any{"type": "integer", "default": 2048, "minimum": 512, "maximum": 32768, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 8, "label": "OS 内存预留 (MiB)"}},
+			},
+		},
 		OutputSchema: map[string]string{
 			"primaryEndpoint": "string",
 			"replicaEndpoint": "string",

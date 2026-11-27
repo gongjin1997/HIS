@@ -99,7 +99,19 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 			Targets:     []sdk.DeployTarget{sdk.TargetHostBinary, sdk.TargetHostContainer, sdk.TargetKubernetes},
 			LicenseTier: "green",
 		}},
-		Platforms: sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Platforms:  sdk.Platforms{Arch: []string{"amd64", "arm64"}, PageSizes: []int{4096, 65536}},
+		Operations: []string{"install", "upgrade", "backup", "restore", "uninstall"},
+		ParamSchema: map[string]any{
+			"title": "MySQL 8.4/9.7 LTS InnoDB Cluster 参数",
+			"properties": map[string]any{
+				"port":              map[string]any{"type": "integer", "default": 3306, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 1, "label": "MySQL 服务端口"}},
+				"routerRWPort":      map[string]any{"type": "integer", "default": 6446, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 2, "label": "MySQL Router 主写端口"}},
+				"routerROPort":      map[string]any{"type": "integer", "default": 6447, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 3, "label": "MySQL Router 只读端口"}},
+				"singlePrimary":     map[string]any{"type": "boolean", "default": true, "x-kinstall-ui": map[string]any{"group": "basic", "order": 4, "label": "MGR 单主模式（推荐防脑裂）"}},
+				"xtraBackupVersion": map[string]any{"type": "string", "default": "8.4.10", "x-kinstall-ui": map[string]any{"group": "storage", "order": 5, "label": "同版本 XtraBackup 物理热备版本"}},
+				"osReserveMB":       map[string]any{"type": "integer", "default": 2048, "minimum": 512, "maximum": 32768, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 6, "label": "OS 预留内存 (MiB)"}},
+			},
+		},
 		OutputSchema: map[string]string{
 			"rwEndpoint": "string",
 			"roEndpoint": "string",

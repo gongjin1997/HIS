@@ -54,9 +54,11 @@ type PluginMeta struct {
 	Description   string            `json:"description,omitempty" yaml:"description,omitempty"`
 	Products      []ProductRange    `json:"products,omitempty" yaml:"products,omitempty"`
 	Platforms     Platforms         `json:"platforms" yaml:"platforms"`
-	OutputSchema  map[string]string `json:"outputSchema,omitempty" yaml:"outputSchema,omitempty"`   // key -> type description for Stack static validation
-	DriftIgnore   []string          `json:"driftIgnore,omitempty" yaml:"driftIgnore,omitempty"`     // O-08: field/path whitelist ignored by 3-Way Diff
-	SchemaVersion int               `json:"schemaVersion,omitempty" yaml:"schemaVersion,omitempty"` // current plugin_schema_ver for StateMigrator
+	Operations    []string          `json:"operations,omitempty" yaml:"operations,omitempty"`     // supported Day-1/Day-2 lifecycle actions
+	ParamSchema   map[string]any    `json:"paramSchema,omitempty" yaml:"paramSchema,omitempty"`   // JSON-Schema with x-kinstall-ui keywords (WEB_DESIGN §3.3)
+	OutputSchema  map[string]string `json:"outputSchema,omitempty" yaml:"outputSchema,omitempty"` // key -> type description for Stack static validation
+	DriftIgnore   []string          `json:"driftIgnore,omitempty" yaml:"driftIgnore,omitempty"`   // O-08: field/path whitelist ignored by 3-Way Diff
+	SchemaVersion int               `json:"schemaVersion,omitempty" yaml:"schemaVersion,omitempty"`
 }
 
 // OSInfo holds normalized OS identity resolved via spec/osmatch.yaml.
