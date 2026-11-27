@@ -100,6 +100,16 @@ type ListeningPort struct {
 	Process string `json:"process,omitempty" yaml:"process,omitempty"`
 }
 
+// MountView describes a mounted filesystem's real capacity and utilization from `df -P -B1`.
+type MountView struct {
+	Device     string `json:"device" yaml:"device"`
+	MountPoint string `json:"mountPoint" yaml:"mountPoint"`
+	TotalBytes int64  `json:"totalBytes" yaml:"totalBytes"`
+	UsedBytes  int64  `json:"usedBytes" yaml:"usedBytes"`
+	AvailBytes int64  `json:"availBytes" yaml:"availBytes"`
+	UsedPct    int    `json:"usedPct" yaml:"usedPct"`
+}
+
 // FactsView is the read-only host facts snapshot exposed to plugins.
 type FactsView struct {
 	Hostname       string            `json:"hostname" yaml:"hostname"`
@@ -119,8 +129,15 @@ type FactsView struct {
 	SudoImpl       string            `json:"sudoImpl,omitempty" yaml:"sudoImpl,omitempty"` // sudo | sudo-rs
 	SELinuxMode    string            `json:"selinuxMode,omitempty" yaml:"selinuxMode,omitempty"`
 	CPUCores       int               `json:"cpuCores" yaml:"cpuCores"`
+	CPUModel       string            `json:"cpuModel,omitempty" yaml:"cpuModel,omitempty"`
 	MemMB          int               `json:"memMB" yaml:"memMB"`
+	MemAvailMB     int               `json:"memAvailMB,omitempty" yaml:"memAvailMB,omitempty"`
 	SwapMB         int               `json:"swapMB" yaml:"swapMB"`
+	UptimeSec      int64             `json:"uptimeSec,omitempty" yaml:"uptimeSec,omitempty"`
+	LoadAvg        string            `json:"loadAvg,omitempty" yaml:"loadAvg,omitempty"`
+	DockerVersion  string            `json:"dockerVersion,omitempty" yaml:"dockerVersion,omitempty"`
+	FailedUnits    []string          `json:"failedUnits,omitempty" yaml:"failedUnits,omitempty"`
+	Mounts         []MountView       `json:"mounts,omitempty" yaml:"mounts,omitempty"`
 	HugePageKB     int               `json:"hugePageKB,omitempty" yaml:"hugePageKB,omitempty"`
 	THPEnabled     string            `json:"thpEnabled,omitempty" yaml:"thpEnabled,omitempty"`
 	Sysctls        map[string]string `json:"sysctls,omitempty" yaml:"sysctls,omitempty"`

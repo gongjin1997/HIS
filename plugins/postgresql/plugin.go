@@ -178,10 +178,10 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 		Version:     "1.2.0",
 		SDKVersion:  sdk.SDKAPIVersion,
 		Type:        sdk.PluginComponent,
-		Description: "PostgreSQL 18.7/19.0 GA HA (Patroni 4.1.5 + etcd + PgBouncer + HAProxy 5000/5001), pgBackRest >= 2.60.0 PITR, least-privilege bootstrapDatabases, CloudNativePG 1.30.1",
+		Description: "PostgreSQL 16/18/19 LTS HA (Patroni 4.1.5 + etcd + PgBouncer + HAProxy 5000/5001), pgBackRest >= 2.60.0 PITR, least-privilege bootstrapDatabases, CloudNativePG 1.30.1",
 		Products: []sdk.ProductRange{{
 			Product:     "postgresql",
-			Versions:    ">=18.0.0, <20.0.0",
+			Versions:    ">=16.0.0, <20.0.0",
 			DefaultVer:  "18.7.0",
 			Targets:     []sdk.DeployTarget{sdk.TargetHostBinary, sdk.TargetHostContainer, sdk.TargetKubernetes},
 			LicenseTier: "green",
@@ -368,6 +368,55 @@ func (p *Plugin) buildInstall(_ context.Context, req *sdk.OpRequest) (*sdk.Pipel
 		return pb.Build(), nil
 	}
 
+	// Target 2: host-container (Docker Compose + persistent data dir + memory tuning + pg_isready healthcheck)
+	if target == sdk.TargetHostContainer {
+		majorVer := strings.Split(strings.TrimPrefix(ver, "v"), ".")[0]
+		if majorVer == "" {
+			majorVer = "16"
+		}
+		memMB := 8192
+		if len(req.Hosts) > 0 && req.Hosts[0].Facts.MemMB > 0 {
+			memMB = req.Hosts[0].Facts.MemMB
+		}
+		tuning := ComputeMemoryTuning(memMB, spec.OSReserveMB)
+		sharedBuf := tuning.SharedBuffersMB
+		if sharedBuf > 2048 && memMB < 16384 {
+			sharedBuf = 256
+		}
+		dataDir := fmt.Sprintf("/data/pg/%s", name)
+		composePath := fmt.Sprintf("/opt/kinstall/compose/pg-%s/docker-compose.yml", name)
+		composeYAML := fmt.Sprintf(`services:
+  postgres:
+    image: postgres:%s
+    container_name: kinstall-pg-%s
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-KinstallPG#2026}"
+      POSTGRES_DB: "%s"
+    command: ["postgres", "-c", "shared_buffers=%dMB", "-c", "max_connections=300"]
+    ports:
+      - "%d:5432"
+    volumes:
+      - %s:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+`, majorVer, name, name, sharedBuf, spec.Port, dataDir)
+		pb.Phase(sdk.PhaseSpec{
+			Name: "deploy-pg-container",
+			Tasks: []sdk.TaskSpec{
+				sdk.DockerEnsure(nil).WithKey("pg-docker"),
+				sdk.ComposeSync("kinstall-pg-"+name, composePath,
+					sdk.MountSpec{Src: dataDir, Dst: "/var/lib/postgresql/data", Type: "dir", Mode: 0o755},
+				).WithParam("composeContent", composeYAML).WithKey("pg-compose"),
+				sdk.WaitTCP(fmt.Sprintf("127.0.0.1:%d", spec.Port), 90*time.Second).WithKey("pg-ready"),
+			},
+		})
+		return pb.Build(), nil
+	}
+
 	memMB := 32768
 	if len(req.Hosts) > 0 && req.Hosts[0].Facts.MemMB > 0 {
 		memMB = req.Hosts[0].Facts.MemMB
@@ -395,7 +444,8 @@ func (p *Plugin) buildInstall(_ context.Context, req *sdk.OpRequest) (*sdk.Pipel
 		},
 	})
 
-	// Phase 2: Patroni 4.1.5 + PostgreSQL + PgBouncer + pgBackRest >= 2.60.0
+	// Phase 2: Real postgres user/dir + Patroni/PostgreSQL binary + systemd unit + TCP readiness
+	dataDir := fmt.Sprintf("/data/pg/%s", name)
 	tplVars := map[string]any{
 		"ClusterName":       name,
 		"NodeName":          name + "-node",
@@ -409,13 +459,34 @@ func (p *Plugin) buildInstall(_ context.Context, req *sdk.OpRequest) (*sdk.Pipel
 		"MaintenanceWorkMB": tuning.MaintenanceWorkMB,
 		"BackupS3Bucket":    spec.BackupS3Bucket,
 	}
+	pgPrepCmd := fmt.Sprintf("getent group postgres >/dev/null || groupadd -r postgres; id -u postgres >/dev/null 2>&1 || useradd -r -g postgres -s /bin/bash postgres; mkdir -p %s /etc/patroni /etc/pgbackrest && chown -R postgres:postgres %s /etc/patroni /etc/pgbackrest", dataDir, dataDir)
+	pgInitCmd := fmt.Sprintf(`if [ ! -f %s/PG_VERSION ]; then
+  INITDB="$(command -v initdb || find /usr/lib/postgresql /usr/pgsql* -name initdb 2>/dev/null | head -n1 || true)"
+  if [ -n "$INITDB" ]; then su - postgres -c "$INITDB -D %s --encoding=UTF8"; fi
+fi`, dataDir, dataDir)
+	pgUnit := fmt.Sprintf(`[Unit]
+Description=kinstall PostgreSQL %s (%s)
+After=network-online.target
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+ExecStart=/bin/sh -c 'if command -v patroni >/dev/null 2>&1; then exec patroni /etc/patroni/%s.yml; else PG="$(command -v postgres || find /usr/lib/postgresql /usr/pgsql* -name postgres 2>/dev/null | head -n1)"; exec "$PG" -D %s -p %d; fi'
+Restart=on-failure
+LimitNOFILE=65535
+[Install]
+WantedBy=multi-user.target
+`, ver, name, name, dataDir, spec.Port)
 	pb.Phase(sdk.PhaseSpec{
 		Name: "deploy-patroni-pg",
 		Tasks: []sdk.TaskSpec{
-			sdk.BinaryInstall("postgresql", ver, sdk.ArtifactRef{Name: "postgresql", MatchPageSize: false}).WithKey("pg-bin"),
+			sdk.CmdRun(pgPrepCmd, fmt.Sprintf("id -u postgres >/dev/null 2>&1 && test -d %s", dataDir)).WithKey("pg-user-dir"),
+			sdk.BinaryInstall("postgresql", ver, sdk.ArtifactRef{Name: "postgresql", MatchPageSize: false}).WithParam("fallbackPkg", "postgresql").WithKey("pg-bin"),
 			sdk.BinaryInstall("pgbackrest", spec.PgBackRestVersion, sdk.ArtifactRef{Name: "pgbackrest"}).WithKey("pg-backrest-bin"),
 			sdk.TemplateRender(fmt.Sprintf("/etc/patroni/%s.yml", name), sdk.TemplateRef{FS: assetsFS, Path: "templates/patroni.yml.tmpl"}, 0o640, "postgres:postgres").WithVars(tplVars).WithKey("pg-patroni-cfg"),
 			sdk.TemplateRender("/etc/pgbackrest/pgbackrest.conf", sdk.TemplateRef{FS: assetsFS, Path: "templates/pgbackrest.conf.tmpl"}, 0o640, "postgres:postgres").WithVars(tplVars).WithKey("pg-backrest-cfg"),
+			sdk.CmdRun(pgInitCmd, fmt.Sprintf("test -f %s/PG_VERSION", dataDir)).WithKey("pg-initdb"),
+			sdk.SystemdUnit("kinstall-pg-"+name+".service", sdk.TemplateRef{Inline: pgUnit}, sdk.UnitOpts{Enable: true, Start: true, RestartOnChange: true}).WithKey("pg-unit"),
 			sdk.WaitTCP(fmt.Sprintf("127.0.0.1:%d", spec.Port), 90*time.Second).WithKey("pg-ready"),
 		},
 	})
@@ -498,12 +569,19 @@ func (p *Plugin) buildSwitchover(_ context.Context, req *sdk.OpRequest) (*sdk.Pi
 }
 
 func (p *Plugin) buildUninstall(_ context.Context, req *sdk.OpRequest) (*sdk.Pipeline, error) {
+	name := req.Instance.Name
 	pb := sdk.NewPipelineBuilder()
+	stopScript := fmt.Sprintf(`systemctl disable --now kinstall-pg-%s.service patroni-%s pgbouncer-%s 2>/dev/null || true
+if [ -f /opt/kinstall/compose/pg-%s/docker-compose.yml ]; then
+  (docker compose -f /opt/kinstall/compose/pg-%s/docker-compose.yml down --remove-orphans || docker-compose -f /opt/kinstall/compose/pg-%s/docker-compose.yml down || true)
+fi
+rm -f /etc/systemd/system/kinstall-pg-%s.service
+systemctl daemon-reload 2>/dev/null || true`, name, name, name, name, name, name, name)
 	pb.Phase(sdk.PhaseSpec{
 		Name:       "uninstall-pg",
 		Disruptive: true,
 		Tasks: []sdk.TaskSpec{
-			sdk.CmdRun(fmt.Sprintf("systemctl disable --now patroni-%s pgbouncer-%s || true", req.Instance.Name, req.Instance.Name), "").WithKey("pg-stop"),
+			sdk.CmdRun(stopScript, "").WithKey("pg-stop"),
 		},
 	})
 	return pb.Build(), nil

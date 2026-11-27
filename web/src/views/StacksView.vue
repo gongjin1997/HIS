@@ -209,15 +209,165 @@ function exportStackYaml() {
   ElMessage.success(`已导出 ${stackName.value || 'kinstall-stack'}.yaml`)
 }
 
+interface PluginProductOption {
+  product: string
+  defaultVersion: string
+  targets: string[]
+}
+
+const availableProducts = ref<PluginProductOption[]>([])
+const addNodeDialog = reactive({
+  open: false,
+  id: '',
+  product: 'valkey',
+  productVersion: '9.1.4',
+  deployTarget: 'host-container',
+  dependsOn: [] as string[],
+})
+const editNodeDialog = reactive({
+  open: false,
+  id: '',
+  product: '',
+  version: '',
+  target: '',
+  dependsOn: [] as string[],
+})
+
+function openAddNodeDialog() {
+  const first = availableProducts.value[0]
+  const prod = first?.product || 'valkey'
+  addNodeDialog.product = prod
+  addNodeDialog.productVersion = first?.defaultVersion || '9.1.4'
+  addNodeDialog.deployTarget = first?.targets?.[0] || 'host-container'
+  addNodeDialog.id = `${prod.replace(/[^a-z0-9]/gi, '')}-${canvasNodes.value.length + 1}`
+  addNodeDialog.dependsOn = []
+  addNodeDialog.open = true
+}
+
+function onAddProductChange(prodName: string) {
+  const found = availableProducts.value.find((p) => p.product === prodName)
+  if (found) {
+    addNodeDialog.productVersion = found.defaultVersion || '1.0.0'
+    addNodeDialog.deployTarget = found.targets?.[0] || 'host-container'
+    addNodeDialog.id = `${found.product.replace(/[^a-z0-9]/gi, '')}-${canvasNodes.value.length + 1}`
+  }
+}
+
+function rebuildYamlFromNodes(nodesList: StackNodeInput[]): string {
+  const lines = [
+    'apiVersion: kinstall.io/v1alpha1',
+    'kind: Stack',
+    'metadata:',
+    `  name: ${stackName.value.trim() || 'custom-stack'}`,
+    'spec:',
+    '  instances:',
+  ]
+  for (const n of nodesList) {
+    lines.push(`    - id: ${n.id}`)
+    lines.push(`      product: ${n.product}`)
+    lines.push(`      productVersion: "${n.version}"`)
+    lines.push(`      deployTarget: ${n.target}`)
+    if (n.dependsOn && n.dependsOn.length > 0) {
+      lines.push(`      dependsOn: [${n.dependsOn.join(', ')}]`)
+    }
+  }
+  return lines.join('\n') + '\n'
+}
+
+function submitAddNode() {
+  const id = addNodeDialog.id.trim()
+  if (!id) {
+    ElMessage.warning('请输入节点 ID')
+    return
+  }
+  if (canvasNodes.value.some((n) => n.id === id)) {
+    ElMessage.warning(`节点 ID "${id}" 已存在`)
+    return
+  }
+  const nextNodes: StackNodeInput[] = [
+    ...canvasNodes.value,
+    {
+      id,
+      product: addNodeDialog.product,
+      version: addNodeDialog.productVersion || '1.0.0',
+      target: addNodeDialog.deployTarget || 'host-binary',
+      dependsOn: [...addNodeDialog.dependsOn],
+      status: 'draft',
+    },
+  ]
+  specYaml.value = rebuildYamlFromNodes(nextNodes)
+  addNodeDialog.open = false
+  ElMessage.success(`已添加节点 ${id} 至画布，正在实时校验依赖拓扑`)
+  void validateAndRender()
+}
+
+function connectDagNodes(sourceId: string, targetId: string) {
+  const nextNodes = canvasNodes.value.map((n) => {
+    if (n.id !== targetId) return n
+    const deps = new Set(n.dependsOn || [])
+    deps.add(sourceId)
+    return { ...n, dependsOn: Array.from(deps) }
+  })
+  specYaml.value = rebuildYamlFromNodes(nextNodes)
+  ElMessage.success(`已建立依赖连线：${sourceId} → ${targetId}`)
+  void validateAndRender()
+}
+
+function openNodeEditor(nodeId: string) {
+  const found = canvasNodes.value.find((n) => n.id === nodeId)
+  if (!found) return
+  editNodeDialog.id = found.id
+  editNodeDialog.product = found.product
+  editNodeDialog.version = found.version
+  editNodeDialog.target = found.target
+  editNodeDialog.dependsOn = [...(found.dependsOn || [])]
+  editNodeDialog.open = true
+}
+
+function saveNodeEditor() {
+  const nextNodes = canvasNodes.value.map((n) =>
+    n.id === editNodeDialog.id
+      ? { ...n, version: editNodeDialog.version, target: editNodeDialog.target, dependsOn: [...editNodeDialog.dependsOn] }
+      : n
+  )
+  specYaml.value = rebuildYamlFromNodes(nextNodes)
+  editNodeDialog.open = false
+  void validateAndRender()
+}
+
+function removeEditingNode() {
+  const rmId = editNodeDialog.id
+  const nextNodes = canvasNodes.value
+    .filter((n) => n.id !== rmId)
+    .map((n) => ({ ...n, dependsOn: (n.dependsOn || []).filter((d) => d !== rmId) }))
+  specYaml.value = rebuildYamlFromNodes(nextNodes)
+  editNodeDialog.open = false
+  ElMessage.success(`已从拓扑移除节点 ${rmId}`)
+  void validateAndRender()
+}
+
 async function loadStacks() {
   if (!ws.currentProjectId) return
   loading.value = true
   try {
-    const { data } = await apiRequest<{ items: Array<Record<string, unknown>> }>(
-      'GET',
-      `/api/v1/projects/${ws.currentProjectId}/stacks`
-    )
-    stacks.value = data.items || []
+    const [sRes, pRes] = await Promise.all([
+      apiRequest<{ items: Array<Record<string, unknown>> }>('GET', `/api/v1/projects/${ws.currentProjectId}/stacks`),
+      apiRequest<{ items: Array<{ products?: Array<{ product: string; defaultVersion?: string; targets?: string[] }> }> }>('GET', '/api/v1/plugins').catch(
+        () => ({ data: { items: [] } })
+      ),
+    ])
+    stacks.value = sRes.data.items || []
+    const prods: PluginProductOption[] = []
+    for (const pl of pRes.data.items || []) {
+      for (const pr of pl.products || []) {
+        prods.push({
+          product: pr.product,
+          defaultVersion: pr.defaultVersion || '1.0.0',
+          targets: pr.targets || ['host-binary'],
+        })
+      }
+    }
+    availableProducts.value = prods
     await validateAndRender()
   } finally {
     loading.value = false
@@ -345,18 +495,24 @@ onMounted(loadStacks)
           复合应用栈拓扑画布
           <span class="sub">{{ editingStackId ? `正在编辑：${stackName}` : '模板草稿预览（保存后可分层 Apply）' }}</span>
         </span>
-        <div v-if="resolvedDag" class="dag-layers">
-          <span v-for="(layer, i) in resolvedDag.installLayers" :key="i" class="ki-badge ki-mono layer-pill">
-            L{{ i }} · {{ layer.join(', ') }}
-          </span>
-          <span v-if="resolvedDag.externalRefIds?.length" class="ki-badge ki-mono ext-pill">
-            外部引用保护：{{ resolvedDag.externalRefIds.join(', ') }}
-          </span>
+        <div class="ki-flex-row ki-flex-wrap">
+          <div v-if="resolvedDag" class="dag-layers">
+            <span v-for="(layer, i) in resolvedDag.installLayers" :key="i" class="ki-badge ki-mono layer-pill">
+              L{{ i }} · {{ layer.join(', ') }}
+            </span>
+            <span v-if="resolvedDag.externalRefIds?.length" class="ki-badge ki-mono ext-pill">
+              外部引用保护：{{ resolvedDag.externalRefIds.join(', ') }}
+            </span>
+          </div>
+          <el-button size="small" type="primary" plain @click="openAddNodeDialog">
+            <Plus :size="13" class="btn-ico" /> 添加组件节点
+          </el-button>
         </div>
       </div>
 
       <KiBanner v-if="validateError" variant="danger" :text="validateError" class="ki-mb-3" />
-      <StackCanvas :instances="canvasNodes" />
+      <StackCanvas :instances="canvasNodes" @connect-edge="connectDagNodes" @select-node="openNodeEditor" />
+      <div class="dag-tip ki-muted">提示：点击画布中的任意组件节点可编辑版本/形态/依赖或移除；从节点右侧输出端口拖线至另一节点左侧可可视化建立依赖。</div>
     </div>
 
     <div class="ki-grid-2 stack-bottom-grid">
@@ -444,6 +600,72 @@ onMounted(loadStacks)
       </div>
     </div>
 
+    <!-- 可视化添加节点弹窗 -->
+    <el-dialog v-model="addNodeDialog.open" title="向应用栈画布添加组件节点" width="480px">
+      <el-form label-position="top">
+        <div class="ki-grid-2">
+          <el-form-item label="选择基础设施组件">
+            <el-select v-model="addNodeDialog.product" filterable class="ki-w-full" @change="onAddProductChange">
+              <el-option v-for="p in availableProducts" :key="p.product" :label="`${p.product} (${p.defaultVersion})`" :value="p.product" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="节点标识 (Stack 内唯一 ID)">
+            <el-input v-model="addNodeDialog.id" class="ki-mono" />
+          </el-form-item>
+          <el-form-item label="组件版本">
+            <el-input v-model="addNodeDialog.productVersion" class="ki-mono" />
+          </el-form-item>
+          <el-form-item label="交付形态">
+            <el-select v-model="addNodeDialog.deployTarget" class="ki-w-full">
+              <el-option label="主机二进制 (host-binary)" value="host-binary" />
+              <el-option label="单机容器 (host-container)" value="host-container" />
+              <el-option label="Kubernetes 集群 (kubernetes)" value="kubernetes" />
+            </el-select>
+          </el-form-item>
+        </div>
+        <el-form-item label="上游依赖节点 (dependsOn)">
+          <el-select v-model="addNodeDialog.dependsOn" multiple class="ki-w-full" placeholder="可选：选择启动前必须先就绪的上游节点">
+            <el-option v-for="n in canvasNodes" :key="n.id" :label="`${n.id} (${n.product})`" :value="n.id" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="addNodeDialog.open = false">取消</el-button>
+        <el-button type="primary" @click="submitAddNode">加入拓扑画布</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 节点属性可视化编辑弹窗 -->
+    <el-dialog v-model="editNodeDialog.open" :title="`编辑拓扑节点 · ${editNodeDialog.id} (${editNodeDialog.product})`" width="460px">
+      <el-form label-position="top">
+        <div class="ki-grid-2">
+          <el-form-item label="组件版本"><el-input v-model="editNodeDialog.version" class="ki-mono" /></el-form-item>
+          <el-form-item label="交付形态">
+            <el-select v-model="editNodeDialog.target" class="ki-w-full">
+              <el-option label="主机二进制 (host-binary)" value="host-binary" />
+              <el-option label="单机容器 (host-container)" value="host-container" />
+              <el-option label="Kubernetes 集群 (kubernetes)" value="kubernetes" />
+            </el-select>
+          </el-form-item>
+        </div>
+        <el-form-item label="上游依赖 (dependsOn)">
+          <el-select v-model="editNodeDialog.dependsOn" multiple class="ki-w-full">
+            <el-option
+              v-for="n in canvasNodes.filter((x) => x.id !== editNodeDialog.id)"
+              :key="n.id"
+              :label="`${n.id} (${n.product})`"
+              :value="n.id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button type="danger" plain @click="removeEditingNode">移除此节点</el-button>
+        <el-button @click="editNodeDialog.open = false">取消</el-button>
+        <el-button type="primary" @click="saveNodeEditor">保存节点属性</el-button>
+      </template>
+    </el-dialog>
+
     <KiDangerConfirmModal
       v-model="dangerModal.open"
       :env="String(dangerModal.stack?.env || ws.currentEnv)"
@@ -464,6 +686,11 @@ onMounted(loadStacks)
 <style scoped>
 .btn-ico {
   margin-right: 4px;
+}
+
+.dag-tip {
+  margin-top: 8px;
+  font-size: var(--ki-fs-xs);
 }
 
 .stack-bottom-grid {

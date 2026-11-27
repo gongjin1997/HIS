@@ -202,7 +202,7 @@ func ResolveOperationHosts(ctx context.Context, st ports.Store, sec ports.Secret
 			candidates = allHosts
 		}
 
-	case "stack":
+	case "stack", "job":
 		allHosts, err := st.Hosts().ListByProject(ctx, op.ProjectID)
 		if err != nil {
 			return nil, err

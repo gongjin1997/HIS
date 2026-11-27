@@ -3,15 +3,20 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
+  Activity,
   Box,
   Check,
   ChevronDown,
   Edit3,
+  FileText,
   GitCompare,
   Layers,
+  Play,
   Plus,
+  RotateCw,
   Search,
   Server,
+  Square,
   Trash2,
 } from 'lucide-vue-next'
 import { apiRequest } from '@/api/client'
@@ -379,7 +384,7 @@ function licenseLabel(tier?: string): string {
   return 'Apache-2.0/BSD'
 }
 
-async function submitCreateInstance() {
+async function submitCreateInstance(andPlan = false) {
   if (!wizard.name.trim()) {
     ElMessage.warning('请输入实例名称')
     return
@@ -391,23 +396,125 @@ async function submitCreateInstance() {
     desiredSpec.targetHosts = [...wizard.targetHosts]
   }
   try {
-    await apiRequest('POST', `/api/v1/projects/${ws.currentProjectId}/instances`, {
-      body: {
-        env: ws.currentEnv,
-        name: wizard.name.trim(),
-        product: wizard.product,
-        productVersion: wizard.productVersion,
-        deployTarget: String(wizard.spec.deployTarget || wizard.deployTarget),
-        desiredSpec,
-      },
-      idempotent: true,
-    })
-    ElMessage.success('实例已创建，点击「Plan & Diff」即可审查配置并下发部署')
+    const { data: created } = await apiRequest<Record<string, unknown>>(
+      'POST',
+      `/api/v1/projects/${ws.currentProjectId}/instances`,
+      {
+        body: {
+          env: ws.currentEnv,
+          name: wizard.name.trim(),
+          product: wizard.product,
+          productVersion: wizard.productVersion,
+          deployTarget: String(wizard.spec.deployTarget || wizard.deployTarget),
+          desiredSpec,
+        },
+        idempotent: true,
+      }
+    )
     showWizard.value = false
     activeTab.value = 'instances'
     await loadData()
+    if (andPlan && created?.id) {
+      ElMessage.success('实例已创建，正在生成 Plan & 3-Way Diff 审查视图…')
+      await runPlan(created, 'install')
+    } else {
+      ElMessage.success('实例已创建，点击「Plan & Diff」即可审查配置并下发部署')
+    }
   } catch (e) {
     ElMessage.error(String(e))
+  }
+}
+
+interface HostLiveStatus {
+  hostId: string
+  hostName: string
+  address: string
+  reachable: boolean
+  serviceActive: boolean
+  serviceState: string
+  mainPid?: number
+  containerInfo?: string
+  portsUp?: number[]
+  portsDown?: number[]
+  appProbeOk: boolean
+  appProbeMsg?: string
+  error?: string
+  latencyMs: number
+}
+
+interface LiveProbeReport {
+  overallState: string
+  unitName: string
+  composePath?: string
+  hosts: HostLiveStatus[]
+  probedAt: string
+}
+
+const liveRuntime = reactive({
+  probing: false,
+  controlling: false,
+  logsLoading: false,
+  probeReport: null as LiveProbeReport | null,
+  logsText: '',
+  logsHost: '',
+  logsLines: 200,
+})
+
+async function probeInstanceLive() {
+  const id = String(detailDrawer.data?.instance?.id || '')
+  if (!id) return
+  liveRuntime.probing = true
+  try {
+    const { data } = await apiRequest<LiveProbeReport>(
+      'POST',
+      `/api/v1/projects/${ws.currentProjectId}/instances/${id}:probe`
+    )
+    liveRuntime.probeReport = data
+    ElMessage.success(`实时探活完成：综合状态「${data.overallState}」`)
+    await loadData()
+  } catch (e) {
+    ElMessage.error(String(e))
+  } finally {
+    liveRuntime.probing = false
+  }
+}
+
+async function controlInstanceLive(action: 'start' | 'restart' | 'stop') {
+  const id = String(detailDrawer.data?.instance?.id || '')
+  if (!id) return
+  liveRuntime.controlling = true
+  try {
+    const { data } = await apiRequest<LiveProbeReport>(
+      'POST',
+      `/api/v1/projects/${ws.currentProjectId}/instances/${id}:control`,
+      { body: { action } }
+    )
+    liveRuntime.probeReport = data
+    const labelMap = { start: '启动', restart: '重启', stop: '停止' }
+    ElMessage.success(`服务${labelMap[action]}完成，当前真实运行态：${data.overallState}`)
+    await loadData()
+  } catch (e) {
+    ElMessage.error(String(e))
+  } finally {
+    liveRuntime.controlling = false
+  }
+}
+
+async function fetchInstanceLiveLogs() {
+  const id = String(detailDrawer.data?.instance?.id || '')
+  if (!id) return
+  liveRuntime.logsLoading = true
+  try {
+    const { data } = await apiRequest<{ logs: string; hostName: string }>(
+      'GET',
+      `/api/v1/projects/${ws.currentProjectId}/instances/${id}/logs?lines=${liveRuntime.logsLines}`
+    )
+    liveRuntime.logsText = data.logs || '(暂无日志输出)'
+    liveRuntime.logsHost = data.hostName || ''
+  } catch (e) {
+    ElMessage.error(String(e))
+  } finally {
+    liveRuntime.logsLoading = false
   }
 }
 
@@ -415,6 +522,9 @@ async function openInstanceDetail(inst: Record<string, unknown>) {
   detailDrawer.open = true
   detailDrawer.loading = true
   detailDrawer.editing = false
+  liveRuntime.probeReport = null
+  liveRuntime.logsText = ''
+  liveRuntime.logsHost = ''
   try {
     const { data } = await apiRequest<InstanceDetailPayload>(
       'GET',
@@ -836,6 +946,16 @@ onMounted(loadData)
       :subtitle="`当前环境：${ws.currentEnv.toUpperCase()} · 实时 JSON-Schema 动态参数向导`"
       size="lg"
     >
+      <div class="wizard-steps-bar ki-mb-4">
+        <span class="wiz-step is-done">1. 选定组件与版本</span>
+        <span class="wiz-sep">→</span>
+        <span class="wiz-step" :class="{ 'is-done': wizard.targetHosts.length > 0 }">2. 绑定目标主机 ({{ wizard.targetHosts.length }})</span>
+        <span class="wiz-sep">→</span>
+        <span class="wiz-step is-done">3. 动态参数配置</span>
+        <span class="wiz-sep">→</span>
+        <span class="wiz-step">4. Plan Diff & Apply</span>
+      </div>
+
       <el-form label-position="top">
         <div class="ki-grid-2">
           <el-form-item label="实例名称 (DNS-1123)"><el-input v-model="wizard.name" class="ki-mono" /></el-form-item>
@@ -898,7 +1018,10 @@ onMounted(loadData)
       />
       <template #footer>
         <el-button @click="showWizard = false">取消</el-button>
-        <el-button type="primary" @click="submitCreateInstance">创建实例</el-button>
+        <el-button @click="submitCreateInstance(false)">仅保存实例</el-button>
+        <el-button type="primary" @click="submitCreateInstance(true)">
+          <GitCompare :size="14" class="btn-ico" /> 创建并立即生成 Plan & Diff
+        </el-button>
       </template>
     </KiDrawer>
 
@@ -929,6 +1052,82 @@ onMounted(loadData)
             <div class="k">交付形态</div><div><KiDomainTag kind="target" :value="String(detailDrawer.data.instance.deployTarget || 'host-binary')" /></div>
             <div class="k">当前状态</div><div><KiStatusBadge :status="String(detailDrawer.data.instance.state || 'created')" /></div>
             <div class="k">所属应用栈</div><div class="ki-mono">{{ detailDrawer.data.stackName || '独立实例' }}</div>
+          </div>
+
+          <div class="runtime-bar ki-mb-4">
+            <div class="ki-flex-row ki-flex-wrap">
+              <el-button size="small" type="primary" plain :loading="liveRuntime.probing" @click="probeInstanceLive">
+                <Activity :size="13" class="btn-ico" /> 实时 SSH 探活
+              </el-button>
+              <el-button
+                v-if="auth.can('instance:apply', ws.currentProjectId)"
+                size="small"
+                :loading="liveRuntime.controlling"
+                @click="controlInstanceLive('start')"
+              >
+                <Play :size="12" class="btn-ico" /> 启动
+              </el-button>
+              <el-button
+                v-if="auth.can('instance:apply', ws.currentProjectId)"
+                size="small"
+                :loading="liveRuntime.controlling"
+                @click="controlInstanceLive('restart')"
+              >
+                <RotateCw :size="12" class="btn-ico" /> 重启
+              </el-button>
+              <el-button
+                v-if="auth.can('instance:apply', ws.currentProjectId)"
+                size="small"
+                type="danger"
+                plain
+                :loading="liveRuntime.controlling"
+                @click="controlInstanceLive('stop')"
+              >
+                <Square :size="12" class="btn-ico" /> 停止
+              </el-button>
+              <el-button size="small" :loading="liveRuntime.logsLoading" @click="fetchInstanceLiveLogs">
+                <FileText :size="12" class="btn-ico" /> 实时服务日志
+              </el-button>
+            </div>
+          </div>
+
+          <div v-if="liveRuntime.probeReport" class="ki-mb-4">
+            <div class="section-title">
+              真实主机运行态探活结果
+              <span class="sub">单元：{{ liveRuntime.probeReport.unitName }} · 综合状态：{{ liveRuntime.probeReport.overallState }}</span>
+            </div>
+            <el-table :data="liveRuntime.probeReport.hosts" size="small">
+              <el-table-column prop="hostName" label="主机" min-width="115">
+                <template #default="{ row }"><b class="ki-mono">{{ row.hostName }}</b></template>
+              </el-table-column>
+              <el-table-column label="服务状态" width="110">
+                <template #default="{ row }">
+                  <KiStatusBadge :status="row.serviceActive ? 'ok' : row.reachable ? 'failed' : 'warn'" :label="row.serviceState" />
+                </template>
+              </el-table-column>
+              <el-table-column label="PID / 耗时" width="110">
+                <template #default="{ row }"><span class="ki-mono">{{ row.mainPid || '—' }} · {{ row.latencyMs }}ms</span></template>
+              </el-table-column>
+              <el-table-column label="监听端口" min-width="120">
+                <template #default="{ row }">
+                  <span v-if="row.portsUp?.length" class="ki-text-ok ki-mono">UP: {{ row.portsUp.join(',') }}</span>
+                  <span v-if="row.portsDown?.length" class="ki-text-danger ki-mono"> DOWN: {{ row.portsDown.join(',') }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="探活详情" min-width="140">
+                <template #default="{ row }">
+                  <span class="ki-mono ki-muted">{{ row.error || row.appProbeMsg || row.containerInfo || '—' }}</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+
+          <div v-if="liveRuntime.logsText" class="ki-mb-4">
+            <div class="ki-flex-between ki-mb-2">
+              <div class="section-title no-mb">实时服务日志 · {{ liveRuntime.logsHost }} (最近 {{ liveRuntime.logsLines }} 行)</div>
+              <el-button size="small" :loading="liveRuntime.logsLoading" @click="fetchInstanceLiveLogs">刷新日志</el-button>
+            </div>
+            <pre class="ki-mono live-logs-pre">{{ liveRuntime.logsText }}</pre>
           </div>
 
           <template v-if="!detailDrawer.editing">
@@ -1090,6 +1289,57 @@ onMounted(loadData)
 
 .btn-ico-r {
   margin-left: 4px;
+}
+
+.no-mb {
+  margin-bottom: 0;
+}
+
+.wizard-steps-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--ki-radius-sm);
+  background-color: var(--ki-bg-subtle);
+  border: 1px solid var(--ki-border-subtle);
+  font-size: var(--ki-fs-xs);
+}
+
+.wiz-step {
+  color: var(--ki-text-muted);
+  font-weight: var(--ki-fw-medium);
+}
+
+.wiz-step.is-done {
+  color: var(--ki-brand);
+  font-weight: var(--ki-fw-semibold);
+}
+
+.wiz-sep {
+  color: var(--ki-text-muted);
+}
+
+.runtime-bar {
+  padding: 10px 12px;
+  border-radius: var(--ki-radius-sm);
+  background-color: var(--ki-bg-subtle);
+  border: 1px solid var(--ki-border-subtle);
+}
+
+.live-logs-pre {
+  margin: 0;
+  padding: 12px;
+  max-height: 280px;
+  overflow: auto;
+  border-radius: var(--ki-radius-sm);
+  background-color: var(--ki-bg-terminal);
+  color: var(--ki-term-fg);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .plugin-card {

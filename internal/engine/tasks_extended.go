@@ -388,6 +388,13 @@ func (t *DockerEnsureTask) Check(ctx context.Context, rc *RunContext, spec sdk.T
 	if err != nil {
 		return CheckResult{}, err
 	}
+	// On live hosts where Docker is already installed and healthy, preserve the host's native docker.service
+	// unless forceReconfigure=true is explicitly requested (avoids restarting unrelated containers on host).
+	if !boolParam(spec.Params, "skipSystemctl") && !boolParam(spec.Params, "forceReconfigure") {
+		if res, rerr := rc.Session.Run(ctx, ports.Command{Script: "docker info >/dev/null 2>&1", Sudo: true}); rerr == nil && res.ExitCode == 0 {
+			return CheckResult{Converged: true, Summary: "docker engine active and healthy"}, nil
+		}
+	}
 	stD, errD := rc.Session.Stat(ctx, "/etc/docker/daemon.json")
 	if errD != nil || !stD.Exists || stD.SHA256 != planner.SHA256Hex(daemonJSON) {
 		return CheckResult{Converged: false, Summary: "daemon.json needs update"}, nil //nolint:nilerr // missing file triggers convergence
@@ -511,12 +518,12 @@ Requires=docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=%s
-ExecStart=/usr/bin/docker compose -f %s up -d --remove-orphans
-ExecStop=/usr/bin/docker compose -f %s down
+ExecStart=/bin/sh -c 'if docker compose version >/dev/null 2>&1; then exec docker compose -f %s up -d --remove-orphans; else exec docker-compose -f %s up -d --remove-orphans; fi'
+ExecStop=/bin/sh -c 'if docker compose version >/dev/null 2>&1; then exec docker compose -f %s down; else exec docker-compose -f %s down; fi'
 
 [Install]
 WantedBy=multi-user.target
-`, serviceName, dir, composePath, composePath)
+`, serviceName, dir, composePath, composePath, composePath, composePath)
 }
 
 func extractMounts(spec sdk.TaskSpec) ([]sdk.MountSpec, error) {
@@ -649,15 +656,32 @@ func (t *ComposeSyncTask) Apply(ctx context.Context, rc *RunContext, spec sdk.Ta
 		return ApplyResult{}, err
 	}
 	if !boolParam(spec.Params, "skipDockerUp") {
-		_, err := rc.Session.Run(ctx, ports.Command{
-			Script:    fmt.Sprintf("systemctl daemon-reload && systemctl enable --now %s.service", shellescape.Quote(serviceName)),
+		upCmd := fmt.Sprintf(`set -e
+if [ ! -f %s ]; then echo "compose file missing: %s" >&2; exit 1; fi
+if docker compose version >/dev/null 2>&1; then
+  docker compose -f %s up -d --remove-orphans
+elif command -v docker-compose >/dev/null 2>&1; then
+  docker-compose -f %s up -d --remove-orphans
+else
+  echo "neither 'docker compose' nor 'docker-compose' found on target host" >&2
+  exit 1
+fi
+systemctl daemon-reload && systemctl enable %s.service 2>/dev/null || true`,
+			shellescape.Quote(composePath), composePath,
+			shellescape.Quote(composePath), shellescape.Quote(composePath),
+			shellescape.Quote(serviceName))
+		res, err := rc.Session.Run(ctx, ports.Command{
+			Script:    upCmd,
 			Sudo:      true,
 			Async:     spec.Async,
 			TaskRunID: rc.TaskRunID,
+			Stdout:    rc.LogStdout,
+			Stderr:    rc.LogStderr,
 		})
 		if err != nil {
 			return ApplyResult{}, err
 		}
+		return ApplyResult{Changed: true, Output: res.Stdout}, nil
 	}
 	return ApplyResult{Changed: true}, nil
 }

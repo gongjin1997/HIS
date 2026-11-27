@@ -21,6 +21,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/kinstall/kinstall/internal/artifact/catalog"
 	"github.com/kinstall/kinstall/internal/domain"
 	"github.com/kinstall/kinstall/internal/ports"
 	sdk "github.com/kinstall/kinstall/pkg/sdk/v1alpha1"
@@ -440,10 +441,18 @@ type PolicyMediaResolver struct {
 	cacheDir    string
 	client      *http.Client
 	credDecrypt CredentialDecryptor
+	catalog     *catalog.Store
 }
 
 func NewPolicyMediaResolver(cacheDir string) *PolicyMediaResolver {
 	return &PolicyMediaResolver{cacheDir: cacheDir, client: &http.Client{Timeout: 30 * time.Second}}
+}
+
+// WithCatalog attaches the local offline artifact store so PolicyMediaResolver can resolve
+// locally uploaded binaries/tarballs without requiring hardcoded SHA-256 constants in plugins.
+func (p *PolicyMediaResolver) WithCatalog(st *catalog.Store) *PolicyMediaResolver {
+	p.catalog = st
+	return p
 }
 
 // WithCredentialDecryptor injects Vault credential decryption so OBS/S3 sources authenticate with real AK/SK.
@@ -502,7 +511,20 @@ func (p *PolicyMediaResolver) Resolve(ctx context.Context, policy domain.MediaPo
 	}
 	res := NewResolver(sources, localRoots, p.cacheDir, policy.OfflineStrict, policy.StrictLocal, policy.DeliveryMode, 15*time.Minute)
 	logicalPath := path.Join("binaries", ref.Product, ref.Version, ref.Arch, ref.Name)
-	plan, err := res.ResolveSpec(ctx, ArtifactSpec{LogicalPath: logicalPath, SHA256: ref.ExpectedSHA}, policy.DeliveryMode == "direct-presigned")
+	expectedSHA := ref.ExpectedSHA
+	// When plugin omits a hardcoded SHA-256, look up the real verified file in the local offline artifact catalog.
+	if expectedSHA == "" && p.catalog != nil {
+		if matched, ok := p.catalog.FindMatch(ref.Product, ref.Name, ref.Version, ref.Arch, ref.PageSize, ref.MatchPageSize, localRoots); ok {
+			return &ports.ResolvedMedia{
+				SourceType:   "local",
+				DeliveryMode: "relay-cache",
+				LocalPath:    matched.AbsPath,
+				SHA256:       matched.SHA256,
+				SizeBytes:    matched.SizeBytes,
+			}, nil
+		}
+	}
+	plan, err := res.ResolveSpec(ctx, ArtifactSpec{LogicalPath: logicalPath, SHA256: expectedSHA}, policy.DeliveryMode == "direct-presigned")
 	if err != nil {
 		return nil, err
 	}

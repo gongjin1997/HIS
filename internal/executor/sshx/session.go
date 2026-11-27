@@ -333,7 +333,8 @@ fi`, shellescape.Quote(path.Join(runDir, "pid")))
 
 // Upload implements atomic file replacement across Channel 1 (SFTP concurrent writes)
 // and Channel 2 (SSH stdin streaming fallback when SFTP is disabled) (D1 §2.5).
-// Temporary file is always created in the same directory as dst to avoid EXDEV cross-device moves.
+// For non-root SudoPassword targets, stages through /tmp (user-writable) then atomically promotes
+// into the destination directory under sudo -S to avoid permission denied and EXDEV cross-device races.
 func (s *sshSession) Upload(ctx context.Context, r io.Reader, dst string, mode fs.FileMode, owner string) (string, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -343,24 +344,31 @@ func (s *sshSession) Upload(ctx context.Context, r io.Reader, dst string, mode f
 	localSHA := hex.EncodeToString(sum[:])
 
 	dir := path.Dir(dst)
-	tmpPath := path.Join(dir, ".kinstall.tmp."+domain.NewID("f"))
+	needSudo := s.target.User != "root" && s.target.SudoMode != ports.SudoNone
+	stageViaTmp := s.target.User != "root" && s.target.SudoMode == ports.SudoPassword
+	tmpID := domain.NewID("f")
+	tmpPath := path.Join(dir, ".kinstall.tmp."+tmpID)
+	uploadPath := tmpPath
+	if stageViaTmp {
+		uploadPath = path.Join("/tmp", ".kinstall.stage."+tmpID)
+	}
 
 	// Ensure parent directory exists
-	if _, err := s.runSync(ctx, ports.Command{Script: "mkdir -p " + shellescape.Quote(dir), Sudo: s.target.SudoMode != ports.SudoNone}); err != nil {
+	if _, err := s.runSync(ctx, ports.Command{Script: "mkdir -p " + shellescape.Quote(dir), Sudo: needSudo}); err != nil {
 		return "", err
 	}
 
 	// Channel 1: Try SFTP with UseConcurrentWrites(true) + MaxPacket(64 KiB)
 	usedSFTP := false
-	if s.target.User == "root" || s.target.SudoMode == ports.SudoNone {
-		if err := s.uploadViaSFTP(ctx, data, tmpPath); err == nil {
+	if s.target.User == "root" || s.target.SudoMode == ports.SudoNone || stageViaTmp {
+		if err := s.uploadViaSFTP(ctx, data, uploadPath); err == nil {
 			usedSFTP = true
 		}
 	}
 
 	// Channel 2: Automatic fallback to SSH stdin streaming if SFTP unavailable or sudo required
 	if !usedSFTP {
-		if err := s.uploadViaStdin(ctx, data, tmpPath); err != nil {
+		if err := s.uploadViaStdin(ctx, data, uploadPath, !stageViaTmp && s.target.SudoMode == ports.SudoNoPasswd); err != nil {
 			return "", err
 		}
 	}
@@ -370,17 +378,23 @@ func (s *sshSession) Upload(ctx context.Context, r io.Reader, dst string, mode f
 	if owner != "" {
 		chownPart = fmt.Sprintf("chown %s %s && ", shellescape.Quote(owner), shellescape.Quote(tmpPath))
 	}
+	promotePart := ""
+	if stageViaTmp {
+		promotePart = fmt.Sprintf("cp -f %s %s && rm -f %s\n",
+			shellescape.Quote(uploadPath), shellescape.Quote(tmpPath), shellescape.Quote(uploadPath))
+	}
 	finalize := fmt.Sprintf(`set -e
 GOT="$(sha256sum %s | awk '{print $1}')"
 if [ "$GOT" != %s ]; then rm -f %s; echo "sha256 mismatch: $GOT" >&2; exit 1; fi
-chmod %04o %s
+%schmod %04o %s
 %smv -f %s %s
 if command -v restorecon >/dev/null 2>&1 && command -v getenforce >/dev/null 2>&1 && [ "$(getenforce 2>/dev/null)" = "Enforcing" ]; then
   restorecon %s 2>/dev/null || true
 fi`,
-		shellescape.Quote(tmpPath),
+		shellescape.Quote(uploadPath),
 		shellescape.Quote(localSHA),
-		shellescape.Quote(tmpPath),
+		shellescape.Quote(uploadPath),
+		promotePart,
 		uint32(mode.Perm()),
 		shellescape.Quote(tmpPath),
 		chownPart,
@@ -388,7 +402,10 @@ fi`,
 		shellescape.Quote(dst),
 		shellescape.Quote(dst),
 	)
-	if _, err := s.runSync(ctx, ports.Command{Script: finalize, Sudo: s.target.SudoMode != ports.SudoNone}); err != nil {
+	if _, err := s.runSync(ctx, ports.Command{Script: finalize, Sudo: needSudo}); err != nil {
+		if stageViaTmp {
+			_, _ = s.runSync(ctx, ports.Command{Script: "rm -f " + shellescape.Quote(uploadPath), Sudo: false})
+		}
 		return "", err
 	}
 	return localSHA, nil
@@ -418,11 +435,11 @@ func (s *sshSession) uploadViaSFTP(ctx context.Context, data []byte, tmpPath str
 	return f.Close()
 }
 
-func (s *sshSession) uploadViaStdin(ctx context.Context, data []byte, tmpPath string) error {
+func (s *sshSession) uploadViaStdin(ctx context.Context, data []byte, tmpPath string, useSudo bool) error {
 	cmd := ports.Command{
 		Script: "cat > " + shellescape.Quote(tmpPath),
 		Stdin:  bytes.NewReader(data),
-		Sudo:   s.target.SudoMode == ports.SudoNoPasswd,
+		Sudo:   useSudo,
 	}
 	_, err := s.runSync(ctx, cmd)
 	return err

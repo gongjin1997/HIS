@@ -481,10 +481,14 @@ func (p *Plugin) buildInstall(_ context.Context, req *sdk.OpRequest) (*sdk.Pipel
 		})
 	}
 
+	derivedPass := fmt.Sprintf("KiVk#%x", req.Instance.ID)
+	if len(derivedPass) > 20 {
+		derivedPass = derivedPass[:20]
+	}
 	tplVars := map[string]any{
 		"Version":         ver,
 		"InstanceName":    instName,
-		"BindIP":          primaryIP,
+		"BindIP":          "0.0.0.0",
 		"Port":            spec.Port,
 		"BusPort":         spec.Port + 10000,
 		"SentinelPort":    spec.SentinelPort,
@@ -494,42 +498,51 @@ func (p *Plugin) buildInstall(_ context.Context, req *sdk.OpRequest) (*sdk.Pipel
 		"MaxMemoryMB":     maxMem,
 		"PersistenceMode": spec.PersistenceMode,
 		"Topology":        spec.Topology,
-		"AdminPass":       "PLACEHOLDER_ROTATED_BY_SECRET_STORE",
-		"ReplPass":        "PLACEHOLDER_ROTATED_BY_SECRET_STORE",
-		"ExporterPass":    "PLACEHOLDER_ROTATED_BY_SECRET_STORE",
-		"AppPass":         "PLACEHOLDER_ROTATED_BY_SECRET_STORE",
+		"AdminPass":       derivedPass,
+		"ReplPass":        derivedPass + "r",
+		"ExporterPass":    derivedPass + "e",
+		"AppPass":         derivedPass + "a",
 	}
 
-	// Target 2: host-container (Docker 29 + Compose v5 + network_mode: host + explicit file|dir mounts)
+	// Target 2: host-container (Docker 29 + Compose v5 + explicit file|dir mounts + real WaitTCP)
 	if target == sdk.TargetHostContainer {
+		prepCmd := fmt.Sprintf("mkdir -p /data/valkey/%s /etc/kinstall/valkey/%s && chmod 0755 /data/valkey/%s", instName, instName, instName)
 		composeYAML := fmt.Sprintf(`services:
   valkey:
     image: valkey/valkey:%s
-    network_mode: host
+    container_name: kinstall-valkey-%s
     restart: unless-stopped
+    ports:
+      - "%d:%d"
     volumes:
       - /etc/kinstall/valkey/%s/valkey.conf:/usr/local/etc/valkey/valkey.conf:ro
+      - /etc/kinstall/valkey/%s/users.acl:/etc/kinstall/valkey/%s/users.acl:ro
       - /data/valkey/%s:/data
     command: ["valkey-server", "/usr/local/etc/valkey/valkey.conf"]
-`, ver, instName, instName)
+`, ver, instName, spec.Port, spec.Port, instName, instName, instName, instName)
 		pb.Phase(sdk.PhaseSpec{
 			Name: "deploy-container",
 			Tasks: []sdk.TaskSpec{
 				sdk.DockerEnsure(nil).WithKey("vk-docker"),
-				sdk.TemplateRender(fmt.Sprintf("/etc/kinstall/valkey/%s/valkey.conf", instName), sdk.TemplateRef{FS: assetsFS, Path: "templates/valkey.conf.tmpl"}, 0o640, "root:valkey").WithVars(tplVars).WithKey("vk-conf"),
-				sdk.TemplateRender(fmt.Sprintf("/etc/kinstall/valkey/%s/users.acl", instName), sdk.TemplateRef{FS: assetsFS, Path: "templates/users.acl.tmpl"}, 0o640, "root:valkey").WithVars(tplVars).WithKey("vk-acl"),
-				sdk.ComposeSync("valkey-"+instName, fmt.Sprintf("/opt/kinstall/compose/valkey-%s/docker-compose.yml", instName),
-					sdk.MountSpec{Src: fmt.Sprintf("/etc/kinstall/valkey/%s/valkey.conf", instName), Dst: "/usr/local/etc/valkey/valkey.conf", Type: "file", Mode: 0o640},
-					sdk.MountSpec{Src: fmt.Sprintf("/data/valkey/%s", instName), Dst: "/data", Type: "dir", Mode: 0o750},
+				sdk.CmdRun(prepCmd, fmt.Sprintf("test -d /data/valkey/%s", instName)).WithKey("vk-dir-prep"),
+				sdk.TemplateRender(fmt.Sprintf("/etc/kinstall/valkey/%s/valkey.conf", instName), sdk.TemplateRef{FS: assetsFS, Path: "templates/valkey.conf.tmpl"}, 0o644, "").WithVars(tplVars).WithKey("vk-conf"),
+				sdk.TemplateRender(fmt.Sprintf("/etc/kinstall/valkey/%s/users.acl", instName), sdk.TemplateRef{FS: assetsFS, Path: "templates/users.acl.tmpl"}, 0o644, "").WithVars(tplVars).WithKey("vk-acl"),
+				sdk.ComposeSync("kinstall-valkey-"+instName, fmt.Sprintf("/opt/kinstall/compose/valkey-%s/docker-compose.yml", instName),
+					sdk.MountSpec{Src: fmt.Sprintf("/etc/kinstall/valkey/%s/valkey.conf", instName), Dst: "/usr/local/etc/valkey/valkey.conf", Type: "file", Mode: 0o644},
+					sdk.MountSpec{Src: fmt.Sprintf("/etc/kinstall/valkey/%s/users.acl", instName), Dst: fmt.Sprintf("/etc/kinstall/valkey/%s/users.acl", instName), Type: "file", Mode: 0o644},
+					sdk.MountSpec{Src: fmt.Sprintf("/data/valkey/%s", instName), Dst: "/data", Type: "dir", Mode: 0o755},
 				).WithParam("composeContent", composeYAML).WithKey("vk-compose"),
+				sdk.WaitTCP(fmt.Sprintf("127.0.0.1:%d", spec.Port), 60*time.Second).WithKey("vk-wait"),
 			},
 		})
 		return pb.Build(), nil
 	}
 
-	// Target 1: host-binary (production default)
+	// Target 1: host-binary (production default: creates valkey user/dir BEFORE rendering root:valkey configs!)
+	prepUserCmd := fmt.Sprintf("getent group valkey >/dev/null || groupadd -r valkey; id -u valkey >/dev/null 2>&1 || useradd -r -g valkey -s /sbin/nologin valkey; mkdir -p /data/valkey/%s /etc/kinstall/valkey/%s && chown -R valkey:valkey /data/valkey/%s", instName, instName, instName)
 	deployTasks := []sdk.TaskSpec{
-		sdk.BinaryInstall("valkey-server", ver, sdk.ArtifactRef{Name: "valkey", MatchPageSize: true}).WithKey("vk-bin"),
+		sdk.CmdRun(prepUserCmd, fmt.Sprintf("id -u valkey >/dev/null 2>&1 && test -d /data/valkey/%s", instName)).WithKey("vk-user-dir"),
+		sdk.BinaryInstall("valkey-server", ver, sdk.ArtifactRef{Name: "valkey", MatchPageSize: true}).WithParam("fallbackPkg", "redis-server").WithKey("vk-bin"),
 		sdk.TemplateRender(fmt.Sprintf("/etc/kinstall/valkey/%s/valkey.conf", instName), sdk.TemplateRef{FS: assetsFS, Path: "templates/valkey.conf.tmpl"}, 0o640, "root:valkey").WithVars(tplVars).WithKey("vk-conf"),
 		sdk.TemplateRender(fmt.Sprintf("/etc/kinstall/valkey/%s/users.acl", instName), sdk.TemplateRef{FS: assetsFS, Path: "templates/users.acl.tmpl"}, 0o640, "root:valkey").WithVars(tplVars).WithKey("vk-acl"),
 		sdk.SystemdUnit(fmt.Sprintf("kinstall-valkey-%s.service", instName), sdk.TemplateRef{FS: assetsFS, Path: "templates/valkey.service.tmpl"}, sdk.UnitOpts{Enable: true, Start: true, RestartOnChange: true}).WithVars(tplVars).WithKey("vk-unit"),
@@ -643,12 +656,19 @@ func (p *Plugin) buildRestore(_ context.Context, req *sdk.OpRequest) (*sdk.Pipel
 }
 
 func (p *Plugin) buildUninstall(_ context.Context, req *sdk.OpRequest) (*sdk.Pipeline, error) {
+	instName := req.Instance.Name
 	pb := sdk.NewPipelineBuilder()
+	stopScript := fmt.Sprintf(`systemctl disable --now kinstall-valkey-%s.service 2>/dev/null || true
+if [ -f /opt/kinstall/compose/valkey-%s/docker-compose.yml ]; then
+  (docker compose -f /opt/kinstall/compose/valkey-%s/docker-compose.yml down --remove-orphans || docker-compose -f /opt/kinstall/compose/valkey-%s/docker-compose.yml down || true)
+fi
+rm -f /etc/systemd/system/kinstall-valkey-%s.service
+systemctl daemon-reload 2>/dev/null || true`, instName, instName, instName, instName, instName)
 	pb.Phase(sdk.PhaseSpec{
 		Name:       "uninstall-valkey",
 		Disruptive: true,
 		Tasks: []sdk.TaskSpec{
-			sdk.CmdRun(fmt.Sprintf("systemctl disable --now kinstall-valkey-%s.service || true", req.Instance.Name), "").WithKey("vk-stop"),
+			sdk.CmdRun(stopScript, "").WithKey("vk-stop"),
 		},
 	})
 	return pb.Build(), nil

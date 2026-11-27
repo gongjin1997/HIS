@@ -7,6 +7,8 @@ import {
   Terminal,
   ClipboardCheck,
   HardDrive,
+  Package,
+  PlaySquare,
   ShieldCheck,
   Settings,
 } from 'lucide-vue-next'
@@ -54,8 +56,9 @@ export const MENU_GROUPS: MenuGroup[] = [
     ],
   },
   {
-    title: '执行与审批',
+    title: '执行与运维',
     items: [
+      { path: '/jobs', key: 'nav.jobs', title: '批量作业中心', icon: markRaw(PlaySquare), workspace: 'ops' },
       { path: '/operations', key: 'nav.operations', title: '执行中心', icon: markRaw(Terminal), workspace: 'ops' },
       { path: '/operations/approvals', key: 'nav.approvals', title: '变更审批', icon: markRaw(ClipboardCheck), badge: 'approvals', workspace: 'ops' },
     ],
@@ -63,6 +66,7 @@ export const MENU_GROUPS: MenuGroup[] = [
   {
     title: '供应链与治理',
     items: [
+      { path: '/artifacts/bundles', key: 'nav.artifacts', title: '离线制品库', icon: markRaw(Package), workspace: 'governance' },
       { path: '/artifacts/media-policies', key: 'nav.mediaPolicies', title: '介质源策略', icon: markRaw(HardDrive), workspace: 'governance' },
       { path: '/security/audit', key: 'nav.audit', title: '审计与合规', icon: markRaw(ShieldCheck), workspace: 'governance' },
       { path: '/settings', key: 'nav.settings', title: '平台设置', icon: markRaw(Settings) },
@@ -87,8 +91,9 @@ export const TITLE_OF_PATH: Record<string, string> = {
 export const WORKSPACES: WorkspaceGroup[] = [
   {
     id: 'ops',
-    title: '执行与审批工作区',
+    title: '执行与运维工作区',
     items: [
+      { path: '/jobs', label: '批量作业中心' },
       { path: '/operations', label: '执行中心' },
       { path: '/operations/approvals', label: '变更审批' },
     ],
@@ -97,9 +102,10 @@ export const WORKSPACES: WorkspaceGroup[] = [
     id: 'governance',
     title: '供应链与合规治理',
     items: [
+      { path: '/artifacts/bundles', label: '离线制品库' },
+      { path: '/artifacts/media-policies', label: '介质源策略' },
       { path: '/security/audit', label: '审计哈希链' },
       { path: '/security/compliance', label: '等保密评中心' },
-      { path: '/artifacts/media-policies', label: '介质源策略' },
     ],
   },
 ]

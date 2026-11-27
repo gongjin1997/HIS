@@ -10,11 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kinstall/kinstall/internal/artifact/catalog"
 	"github.com/kinstall/kinstall/internal/audit"
 	"github.com/kinstall/kinstall/internal/authz"
 	"github.com/kinstall/kinstall/internal/compliance"
 	"github.com/kinstall/kinstall/internal/domain"
 	"github.com/kinstall/kinstall/internal/engine"
+	"github.com/kinstall/kinstall/internal/executor/sshx"
 	"github.com/kinstall/kinstall/internal/gitops"
 	"github.com/kinstall/kinstall/internal/hostinit"
 	"github.com/kinstall/kinstall/internal/inventory"
@@ -42,6 +44,8 @@ type Facade struct {
 	osEngine  *osadapter.Engine
 	kcMgr     *multicluster.KubeconfigManager
 	notifier  *notify.Dispatcher
+	artifacts *catalog.Store
+	sshPool   *sshx.Pool
 	enableGM  bool
 	kekKind   string
 	cipherAlg string

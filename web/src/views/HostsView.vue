@@ -17,6 +17,7 @@ import {
   Server,
   ShieldCheck,
   Tags,
+  Terminal,
   Trash2,
   Upload,
   Wrench,
@@ -24,6 +25,7 @@ import {
 import { apiDownload, apiRequest } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { useKiFormat } from '@/composables/useKiFormat'
 import PageHeader from '@/components/PageHeader.vue'
 import KiStatusBadge from '@/components/ki/KiStatusBadge.vue'
 import KiDomainTag from '@/components/ki/KiDomainTag.vue'
@@ -32,6 +34,7 @@ import KiDrawer from '@/components/ki/KiDrawer.vue'
 import KiBanner from '@/components/ki/KiBanner.vue'
 import KiDangerConfirmModal from '@/components/domain/KiDangerConfirmModal.vue'
 import CmdbImportDrawer from '@/components/cmdb/CmdbImportDrawer.vue'
+import WebTerminalDrawer from '@/components/cmdb/WebTerminalDrawer.vue'
 import CmdbDynamicGroupsPanel, { type DynamicGroupItem } from '@/components/cmdb/CmdbDynamicGroupsPanel.vue'
 import CmdbSyncSourcesPanel, { type CMDBSyncSourceItem } from '@/components/cmdb/CmdbSyncSourcesPanel.vue'
 import CmdbCiImpactPanel, {
@@ -212,6 +215,52 @@ const deleteModal = reactive({
   host: null as HostRecord | null,
   batchIds: [] as string[],
   loading: false,
+})
+
+const { formatBytesIEC: formatBytes } = useKiFormat()
+
+const termDrawer = reactive({
+  open: false,
+  hostId: '',
+  hostName: '',
+  hostAddress: '',
+})
+
+function openHostTerminal(row: HostRecord) {
+  termDrawer.hostId = row.id
+  termDrawer.hostName = row.name
+  termDrawer.hostAddress = row.address
+  termDrawer.open = true
+}
+
+const selectedFacts = computed(() => {
+  const f = (selectedHost.value?.facts || null) as Record<string, unknown> | null
+  if (!f) return null
+  const memMB = Number(f.memMB || 0)
+  const memAvailMB = Number(f.memAvailMB || 0)
+  const memUsedMB = memMB > 0 && memAvailMB > 0 ? Math.max(0, memMB - memAvailMB) : 0
+  const memPct = memMB > 0 && memUsedMB > 0 ? Math.min(100, Math.round((memUsedMB / memMB) * 100)) : 0
+  const mounts = (Array.isArray(f.mounts) ? f.mounts : []) as Array<{
+    device: string
+    mountPoint: string
+    totalBytes: number
+    usedBytes: number
+    availBytes: number
+    usedPct: number
+  }>
+  const failedUnits = (Array.isArray(f.failedUnits) ? f.failedUnits : []) as string[]
+  return {
+    cpuCores: Number(f.cpuCores || 0),
+    cpuModel: String(f.cpuModel || ''),
+    loadAvg: String(f.loadAvg || ''),
+    uptimeSec: Number(f.uptimeSec || 0),
+    memMB,
+    memUsedMB,
+    memPct,
+    dockerVersion: String(f.dockerVersion || ''),
+    failedUnits,
+    mounts,
+  }
 })
 
 const impactByHostId = computed(() => {
@@ -979,10 +1028,18 @@ onMounted(loadAll)
                   <KiStatusBadge :status="String(row.state || 'pending')" />
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="215" fixed="right">
+              <el-table-column label="操作" width="256" fixed="right">
                 <template #default="{ row }">
                   <div class="ki-row-actions">
                     <el-button link type="primary" @click.stop="openHostDetail(row)">详情</el-button>
+                    <el-button
+                      v-if="auth.can('host:write', ws.currentProjectId)"
+                      link
+                      type="primary"
+                      @click.stop="openHostTerminal(row)"
+                    >
+                      终端
+                    </el-button>
                     <el-button
                       v-if="auth.can('host:probe', ws.currentProjectId)"
                       link
@@ -1163,6 +1220,61 @@ onMounted(loadAll)
                 <div class="k">负责人 / 资产号</div><div>{{ hostLabel(selectedHost, 'cmdb.owner') || '—' }} · {{ hostLabel(selectedHost, 'cmdb.asset_tag') || '—' }}</div>
                 <div class="k">基线 Profile</div><div class="ki-mono">{{ selectedHost.initProfile || 'base' }}</div>
               </div>
+
+              <!-- 实时主机监控水位（1-RTT Facts 采集） -->
+              <div v-if="selectedFacts" class="ki-mb-4">
+                <div class="section-title">实时主机水位与运行态</div>
+                <div class="kv-grid ki-mb-3">
+                  <div class="k">CPU / 负载</div>
+                  <div class="ki-mono">
+                    {{ selectedFacts.cpuCores }} 核{{ selectedFacts.loadAvg ? ` · Load ${selectedFacts.loadAvg}` : '' }}
+                  </div>
+                  <div class="k">Docker 引擎</div>
+                  <div class="ki-mono">{{ selectedFacts.dockerVersion ? `v${selectedFacts.dockerVersion}` : '未安装' }}</div>
+                  <div class="k">内存使用率</div>
+                  <div>
+                    <el-progress
+                      v-if="selectedFacts.memMB > 0"
+                      :percentage="selectedFacts.memPct"
+                      :status="selectedFacts.memPct >= 90 ? 'exception' : selectedFacts.memPct >= 80 ? 'warning' : undefined"
+                      :stroke-width="10"
+                    />
+                    <span class="ki-mono ki-muted">
+                      {{ selectedFacts.memUsedMB }} / {{ selectedFacts.memMB }} MiB
+                    </span>
+                  </div>
+                  <div class="k">异常服务</div>
+                  <div>
+                    <KiStatusBadge
+                      :status="selectedFacts.failedUnits.length > 0 ? 'warn' : 'ok'"
+                      :label="selectedFacts.failedUnits.length > 0 ? `${selectedFacts.failedUnits.length} 个异常单元` : '全部正常'"
+                    />
+                  </div>
+                </div>
+                <div v-if="selectedFacts.mounts.length > 0">
+                  <div class="section-title">文件系统挂载容量</div>
+                  <el-table :data="selectedFacts.mounts" size="small">
+                    <el-table-column prop="mountPoint" label="挂载点" min-width="110">
+                      <template #default="{ row }"><b class="ki-mono">{{ row.mountPoint }}</b></template>
+                    </el-table-column>
+                    <el-table-column prop="device" label="设备" min-width="120" show-overflow-tooltip>
+                      <template #default="{ row }"><span class="ki-mono ki-muted">{{ row.device }}</span></template>
+                    </el-table-column>
+                    <el-table-column label="已用 / 总容量" width="150">
+                      <template #default="{ row }"><span class="ki-mono">{{ formatBytes(row.usedBytes) }} / {{ formatBytes(row.totalBytes) }}</span></template>
+                    </el-table-column>
+                    <el-table-column label="使用率" width="140">
+                      <template #default="{ row }">
+                        <el-progress
+                          :percentage="row.usedPct"
+                          :status="row.usedPct >= 90 ? 'exception' : row.usedPct >= 80 ? 'warning' : undefined"
+                          :stroke-width="8"
+                        />
+                      </template>
+                    </el-table-column>
+                  </el-table>
+                </div>
+              </div>
             </template>
 
             <el-form v-else label-position="top">
@@ -1299,6 +1411,12 @@ onMounted(loadAll)
         </el-button>
         <el-button
           v-if="selectedHost && auth.can('host:write', ws.currentProjectId)"
+          @click="openHostTerminal(selectedHost)"
+        >
+          <Terminal :size="13" class="btn-ico" /> Web SSH 终端
+        </el-button>
+        <el-button
+          v-if="selectedHost && auth.can('host:write', ws.currentProjectId)"
           @click="openInitDialog(selectedHost)"
         >
           <Wrench :size="13" class="btn-ico" /> 执行基线初始化
@@ -1308,6 +1426,14 @@ onMounted(loadAll)
         </el-button>
       </template>
     </KiDrawer>
+
+    <WebTerminalDrawer
+      v-model="termDrawer.open"
+      :project-id="ws.currentProjectId"
+      :host-id="termDrawer.hostId"
+      :host-name="termDrawer.hostName"
+      :host-address="termDrawer.hostAddress"
+    />
 
     <!-- 批量设置业务拓扑弹窗 -->
     <el-dialog v-model="batchTopoDialog.open" :title="`批量设置业务与物理拓扑 (${selectedHosts.length} 台)`" width="560px">

@@ -183,46 +183,231 @@ func (p *Plugin) Status(_ context.Context, req *sdk.StatusRequest) (*sdk.Instanc
 func (p *Plugin) buildInstall(_ context.Context, req *sdk.OpRequest) (*sdk.Pipeline, error) {
 	prod := strings.ToLower(req.Instance.Product)
 	spec := parseSpec(req.Instance.Spec, prod)
+	ver := req.Instance.ProductVersion
+	if ver == "" {
+		ver = "1.28.0"
+	}
+	instName := req.Instance.Name
+	if instName == "" {
+		instName = prod + "-main"
+	}
+	target := req.Instance.DeployTarget
+	if target == "" {
+		target = sdk.TargetHostContainer
+	}
 	pb := sdk.NewPipelineBuilder()
+
+	if target == sdk.TargetHostContainer {
+		composePath := fmt.Sprintf("/opt/kinstall/compose/%s-%s/docker-compose.yml", prod, instName)
+		dataDir := fmt.Sprintf("/data/%s/%s", prod, instName)
+		cfgDir := fmt.Sprintf("/etc/kinstall/%s/%s", prod, instName)
+		var tasks []sdk.TaskSpec
+		tasks = append(tasks, sdk.DockerEnsure(nil).WithKey(prod+"-docker"))
+		var composeYAML string
+		mounts := []sdk.MountSpec{{Src: dataDir, Dst: "/data", Type: "dir", Mode: 0o755}}
+
+		switch prod {
+		case "nginx":
+			ngxConf := fmt.Sprintf(`server {
+    listen 80;
+    server_name _;
+    location /healthz {
+        access_log off;
+        return 200 "kinstall-nginx-%s ok\n";
+        add_header Content-Type text/plain;
+    }
+    location / {
+        proxy_pass %s;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_buffering off;
+        proxy_set_header X-Accel-Buffering no;
+    }
+}
+`, instName, firstNonEmpty(spec.UpstreamURL, "http://127.0.0.1:8080"))
+			confFile := cfgDir + "/default.conf"
+			tasks = append(tasks, sdk.FileSync(confFile, sdk.TemplateRef{Inline: ngxConf}, 0o644, "").WithKey("ngx-conf"))
+			mounts = append(mounts, sdk.MountSpec{Src: confFile, Dst: "/etc/nginx/conf.d/default.conf", Type: "file", Mode: 0o644})
+			composeYAML = fmt.Sprintf(`services:
+  nginx:
+    image: nginx:%s-alpine
+    container_name: kinstall-nginx-%s
+    restart: unless-stopped
+    ports:
+      - "%d:80"
+    volumes:
+      - %s:/etc/nginx/conf.d/default.conf:ro
+      - %s:/usr/share/nginx/html
+`, ver, instName, spec.Port, confFile, dataDir)
+		case "forgejo":
+			composeYAML = fmt.Sprintf(`services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:%s
+    container_name: kinstall-forgejo-%s
+    restart: unless-stopped
+    ports:
+      - "%d:3000"
+    volumes:
+      - %s:/data
+`, ver, instName, spec.Port, dataDir)
+		case "sonarqube":
+			tasks = append(tasks, sdk.SysctlApply("94-kinstall-sonarqube.conf", map[string]string{"vm.max_map_count": "524288", "fs.file-max": "131072"}).WithKey("sq-sysctl"))
+			composeYAML = fmt.Sprintf(`services:
+  sonarqube:
+    image: sonarqube:%s-community
+    container_name: kinstall-sonarqube-%s
+    restart: unless-stopped
+    ports:
+      - "%d:9000"
+    volumes:
+      - %s:/opt/sonarqube/data
+`, ver, instName, spec.Port, dataDir)
+		case "jenkins":
+			composeYAML = fmt.Sprintf(`services:
+  jenkins:
+    image: jenkins/jenkins:%s-jdk%d
+    container_name: kinstall-jenkins-%s
+    restart: unless-stopped
+    ports:
+      - "%d:8080"
+    volumes:
+      - %s:/var/jenkins_home
+`, ver, spec.JDKVersion, instName, spec.Port, dataDir)
+		case "verdaccio":
+			composeYAML = fmt.Sprintf(`services:
+  verdaccio:
+    image: verdaccio/verdaccio:%s
+    container_name: kinstall-verdaccio-%s
+    restart: unless-stopped
+    ports:
+      - "%d:4873"
+    volumes:
+      - %s:/verdaccio/storage
+`, ver, instName, spec.Port, dataDir)
+		case "reposilite":
+			composeYAML = fmt.Sprintf(`services:
+  reposilite:
+    image: dzikoysk/reposilite:%s
+    container_name: kinstall-reposilite-%s
+    restart: unless-stopped
+    ports:
+      - "%d:8080"
+    volumes:
+      - %s:/app/data
+`, ver, instName, spec.Port, dataDir)
+		case "gitlab":
+			composeYAML = fmt.Sprintf(`services:
+  gitlab:
+    image: gitlab/gitlab-ce:%s-ce.0
+    container_name: kinstall-gitlab-%s
+    restart: unless-stopped
+    ports:
+      - "%d:80"
+    volumes:
+      - %s/config:/etc/gitlab
+      - %s/logs:/var/log/gitlab
+      - %s/data:/var/opt/gitlab
+`, ver, instName, spec.Port, dataDir, dataDir, dataDir)
+		default: // harbor or other container components
+			composeYAML = fmt.Sprintf(`services:
+  %s:
+    image: goharbor/harbor-core:v%s
+    container_name: kinstall-%s-%s
+    restart: unless-stopped
+    ports:
+      - "%d:8080"
+    volumes:
+      - %s:/data
+`, prod, ver, prod, instName, spec.Port, dataDir)
+		}
+
+		tasks = append(tasks,
+			sdk.ComposeSync("kinstall-"+prod+"-"+instName, composePath, mounts...).
+				WithParam("composeContent", composeYAML).
+				WithKey(prod+"-compose"),
+			sdk.WaitTCP(fmt.Sprintf("127.0.0.1:%d", spec.Port), 90*time.Second).WithKey(prod+"-ready"),
+		)
+		pb.Phase(sdk.PhaseSpec{Name: "deploy-" + prod + "-container", Tasks: tasks})
+		return pb.Build(), nil
+	}
 
 	switch prod {
 	case "sonarqube":
-		// R2 exact sonar.properties filename (fixing old-install.md sonar.properies typo!) + sysctl
-		sonarProps := "sonar.web.port=9000\nsonar.search.javaOpts=-Xmx2G -Xms2G\n"
+		sonarProps := fmt.Sprintf("sonar.web.port=%d\nsonar.search.javaOpts=-Xmx2G -Xms2G\n", spec.Port)
 		pb.Phase(sdk.PhaseSpec{
 			Name: "sonarqube-tune-and-deploy",
 			Tasks: []sdk.TaskSpec{
 				sdk.SysctlApply("94-kinstall-sonarqube.conf", map[string]string{"vm.max_map_count": "524288", "fs.file-max": "131072"}).WithKey("sq-sysctl"),
-				sdk.FileSync(fmt.Sprintf("/etc/kinstall/sonarqube/%s/sonar.properties", req.Instance.Name), sdk.TemplateRef{Inline: sonarProps}, 0o640, "root:root").WithKey("sq-props"),
+				sdk.BinaryInstall("sonarqube", ver, sdk.ArtifactRef{Name: "sonarqube"}).WithKey("sq-bin"),
+				sdk.FileSync(fmt.Sprintf("/etc/kinstall/sonarqube/%s/sonar.properties", instName), sdk.TemplateRef{Inline: sonarProps}, 0o640, "root:root").WithKey("sq-props"),
 			},
 		})
 	case "nginx":
-		// P8 §1: proxy_buffering off for SSE + mandatory `nginx -t` precheck before reload!
-		ngxConf := fmt.Sprintf("server {\n  listen %d;\n  location / {\n    proxy_pass %s;\n    proxy_buffering off;\n    proxy_set_header X-Accel-Buffering no;\n  }\n}\n", spec.Port, firstNonEmpty(spec.UpstreamURL, "http://127.0.0.1:8080"))
+		// P8 §1: ensure nginx installed + proxy_buffering off for SSE + mandatory `nginx -t` precheck before reload!
+		ngxConf := fmt.Sprintf(`server {
+  listen %d;
+  location /healthz {
+    access_log off;
+    return 200 "kinstall-nginx-%s ok\n";
+  }
+  location / {
+    proxy_pass %s;
+    proxy_buffering off;
+    proxy_set_header X-Accel-Buffering no;
+  }
+}
+`, spec.Port, instName, firstNonEmpty(spec.UpstreamURL, "http://127.0.0.1:8080"))
 		pb.Phase(sdk.PhaseSpec{
 			Name: "deploy-nginx",
 			Tasks: []sdk.TaskSpec{
-				sdk.FileSync(fmt.Sprintf("/etc/nginx/conf.d/%s.conf", req.Instance.Name), sdk.TemplateRef{Inline: ngxConf}, 0o644, "root:root").WithKey("ngx-conf"),
-				sdk.CmdRun("nginx -t && systemctl reload nginx", "").WithKey("ngx-test-and-reload"),
+				sdk.BinaryInstall("nginx", ver, sdk.ArtifactRef{Name: "nginx"}).WithParam("fallbackPkg", "nginx").WithKey("ngx-bin"),
+				sdk.FileSync(fmt.Sprintf("/etc/nginx/conf.d/%s.conf", instName), sdk.TemplateRef{Inline: ngxConf}, 0o644, "root:root").WithKey("ngx-conf"),
+				sdk.CmdRun("nginx -t && systemctl enable --now nginx && systemctl reload nginx", "").WithKey("ngx-test-and-reload"),
+				sdk.WaitTCP(fmt.Sprintf("127.0.0.1:%d", spec.Port), 30*time.Second).WithKey("ngx-ready"),
 			},
 		})
 	case "jenkins":
 		jcasc := "jenkins:\n  systemMessage: \"Managed by kinstall JCasC (JDK 21 + 9 detached offline plugins)\"\n"
+		jUnit := fmt.Sprintf(`[Unit]
+Description=kinstall Jenkins (%s)
+After=network-online.target
+[Service]
+Type=simple
+User=jenkins
+Environment=CASC_JENKINS_CONFIG=/etc/kinstall/jenkins/%s/casc.yaml
+ExecStart=/usr/bin/java -jar /opt/kinstall/bin/jenkins/current/jenkins --httpPort=%d
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+`, instName, instName, spec.Port)
 		pb.Phase(sdk.PhaseSpec{
 			Name: "deploy-jenkins-jcasc",
 			Tasks: []sdk.TaskSpec{
-				sdk.BinaryInstall("jenkins", req.Instance.ProductVersion, sdk.ArtifactRef{Name: "jenkins"}).WithKey("jks-bin"),
-				sdk.FileSync(fmt.Sprintf("/etc/kinstall/jenkins/%s/casc.yaml", req.Instance.Name), sdk.TemplateRef{Inline: jcasc}, 0o640, "root:jenkins").WithKey("jks-jcasc"),
+				sdk.CmdRun(fmt.Sprintf("getent group jenkins >/dev/null || groupadd -r jenkins; id -u jenkins >/dev/null 2>&1 || useradd -r -g jenkins -s /sbin/nologin jenkins; mkdir -p /data/jenkins/%s /etc/kinstall/jenkins/%s && chown -R jenkins:jenkins /data/jenkins/%s", instName, instName, instName), "id -u jenkins >/dev/null 2>&1").WithKey("jks-user"),
+				sdk.BinaryInstall("jenkins", ver, sdk.ArtifactRef{Name: "jenkins"}).WithKey("jks-bin"),
+				sdk.FileSync(fmt.Sprintf("/etc/kinstall/jenkins/%s/casc.yaml", instName), sdk.TemplateRef{Inline: jcasc}, 0o640, "root:jenkins").WithKey("jks-jcasc"),
+				sdk.SystemdUnit("kinstall-jenkins-"+instName+".service", sdk.TemplateRef{Inline: jUnit}, sdk.UnitOpts{Enable: true, Start: true, RestartOnChange: true}).WithKey("jks-unit"),
+				sdk.WaitTCP(fmt.Sprintf("127.0.0.1:%d", spec.Port), 90*time.Second).WithKey("jks-ready"),
 			},
 		})
 	default:
+		binUnit := fmt.Sprintf(`[Unit]
+Description=kinstall %s (%s)
+After=network-online.target
+[Service]
+Type=simple
+ExecStart=/opt/kinstall/bin/%s/current/%s
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+`, prod, instName, prod, prod)
 		pb.Phase(sdk.PhaseSpec{
 			Name: "deploy-" + prod,
 			Tasks: []sdk.TaskSpec{
-				sdk.DockerEnsure(nil).WithKey(prod + "-docker"),
-				sdk.ComposeSync(prod+"-"+req.Instance.Name, fmt.Sprintf("/opt/kinstall/compose/%s-%s/docker-compose.yml", prod, req.Instance.Name),
-					sdk.MountSpec{Src: fmt.Sprintf("/data/%s/%s", prod, req.Instance.Name), Dst: "/data", Type: "dir", Mode: 0o750},
-				).WithKey(prod + "-compose"),
+				sdk.BinaryInstall(prod, ver, sdk.ArtifactRef{Name: prod}).WithKey(prod + "-bin"),
+				sdk.SystemdUnit("kinstall-"+prod+"-"+instName+".service", sdk.TemplateRef{Inline: binUnit}, sdk.UnitOpts{Enable: true, Start: true, RestartOnChange: true}).WithKey(prod + "-unit"),
+				sdk.WaitTCP(fmt.Sprintf("127.0.0.1:%d", spec.Port), 60*time.Second).WithKey(prod + "-ready"),
 			},
 		})
 	}
@@ -236,8 +421,17 @@ func (p *Plugin) buildReload(_ context.Context, _ *sdk.OpRequest) (*sdk.Pipeline
 }
 
 func (p *Plugin) buildUninstall(_ context.Context, req *sdk.OpRequest) (*sdk.Pipeline, error) {
+	prod := strings.ToLower(req.Instance.Product)
+	instName := req.Instance.Name
 	pb := sdk.NewPipelineBuilder()
-	pb.Phase(sdk.PhaseSpec{Name: "uninstall-" + req.Instance.Product, Disruptive: true, Tasks: []sdk.TaskSpec{sdk.CmdRun("systemctl disable --now kinstall-"+req.Instance.Product+"-"+req.Instance.Name+" || true", "").WithKey("dev-stop")}})
+	stopScript := fmt.Sprintf(`systemctl disable --now kinstall-%s-%s.service 2>/dev/null || true
+if [ -f /opt/kinstall/compose/%s-%s/docker-compose.yml ]; then
+  (docker compose -f /opt/kinstall/compose/%s-%s/docker-compose.yml down --remove-orphans || docker-compose -f /opt/kinstall/compose/%s-%s/docker-compose.yml down || true)
+fi
+rm -f /etc/nginx/conf.d/%s.conf /etc/systemd/system/kinstall-%s-%s.service
+systemctl daemon-reload 2>/dev/null || true`,
+		prod, instName, prod, instName, prod, instName, prod, instName, instName, prod, instName)
+	pb.Phase(sdk.PhaseSpec{Name: "uninstall-" + prod, Disruptive: true, Tasks: []sdk.TaskSpec{sdk.CmdRun(stopScript, "").WithKey("dev-stop")}})
 	return pb.Build(), nil
 }
 

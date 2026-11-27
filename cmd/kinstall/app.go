@@ -15,6 +15,7 @@ import (
 
 	"github.com/kinstall/kinstall/internal/apiproxy"
 	"github.com/kinstall/kinstall/internal/app"
+	"github.com/kinstall/kinstall/internal/artifact/catalog"
 	"github.com/kinstall/kinstall/internal/artifact/source"
 	"github.com/kinstall/kinstall/internal/audit"
 	"github.com/kinstall/kinstall/internal/authz"
@@ -157,7 +158,10 @@ func BuildApplication(ctx context.Context) (*Application, error) {
 		}
 		return secStore.Decrypt(dctx, "credentials", c.ID, c.KeyVersion, c.EnvelopeJSON)
 	}
-	mediaRes := source.NewPolicyMediaResolver(filepath.Join(dataDir, "cache")).WithCredentialDecryptor(credDecrypt)
+	artStore := catalog.NewStore(filepath.Join(dataDir, "artifacts"), "/var/lib/kinstall/artifacts")
+	mediaRes := source.NewPolicyMediaResolver(filepath.Join(dataDir, "cache")).
+		WithCredentialDecryptor(credDecrypt).
+		WithCatalog(artStore)
 	pkiIssuer := pki.NewIssuer()
 	kcMgr := multicluster.NewKubeconfigManager(st.Kubeconfigs(), pkiIssuer, audRec)
 	tplEngine := template.New(func(sctx context.Context, credRef string) (string, error) {
@@ -188,7 +192,9 @@ func BuildApplication(ctx context.Context) (*Application, error) {
 		}),
 	)
 
-	facade := app.NewFacade(st, reg, execChain, secStore, mediaRes, evHub, audRec, authSvc, worker, osEng, kcMgr, enableGM, kekKind, alg)
+	facade := app.NewFacade(st, reg, execChain, secStore, mediaRes, evHub, audRec, authSvc, worker, osEng, kcMgr, enableGM, kekKind, alg).
+		WithArtifactStore(artStore).
+		WithSSHPool(sshPool)
 
 	// Bootstrap initial local admin account when database is fresh
 	ensureBootstrapAdmin(ctx, authSvc, st, logger)

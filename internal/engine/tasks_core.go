@@ -366,8 +366,15 @@ func (t *BinaryInstallTask) Check(ctx context.Context, rc *RunContext, spec sdk.
 	return CheckResult{Converged: false, Summary: "update current symlink"}, nil
 }
 
+func isArchiveName(p string) bool {
+	low := strings.ToLower(p)
+	return strings.HasSuffix(low, ".tar.gz") || strings.HasSuffix(low, ".tgz") || strings.HasSuffix(low, ".tar.xz") || strings.HasSuffix(low, ".tar")
+}
+
 func (t *BinaryInstallTask) Apply(ctx context.Context, rc *RunContext, spec sdk.TaskSpec) (ApplyResult, error) {
 	vPath, curLink := t.targetPaths(spec)
+	binName := strParam(spec.Params, "name")
+	fallbackPkg := strParam(spec.Params, "fallbackPkg")
 	prevRes, _ := rc.Session.Run(ctx, ports.Command{Script: fmt.Sprintf("readlink -f %s 2>/dev/null || true", shellescape.Quote(curLink))})
 	prevTarget := strings.TrimSpace(prevRes.Stdout)
 
@@ -375,11 +382,12 @@ func (t *BinaryInstallTask) Apply(ctx context.Context, rc *RunContext, spec sdk.
 	var payload []byte
 	var localPath string
 	var expectedResolvedSHA string
+	var mediaErr error
 	if content := strParam(spec.Params, "content"); content != "" {
 		payload = []byte(content)
 	} else if rc.Media != nil {
 		resolved, err := rc.Media.Resolve(ctx, rc.MediaPolicy, sdk.MediaRef{
-			Product:       strParam(spec.Params, "name"),
+			Product:       binName,
 			Name:          strParam(spec.Params, "artifactName"),
 			Version:       strParam(spec.Params, "version"),
 			Arch:          rc.Host.Facts.Arch,
@@ -388,14 +396,46 @@ func (t *BinaryInstallTask) Apply(ctx context.Context, rc *RunContext, spec sdk.
 			ExpectedSHA:   strParam(spec.Params, "sha256"),
 		})
 		if err != nil {
-			return ApplyResult{}, err
-		}
-		if resolved.Presigned && rc.RegisterSecret != nil {
-			rc.RegisterSecret(resolved.URL)
-		}
-		if resolved.URL != "" {
-			// Channel 3: HTTP Range pull with rate limiting (D1 §2.5)
-			dl := fmt.Sprintf(`set -e
+			mediaErr = err
+		} else {
+			if resolved.Presigned && rc.RegisterSecret != nil {
+				rc.RegisterSecret(resolved.URL)
+			}
+			if resolved.URL != "" {
+				// Channel 3: HTTP Range pull with rate limiting (D1 §2.5), supporting both raw binaries and tarballs
+				if isArchiveName(resolved.URL) {
+					archiveDst := path.Join(path.Dir(vPath), "package.tar.gz")
+					dl := fmt.Sprintf(`set -e
+mkdir -p %s
+if command -v curl >/dev/null 2>&1; then
+  curl -fSL --retry 3 --limit-rate 50M -C - -o %s %s
+else
+  wget -q -c -O %s %s
+fi
+tar -xf %s -C %s
+rm -f %s
+FOUND="$(find %s -maxdepth 3 -type f -name %s 2>/dev/null | head -n1 || true)"
+if [ -n "$FOUND" ] && [ "$FOUND" != %s ]; then cp -f "$FOUND" %s; fi
+chmod 0755 %s 2>/dev/null || true
+ln -sfn %s %s
+if [ -x %s ]; then ln -sfn %s /usr/local/bin/%s; fi`,
+						shellescape.Quote(path.Dir(vPath)),
+						shellescape.Quote(archiveDst), shellescape.Quote(resolved.URL),
+						shellescape.Quote(archiveDst), shellescape.Quote(resolved.URL),
+						shellescape.Quote(archiveDst), shellescape.Quote(path.Dir(vPath)),
+						shellescape.Quote(archiveDst),
+						shellescape.Quote(path.Dir(vPath)), shellescape.Quote(binName),
+						shellescape.Quote(vPath), shellescape.Quote(vPath),
+						shellescape.Quote(vPath),
+						shellescape.Quote(path.Dir(vPath)), shellescape.Quote(curLink),
+						shellescape.Quote(vPath), shellescape.Quote(vPath), shellescape.Quote(binName),
+					)
+					if _, err := rc.Session.Run(ctx, ports.Command{Script: dl, Sudo: true, Async: spec.Async, TaskRunID: rc.TaskRunID, Stdout: rc.LogStdout, Stderr: rc.LogStderr}); err != nil {
+						return ApplyResult{}, err
+					}
+					return ApplyResult{Changed: true, BackupRef: map[string]any{"curLink": curLink, "prevTarget": prevTarget}}, nil
+				}
+				dl := fmt.Sprintf(`set -e
 mkdir -p %s
 TMP=%s
 if command -v curl >/dev/null 2>&1; then
@@ -405,24 +445,89 @@ else
 fi
 chmod 0755 "$TMP"
 mv -f "$TMP" %s
-ln -sfn %s %s`,
+ln -sfn %s %s
+ln -sfn %s /usr/local/bin/%s 2>/dev/null || true`,
+					shellescape.Quote(path.Dir(vPath)),
+					shellescape.Quote(vPath+".tmp"),
+					shellescape.Quote(resolved.URL),
+					shellescape.Quote(resolved.URL),
+					shellescape.Quote(vPath),
+					shellescape.Quote(path.Dir(vPath)),
+					shellescape.Quote(curLink),
+					shellescape.Quote(vPath),
+					shellescape.Quote(binName),
+				)
+				if _, err := rc.Session.Run(ctx, ports.Command{Script: dl, Sudo: true, Async: spec.Async, TaskRunID: rc.TaskRunID, Stdout: rc.LogStdout, Stderr: rc.LogStderr}); err != nil {
+					return ApplyResult{}, err
+				}
+				return ApplyResult{Changed: true, BackupRef: map[string]any{"curLink": curLink, "prevTarget": prevTarget}}, nil
+			}
+			if resolved.LocalPath != "" {
+				localPath = resolved.LocalPath
+				expectedResolvedSHA = resolved.SHA256
+			}
+		}
+	}
+
+	// If offline artifact was not found in Local/OBS/Online pool:
+	// 1) Check if target binary already exists on host or can be installed via OS repository when fallbackPkg is declared & !offlineStrict
+	if mediaErr != nil {
+		if fallbackPkg != "" && !rc.MediaPolicy.OfflineStrict {
+			installScript := fmt.Sprintf(`set -e
+mkdir -p %s
+if ! command -v %s >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq %s
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q %s
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y -q %s
+  fi
+fi
+BIN_FOUND="$(command -v %s 2>/dev/null || true)"
+if [ -n "$BIN_FOUND" ]; then
+  ln -sfn "$BIN_FOUND" %s
+  ln -sfn %s %s
+else
+  echo "fallback package %s installed but binary %s not found in PATH" >&2
+  exit 1
+fi`,
 				shellescape.Quote(path.Dir(vPath)),
-				shellescape.Quote(vPath+".tmp"),
-				shellescape.Quote(resolved.URL),
-				shellescape.Quote(resolved.URL),
+				shellescape.Quote(binName),
+				shellescape.Quote(fallbackPkg),
+				shellescape.Quote(fallbackPkg),
+				shellescape.Quote(fallbackPkg),
+				shellescape.Quote(binName),
 				shellescape.Quote(vPath),
 				shellescape.Quote(path.Dir(vPath)),
 				shellescape.Quote(curLink),
+				fallbackPkg, binName,
 			)
-			if _, err := rc.Session.Run(ctx, ports.Command{Script: dl, Sudo: true, Async: spec.Async, TaskRunID: rc.TaskRunID, Stdout: rc.LogStdout, Stderr: rc.LogStderr}); err != nil {
-				return ApplyResult{}, err
+			if _, ferr := rc.Session.Run(ctx, ports.Command{Script: installScript, Sudo: true, Async: spec.Async, TaskRunID: rc.TaskRunID, Stdout: rc.LogStdout, Stderr: rc.LogStderr}); ferr == nil {
+				return ApplyResult{Changed: true, BackupRef: map[string]any{"curLink": curLink, "prevTarget": prevTarget}}, nil
 			}
-			return ApplyResult{Changed: true, BackupRef: map[string]any{"curLink": curLink, "prevTarget": prevTarget}}, nil
 		}
-		if resolved.LocalPath != "" {
-			localPath = resolved.LocalPath
-			expectedResolvedSHA = resolved.SHA256
+		// Check if binary is already pre-installed on the host (common in air-gapped golden images)
+		checkExisting := fmt.Sprintf(`BIN_FOUND="$(command -v %s 2>/dev/null || true)"
+if [ -n "$BIN_FOUND" ] && [ -x "$BIN_FOUND" ]; then
+  mkdir -p %s
+  ln -sfn "$BIN_FOUND" %s
+  ln -sfn %s %s
+  echo "USING_HOST_BINARY:$BIN_FOUND"
+  exit 0
+fi
+exit 1`,
+			shellescape.Quote(binName),
+			shellescape.Quote(path.Dir(vPath)),
+			shellescape.Quote(vPath),
+			shellescape.Quote(path.Dir(vPath)),
+			shellescape.Quote(curLink),
+		)
+		if res, cerr := rc.Session.Run(ctx, ports.Command{Script: checkExisting, Sudo: true, Stdout: rc.LogStdout, Stderr: rc.LogStderr}); cerr == nil && res.ExitCode == 0 {
+			return ApplyResult{Changed: true, Output: strings.TrimSpace(res.Stdout), BackupRef: map[string]any{"curLink": curLink, "prevTarget": prevTarget}}, nil
 		}
+		return ApplyResult{}, fmt.Errorf("artifact %s (%s/%s) not found in local pool or host PATH (%w); upload offline binary/tarball via 离线制品库 (/artifacts/bundles) or disable offlineStrict for OS repo install",
+			binName, strParam(spec.Params, "version"), rc.Host.Facts.Arch, mediaErr)
 	}
 
 	if len(payload) > 0 {
@@ -435,20 +540,43 @@ ln -sfn %s %s`,
 		if err != nil {
 			return ApplyResult{}, err
 		}
-		uploadedSHA, uerr := rc.Session.Upload(ctx, f, vPath, 0o755, "")
+		uploadDst := vPath
+		if isArchiveName(localPath) {
+			uploadDst = path.Join(path.Dir(vPath), path.Base(localPath))
+		}
+		uploadedSHA, uerr := rc.Session.Upload(ctx, f, uploadDst, 0o755, "")
 		_ = f.Close()
 		if uerr != nil {
 			return ApplyResult{}, uerr
 		}
 		if expectedResolvedSHA != "" && uploadedSHA != "" && !strings.EqualFold(uploadedSHA, expectedResolvedSHA) {
 			return ApplyResult{}, sdk.NewError(sdk.CodeSrcDigestMismatch, "SRC", http.StatusUnprocessableEntity, sdk.CodeSrcDigestMismatch, false,
-				fmt.Errorf("uploaded binary %s sha256 mismatch: got %s want %s", vPath, uploadedSHA, expectedResolvedSHA))
+				fmt.Errorf("uploaded binary %s sha256 mismatch: got %s want %s", uploadDst, uploadedSHA, expectedResolvedSHA))
+		}
+		if isArchiveName(localPath) {
+			extractCmd := fmt.Sprintf(`set -e
+tar -xf %s -C %s
+rm -f %s
+FOUND="$(find %s -maxdepth 3 -type f -name %s 2>/dev/null | head -n1 || true)"
+if [ -n "$FOUND" ] && [ "$FOUND" != %s ]; then cp -f "$FOUND" %s; fi
+chmod 0755 %s 2>/dev/null || true`,
+				shellescape.Quote(uploadDst), shellescape.Quote(path.Dir(vPath)),
+				shellescape.Quote(uploadDst),
+				shellescape.Quote(path.Dir(vPath)), shellescape.Quote(binName),
+				shellescape.Quote(vPath), shellescape.Quote(vPath),
+				shellescape.Quote(vPath),
+			)
+			if _, eerr := rc.Session.Run(ctx, ports.Command{Script: extractCmd, Sudo: true, Stdout: rc.LogStdout, Stderr: rc.LogStderr}); eerr != nil {
+				return ApplyResult{}, eerr
+			}
 		}
 	} else {
 		// Ensure versioned directory exists when binary already staged
 		_, _ = rc.Session.Run(ctx, ports.Command{Script: "mkdir -p " + shellescape.Quote(path.Dir(vPath)), Sudo: true})
 	}
-	linkCmd := fmt.Sprintf("ln -sfn %s %s", shellescape.Quote(path.Dir(vPath)), shellescape.Quote(curLink))
+	linkCmd := fmt.Sprintf("ln -sfn %s %s && (if [ -x %s ]; then ln -sfn %s /usr/local/bin/%s 2>/dev/null || true; fi)",
+		shellescape.Quote(path.Dir(vPath)), shellescape.Quote(curLink),
+		shellescape.Quote(vPath), shellescape.Quote(vPath), shellescape.Quote(binName))
 	if _, err := rc.Session.Run(ctx, ports.Command{Script: linkCmd, Sudo: true, Stdout: rc.LogStdout, Stderr: rc.LogStderr}); err != nil {
 		return ApplyResult{}, err
 	}

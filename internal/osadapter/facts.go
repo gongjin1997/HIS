@@ -36,9 +36,15 @@ kv kysec        "$(command -v getstatus >/dev/null 2>&1 && getstatus 2>/dev/null
 kv fapolicyd    "$(systemctl is-active fapolicyd 2>/dev/null || echo inactive)"
 kv swap_kb      "$(awk '/^SwapTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
 kv mem_kb       "$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+kv mem_avail_kb "$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null || awk '/^MemFree:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
 kv hugepage_kb  "$(awk '/^Hugepagesize:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
 kv thp_enabled  "$(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo '')"
 kv cpu_cores    "$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)"
+kv cpu_model    "$(awk -F: '/^model name/{gsub(/^[ \t]+/,"",$2); print $2; exit}' /proc/cpuinfo 2>/dev/null || echo '')"
+kv uptime_sec   "$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null || echo 0)"
+kv load_avg     "$(awk '{print $1" "$2" "$3}' /proc/loadavg 2>/dev/null || echo '')"
+kv docker_ver   "$(docker version --format '{{.Server.Version}}' 2>/dev/null || docker --version 2>/dev/null | awk '{print $3}' | tr -d ',' || echo '')"
+kv failed_units "$(systemctl list-units --failed --no-legend --plain 2>/dev/null | awk '{print $1}' | head -n 20 | paste -sd, - 2>/dev/null || echo '')"
 kv numa_nodes   "$(ls -d /sys/devices/system/node/node[0-9]* 2>/dev/null | wc -l | tr -d ' ')"
 kv x86_flags    "$(awk -F: '/^flags/{print $2; exit}' /proc/cpuinfo 2>/dev/null | tr -s ' ')"
 kv default_rt   "$(ip -o route show default 2>/dev/null | head -n1 || echo '')"
@@ -90,22 +96,34 @@ func ParseFactsOutput(raw string, fallbackAddr string, engine *Engine) (*sdk.Fac
 	kv := parseKVSection(sections["KV"])
 
 	f := &sdk.FactsView{
-		Hostname:    kv["hostname"],
-		FQDN:        kv["fqdn"],
-		Kernel:      kv["kernel"],
-		Arch:        normalizeArch(kv["arch"]),
-		PageSize:    parseIntDefault(kv["page_size"], 4096),
-		MachineID:   strings.TrimSpace(kv["machine_id"]),
-		SELinuxMode: strings.TrimSpace(kv["selinux"]),
-		CPUCores:    parseIntDefault(kv["cpu_cores"], 1),
-		MemMB:       parseIntDefault(kv["mem_kb"], 0) / 1024,
-		SwapMB:      parseIntDefault(kv["swap_kb"], 0) / 1024,
-		HugePageKB:  parseIntDefault(kv["hugepage_kb"], 0),
-		THPEnabled:  strings.TrimSpace(kv["thp_enabled"]),
-		NUMANodes:   parseIntDefault(kv["numa_nodes"], 1),
-		PrimaryIP4:  strings.TrimSpace(kv["primary_ip4"]),
-		PrimaryIP6:  strings.TrimSpace(kv["primary_ip6"]),
-		CollectedAt: time.Now().UTC(),
+		Hostname:      kv["hostname"],
+		FQDN:          kv["fqdn"],
+		Kernel:        kv["kernel"],
+		Arch:          normalizeArch(kv["arch"]),
+		PageSize:      parseIntDefault(kv["page_size"], 4096),
+		MachineID:     strings.TrimSpace(kv["machine_id"]),
+		SELinuxMode:   strings.TrimSpace(kv["selinux"]),
+		CPUCores:      parseIntDefault(kv["cpu_cores"], 1),
+		CPUModel:      strings.TrimSpace(kv["cpu_model"]),
+		MemMB:         parseIntDefault(kv["mem_kb"], 0) / 1024,
+		MemAvailMB:    parseIntDefault(kv["mem_avail_kb"], 0) / 1024,
+		SwapMB:        parseIntDefault(kv["swap_kb"], 0) / 1024,
+		UptimeSec:     parseInt64Default(kv["uptime_sec"], 0),
+		LoadAvg:       strings.TrimSpace(kv["load_avg"]),
+		DockerVersion: strings.TrimSpace(kv["docker_ver"]),
+		HugePageKB:    parseIntDefault(kv["hugepage_kb"], 0),
+		THPEnabled:    strings.TrimSpace(kv["thp_enabled"]),
+		NUMANodes:     parseIntDefault(kv["numa_nodes"], 1),
+		PrimaryIP4:    strings.TrimSpace(kv["primary_ip4"]),
+		PrimaryIP6:    strings.TrimSpace(kv["primary_ip6"]),
+		CollectedAt:   time.Now().UTC(),
+	}
+	if fu := strings.TrimSpace(kv["failed_units"]); fu != "" {
+		for _, u := range strings.Split(fu, ",") {
+			if u = strings.TrimSpace(u); u != "" {
+				f.FailedUnits = append(f.FailedUnits, u)
+			}
+		}
 	}
 
 	// Cgroup version
@@ -164,8 +182,9 @@ func ParseFactsOutput(raw string, fallbackAddr string, engine *Engine) (*sdk.Fac
 		f.PrimaryIP4 = selectFallbackIPv4(f.NICs, fallbackAddr)
 	}
 
-	// Disks, live Sysctls, and listening ports (0 extra SSH RTTs)
+	// Disks, live mounts, live Sysctls, and listening ports (0 extra SSH RTTs)
 	f.Disks = parseDisks(sections["DISKS"])
+	f.Mounts = parseMounts(sections["MOUNTS"])
 	if sysctls := parseKVSection(sections["SYSCTL"]); len(sysctls) > 0 {
 		f.Sysctls = sysctls
 	}
@@ -460,4 +479,46 @@ func parseIntDefault(s string, def int) int {
 		return def
 	}
 	return v
+}
+
+func parseInt64Default(s string, def int64) int64 {
+	v, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return def
+	}
+	return v
+}
+
+func parseMounts(section string) []sdk.MountView {
+	var out []sdk.MountView
+	for i, line := range strings.Split(section, "\n") {
+		fields := strings.Fields(line)
+		if i == 0 || len(fields) < 6 {
+			continue
+		}
+		dev := fields[0]
+		mp := fields[5]
+		if !strings.HasPrefix(dev, "/") && dev != "overlay" {
+			continue
+		}
+		if strings.HasPrefix(mp, "/snap") || strings.HasPrefix(mp, "/run") || strings.HasPrefix(mp, "/sys") || strings.HasPrefix(mp, "/proc") {
+			continue
+		}
+		total, _ := strconv.ParseInt(fields[1], 10, 64)
+		used, _ := strconv.ParseInt(fields[2], 10, 64)
+		avail, _ := strconv.ParseInt(fields[3], 10, 64)
+		pct, _ := strconv.Atoi(strings.TrimSuffix(fields[4], "%"))
+		if total <= 0 {
+			continue
+		}
+		out = append(out, sdk.MountView{
+			Device:     dev,
+			MountPoint: mp,
+			TotalBytes: total,
+			UsedBytes:  used,
+			AvailBytes: avail,
+			UsedPct:    pct,
+		})
+	}
+	return out
 }

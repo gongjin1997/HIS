@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Background, Controls, MarkerType, VueFlow } from '@xyflow/vue'
+import { Background, Controls, MarkerType, VueFlow, type Connection, type NodeMouseEvent } from '@xyflow/vue'
 import '@xyflow/vue/dist/style.css'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { detectDagCycle } from '@/utils/dag'
@@ -19,6 +19,11 @@ export interface StackNodeInput {
 
 const props = defineProps<{
   instances: StackNodeInput[]
+}>()
+
+const emit = defineEmits<{
+  (e: 'connect-edge', sourceId: string, targetId: string): void
+  (e: 'select-node', nodeId: string): void
 }>()
 
 const ws = useWorkspaceStore()
@@ -105,6 +110,18 @@ const edges = computed(() => {
 })
 
 const flowKey = computed(() => props.instances.map((it) => `${it.id}:${(it.dependsOn || []).join(',')}`).join('|'))
+
+function onConnect(conn: Connection) {
+  if (conn.source && conn.target && conn.source !== conn.target) {
+    emit('connect-edge', conn.source, conn.target)
+  }
+}
+
+function onNodeClick(ev: NodeMouseEvent) {
+  if (ev.node?.id) {
+    emit('select-node', ev.node.id)
+  }
+}
 </script>
 
 <template>
@@ -125,6 +142,8 @@ const flowKey = computed(() => props.instances.map((it) => `${it.id}:${(it.depen
         :max-zoom="1.5"
         :fit-view-options="{ padding: 0.24, maxZoom: 0.9 }"
         fit-view-on-init
+        @connect="onConnect"
+        @node-click="onNodeClick"
       >
         <Background variant="dots" :gap="20" :size="1.2" />
         <Controls position="bottom-right" :show-interactive="false" />

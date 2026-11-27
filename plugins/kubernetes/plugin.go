@@ -517,11 +517,33 @@ func (p *Plugin) buildInstall(_ context.Context, req *sdk.OpRequest) (*sdk.Pipel
 		},
 	})
 
-	// Phase 7: Worker (kubelet + kube-proxy matching LCD mode)
+	// Phase 7: Worker (real kubelet + kube-proxy systemd units matching LCD mode!)
+	kubeletUnit := `[Unit]
+Description=Kubernetes Kubelet (managed by kinstall)
+After=containerd.service network-online.target
+Requires=containerd.service
+[Service]
+ExecStart=/usr/local/bin/kubelet --config=/var/lib/kubelet/config.yaml --kubeconfig=/etc/kubernetes/kubelet.conf --container-runtime-endpoint=unix:///run/containerd/containerd.sock
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+`
+	kubeProxyUnit := fmt.Sprintf(`[Unit]
+Description=Kubernetes Kube-Proxy (%s mode, managed by kinstall)
+After=network-online.target
+[Service]
+ExecStart=/usr/local/bin/kube-proxy --proxy-mode=%s --cluster-cidr=%s --kubeconfig=/etc/kubernetes/kube-proxy.conf
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+`, proxyMode, proxyMode, spec.PodCIDR)
 	pb.Phase(sdk.PhaseSpec{
 		Name: "worker",
 		Tasks: []sdk.TaskSpec{
 			sdk.BinaryInstall("kubelet", ver, sdk.ArtifactRef{Name: "kubernetes-node", MatchPageSize: true}).WithKey("worker-bin"),
+			sdk.BinaryInstall("kube-proxy", ver, sdk.ArtifactRef{Name: "kubernetes-node", MatchPageSize: true}).WithKey("worker-proxy-bin"),
 			sdk.TemplateRender("/var/lib/kubelet/config.yaml", sdk.TemplateRef{FS: assetsFS, Path: SelectKubeletTemplate(ver)}, 0o640, "root:root").
 				WithVars(map[string]any{
 					"ClusterDNS":       "10.96.0.10",
@@ -530,7 +552,8 @@ func (p *Plugin) buildInstall(_ context.Context, req *sdk.OpRequest) (*sdk.Pipel
 					"SystemReservedMi": resv.SystemReservedMi,
 					"EvictionHardMi":   resv.EvictionHardMi,
 				}).WithKey("worker-kubelet-cfg"),
-			sdk.CmdRun(fmt.Sprintf("echo kube-proxy mode=%s configured", proxyMode), "true").WithKey("worker-proxy-mode"),
+			sdk.SystemdUnit("kubelet.service", sdk.TemplateRef{Inline: kubeletUnit}, sdk.UnitOpts{Enable: true, Start: true, RestartOnChange: true}).WithKey("worker-kubelet-unit"),
+			sdk.SystemdUnit("kube-proxy.service", sdk.TemplateRef{Inline: kubeProxyUnit}, sdk.UnitOpts{Enable: true, Start: true, RestartOnChange: true}).WithKey("worker-proxy-mode"),
 		},
 	})
 

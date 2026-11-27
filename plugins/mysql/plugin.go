@@ -224,13 +224,21 @@ func (p *Plugin) Status(_ context.Context, _ *sdk.StatusRequest) (*sdk.InstanceS
 
 func (p *Plugin) buildInstall(_ context.Context, req *sdk.OpRequest) (*sdk.Pipeline, error) {
 	spec := parseSpec(req.Instance.Spec)
+	instName := req.Instance.Name
+	if instName == "" {
+		instName = "mysql-main"
+	}
+	ver := req.Instance.ProductVersion
+	if ver == "" {
+		ver = "8.4.10"
+	}
 	pb := sdk.NewPipelineBuilder()
 	if req.Instance.DeployTarget == sdk.TargetKubernetes {
 		pb.Phase(sdk.PhaseSpec{
 			Name: "k8s-percona-mysql",
 			Tasks: []sdk.TaskSpec{
 				sdk.HelmRelease(sdk.HelmReleaseSpec{
-					ReleaseName: "ps-" + req.Instance.Name, Namespace: "mysql-system",
+					ReleaseName: "ps-" + instName, Namespace: "mysql-system",
 					ChartRef: "charts/ps-operator-1.3.0.tgz", Version: "1.3.0", Atomic: true, Wait: true,
 				}).WithKey("mysql-k8s-helm"),
 			},
@@ -242,8 +250,59 @@ func (p *Plugin) buildInstall(_ context.Context, req *sdk.OpRequest) (*sdk.Pipel
 		memMB = req.Hosts[0].Facts.MemMB
 	}
 	bp, redo := ComputeInnoDBTuning(memMB, spec.OSReserveMB)
+	dataDir := fmt.Sprintf("/data/mysql/%s", instName)
+	cnfPath := fmt.Sprintf("/etc/kinstall/mysql/%s/my.cnf", instName)
+
+	if req.Instance.DeployTarget == sdk.TargetHostContainer {
+		// Cap container buffer pool safely for dev/edge hosts with small RAM
+		if bp > 2048 && memMB < 8192 {
+			bp = 512
+			redo = 256
+		}
+		myCNF := fmt.Sprintf(`[mysqld]
+innodb_buffer_pool_size=%dM
+innodb_redo_log_capacity=%dM
+innodb_flush_log_at_trx_commit=1
+sync_binlog=1
+`, bp, redo)
+		composePath := fmt.Sprintf("/opt/kinstall/compose/mysql-%s/docker-compose.yml", instName)
+		composeYAML := fmt.Sprintf(`services:
+  mysql:
+    image: mysql:%s
+    container_name: kinstall-mysql-%s
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:-KinstallMySQL#2026}"
+    ports:
+      - "%d:3306"
+    volumes:
+      - %s:/etc/mysql/conf.d/kinstall.cnf:ro
+      - %s:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+`, majorMinor(ver), instName, spec.Port, cnfPath, dataDir)
+		pb.Phase(sdk.PhaseSpec{
+			Name: "deploy-mysql-container",
+			Tasks: []sdk.TaskSpec{
+				sdk.DockerEnsure(nil).WithKey("mysql-docker"),
+				sdk.FileSync(cnfPath, sdk.TemplateRef{Inline: myCNF}, 0o644, "").WithKey("mysql-cnf"),
+				sdk.ComposeSync("kinstall-mysql-"+instName, composePath,
+					sdk.MountSpec{Src: cnfPath, Dst: "/etc/mysql/conf.d/kinstall.cnf", Type: "file", Mode: 0o644},
+					sdk.MountSpec{Src: dataDir, Dst: "/var/lib/mysql", Type: "dir", Mode: 0o755},
+				).WithParam("composeContent", composeYAML).WithKey("mysql-compose"),
+				sdk.WaitTCP(fmt.Sprintf("127.0.0.1:%d", spec.Port), 120*time.Second).WithKey("mysql-ready"),
+			},
+		})
+		return pb.Build(), nil
+	}
+
 	myCNF := fmt.Sprintf(`[mysqld]
 port=%d
+datadir=%s
+socket=%s/mysql.sock
 gtid_mode=ON
 enforce_gtid_consistency=ON
 group_replication_single_primary_mode=ON
@@ -256,12 +315,30 @@ innodb_redo_log_capacity=%dM
 innodb_flush_method=O_DIRECT
 innodb_flush_log_at_trx_commit=1
 sync_binlog=1
-`, spec.Port, bp, redo)
+`, spec.Port, dataDir, dataDir, bp, redo)
+	mysqlUnit := fmt.Sprintf(`[Unit]
+Description=kinstall MySQL %s (%s)
+After=network-online.target
+[Service]
+Type=simple
+User=mysql
+Group=mysql
+ExecStart=/usr/local/bin/mysqld --defaults-file=%s
+Restart=on-failure
+LimitNOFILE=65535
+[Install]
+WantedBy=multi-user.target
+`, ver, instName, cnfPath)
+	prepCmd := fmt.Sprintf("getent group mysql >/dev/null || groupadd -r mysql; id -u mysql >/dev/null 2>&1 || useradd -r -g mysql -s /sbin/nologin mysql; mkdir -p %s /etc/kinstall/mysql/%s && chown -R mysql:mysql %s", dataDir, instName, dataDir)
+	initCmd := fmt.Sprintf("MYSQLD=$(command -v mysqld || echo /usr/local/bin/mysqld); \"$MYSQLD\" --defaults-file=%s --initialize-insecure --user=mysql --datadir=%s", cnfPath, dataDir)
 	pb.Phase(sdk.PhaseSpec{
 		Name: "deploy-mysql-mgr",
 		Tasks: []sdk.TaskSpec{
-			sdk.BinaryInstall("mysql", req.Instance.ProductVersion, sdk.ArtifactRef{Name: "mysql"}).WithKey("mysql-bin"),
-			sdk.FileSync(fmt.Sprintf("/etc/kinstall/mysql/%s/my.cnf", req.Instance.Name), sdk.TemplateRef{Inline: myCNF}, 0o640, "root:mysql").WithKey("mysql-cnf"),
+			sdk.CmdRun(prepCmd, fmt.Sprintf("id -u mysql >/dev/null 2>&1 && test -d %s", dataDir)).WithKey("mysql-user-dir"),
+			sdk.BinaryInstall("mysqld", ver, sdk.ArtifactRef{Name: "mysql"}).WithParam("fallbackPkg", "mysql-server").WithKey("mysql-bin"),
+			sdk.FileSync(cnfPath, sdk.TemplateRef{Inline: myCNF}, 0o640, "root:mysql").WithKey("mysql-cnf"),
+			sdk.CmdRun(initCmd, fmt.Sprintf("test -d %s/mysql", dataDir)).WithKey("mysql-initdb"),
+			sdk.SystemdUnit("kinstall-mysql-"+instName+".service", sdk.TemplateRef{Inline: mysqlUnit}, sdk.UnitOpts{Enable: true, Start: true, RestartOnChange: true}).WithKey("mysql-unit"),
 			sdk.WaitTCP(fmt.Sprintf("127.0.0.1:%d", spec.Port), 90*time.Second).WithKey("mysql-ready"),
 		},
 	})
@@ -281,8 +358,15 @@ func (p *Plugin) buildRestore(_ context.Context, req *sdk.OpRequest) (*sdk.Pipel
 }
 
 func (p *Plugin) buildUninstall(_ context.Context, req *sdk.OpRequest) (*sdk.Pipeline, error) {
+	instName := req.Instance.Name
 	pb := sdk.NewPipelineBuilder()
-	pb.Phase(sdk.PhaseSpec{Name: "uninstall-mysql", Disruptive: true, Tasks: []sdk.TaskSpec{sdk.CmdRun("systemctl disable --now kinstall-mysql-"+req.Instance.Name+" || true", "").WithKey("mysql-stop")}})
+	stopScript := fmt.Sprintf(`systemctl disable --now kinstall-mysql-%s.service 2>/dev/null || true
+if [ -f /opt/kinstall/compose/mysql-%s/docker-compose.yml ]; then
+  (docker compose -f /opt/kinstall/compose/mysql-%s/docker-compose.yml down --remove-orphans || docker-compose -f /opt/kinstall/compose/mysql-%s/docker-compose.yml down || true)
+fi
+rm -f /etc/systemd/system/kinstall-mysql-%s.service
+systemctl daemon-reload 2>/dev/null || true`, instName, instName, instName, instName, instName)
+	pb.Phase(sdk.PhaseSpec{Name: "uninstall-mysql", Disruptive: true, Tasks: []sdk.TaskSpec{sdk.CmdRun(stopScript, "").WithKey("mysql-stop")}})
 	return pb.Build(), nil
 }
 

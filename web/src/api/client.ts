@@ -143,3 +143,23 @@ export async function apiDownload(
   URL.revokeObjectURL(url)
   return { filename, sha256, size: blob.size }
 }
+
+export async function apiUpload<T>(path: string, formData: FormData): Promise<T> {
+  const resp = await fetch(path, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: baseHeaders({ Accept: 'application/json' }),
+    body: formData,
+  })
+  const text = await resp.text()
+  let parsed: unknown = null
+  try {
+    parsed = text ? JSON.parse(text) : null
+  } catch {
+    parsed = { detail: text }
+  }
+  if (!resp.ok) {
+    throw new APIError(resp.status, (parsed as ProblemDetail) || { title: resp.statusText })
+  }
+  return parsed as T
+}

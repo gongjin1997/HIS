@@ -161,17 +161,31 @@ async function main() {
     await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'light', { timeout: 5000 })
     console.log('[7/8] Settings Governance Center + Dark/Light Theme Toggle PASS')
 
-    // 8. Design System Showcase (/__design)
+    // 8. Offline Artifacts Catalog & 12-Plugin Readiness Matrix (/artifacts/bundles)
+    await page.goto(`${BASE_URL}/artifacts/bundles`, { waitUntil: 'networkidle' })
+    const artText = await page.textContent('body')
+    assert(artText && artText.includes('离线制品库') && artText.includes('上传离线包'), 'Artifacts view missing title or upload action')
+    await assertNoHorizontalOverflow(page, 'Artifacts')
+    console.log('[8/10] Offline Artifacts Catalog & Readiness Matrix PASS')
+
+    // 9. Batch Job Runner & LiveOps Script Templates (/jobs)
+    await page.goto(`${BASE_URL}/jobs`, { waitUntil: 'networkidle' })
+    const jobsText = await page.textContent('body')
+    assert(jobsText && jobsText.includes('批量作业中心') && jobsText.includes('内置运维与巡检模板'), 'Jobs view missing title or template list')
+    await assertNoHorizontalOverflow(page, 'Jobs')
+    console.log('[9/10] Batch Job Execution Center & Curated Templates PASS')
+
+    // 10. Design System Showcase (/__design)
     await page.goto(`${BASE_URL}/__design`, { waitUntil: 'networkidle' })
     const designText = await page.textContent('body')
     assert(designText && designText.includes('kinstall Design System v3.0'), '/__design showcase failed to render')
-    console.log('[8/8] Design System Showcase (/__design) PASS')
+    console.log('[10/10] Design System Showcase (/__design) PASS')
 
     assert(externalRequests.length === 0, `Detected forbidden external CDN requests: ${externalRequests.join(', ')}`)
     assert(serverErrors.length === 0, `Detected HTTP 5xx responses: ${serverErrors.join(', ')}`)
     assert(consoleErrors.length === 0, `Detected browser console errors: ${consoleErrors.join(' | ')}`)
 
-    console.log(`PLAYWRIGHT HEADLESS CHROME E2E (${BASE_URL}): ALL 8 JOURNEYS PASS (0 console errors, 0 5xx, 0 external CDN, 0 overflows, 0 DAG overlaps)!`)
+    console.log(`PLAYWRIGHT HEADLESS CHROME E2E (${BASE_URL}): ALL 10 JOURNEYS PASS (0 console errors, 0 5xx, 0 external CDN, 0 overflows, 0 DAG overlaps)!`)
   } finally {
     await browser.close()
   }

@@ -151,6 +151,7 @@ func NewRouter(shutdownCtx context.Context, facade *app.Facade, authSvc *authz.S
 			pr.Post("/hosts/{hostId}:probe", s.handleProbeHost)
 			pr.Post("/hosts/{hostId}:check", s.handleCheckHostBaseline)
 			pr.Post("/hosts/{hostId}:init", s.handleInitHost)
+			pr.Get("/hosts/{hostId}/terminal", s.handleHostTerminalWS)
 			pr.Post("/cmdb:sync", s.handleCMDBSync)
 			pr.Get("/cmdb/overview", s.handleCMDBOverview)
 			pr.Get("/cmdb/groups", s.handleListDynamicGroups)
@@ -163,13 +164,19 @@ func NewRouter(shutdownCtx context.Context, facade *app.Facade, authSvc *authz.S
 			pr.Delete("/cmdb/sync-sources/{sourceId}", s.handleDeleteCMDBSyncSource)
 			pr.Post("/cmdb/sync-sources/{sourceId}:run", s.handleRunCMDBSyncSource)
 
-			// Media Policies (Local / Huawei OBS·S3 / Online, ADR-077)
+			// Media Policies & Offline Artifact Supply Chain Catalog (ADR-077)
 			pr.Get("/media-policies", s.handleListMediaPolicies)
 			pr.Post("/media-policies", s.handleCreateMediaPolicy)
 			pr.Put("/media-policies/{policyId}", s.handleUpdateMediaPolicy)
 			pr.Post("/media-policies/{policyId}:test", s.handleTestMediaPolicy)
+			pr.Get("/artifacts", s.handleListArtifacts)
+			pr.Post("/artifacts/upload", s.handleUploadArtifact)
+			pr.Post("/artifacts/prefetch", s.handlePrefetchArtifact)
+			pr.Delete("/artifacts", s.handleDeleteArtifact)
+			pr.Get("/artifacts/bom", s.handleExportArtifactBOM)
+			pr.Post("/artifacts/push-image", s.handlePushImageArtifact)
 
-			// Instances + 2-phase Plan / Apply / Detail / Update / Delete
+			// Instances + 2-phase Plan / Apply / Detail / Update / Delete / Live Runtime Control
 			pr.Get("/instances", s.handleListInstances)
 			pr.Post("/instances", s.handleCreateInstance)
 			pr.Get("/instances/{instanceId}", s.handleGetInstanceDetail)
@@ -177,6 +184,13 @@ func NewRouter(shutdownCtx context.Context, facade *app.Facade, authSvc *authz.S
 			pr.Delete("/instances/{instanceId}", s.handleDeleteInstance)
 			pr.Post("/instances/{instanceId}:plan", s.handlePlanInstance)
 			pr.Post("/instances/{instanceId}:apply", s.handleApplyInstance)
+			pr.Post("/instances/{instanceId}:probe", s.handleProbeInstance)
+			pr.Post("/instances/{instanceId}:control", s.handleControlInstance)
+			pr.Get("/instances/{instanceId}/logs", s.handleInstanceLogs)
+
+			// LiveOps-style Guarded Batch Job Execution Center
+			pr.Get("/jobs/templates", s.handleListJobTemplates)
+			pr.Post("/jobs:run", s.handleRunBatchJob)
 
 			// Stacks (Live Validate / Create / Update / Delete / Apply / Reverse Uninstall)
 			pr.Get("/stacks", s.handleListStacks)
@@ -240,8 +254,8 @@ func mountEmbeddedUI(r chi.Router, distFS fs.FS) {
 			http.NotFound(w, req)
 			return
 		}
-		// Strict CSP: zero external CDN, self-hosted fonts & scripts only (DESIGN.md §6.5, Redline 8)
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'")
+		// Strict CSP: zero external CDN, self-hosted fonts & scripts only, allow same-origin WebSocket PTY
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws: wss:")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 
