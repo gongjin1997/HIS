@@ -10,10 +10,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kinstall/kinstall/internal/agenthub"
 	"github.com/kinstall/kinstall/internal/artifact/catalog"
 	"github.com/kinstall/kinstall/internal/audit"
 	"github.com/kinstall/kinstall/internal/authz"
+	"github.com/kinstall/kinstall/internal/cmdb"
 	"github.com/kinstall/kinstall/internal/compliance"
+	"github.com/kinstall/kinstall/internal/configcenter"
+	"github.com/kinstall/kinstall/internal/delivery"
 	"github.com/kinstall/kinstall/internal/domain"
 	"github.com/kinstall/kinstall/internal/engine"
 	"github.com/kinstall/kinstall/internal/executor/sshx"
@@ -23,6 +27,7 @@ import (
 	"github.com/kinstall/kinstall/internal/multicluster"
 	"github.com/kinstall/kinstall/internal/notify"
 	"github.com/kinstall/kinstall/internal/osadapter"
+	"github.com/kinstall/kinstall/internal/plugindsl"
 	"github.com/kinstall/kinstall/internal/ports"
 	"github.com/kinstall/kinstall/internal/registry"
 	"github.com/kinstall/kinstall/internal/stack"
@@ -32,23 +37,28 @@ import (
 
 // Facade is the SINGLE unified application service layer shared by CLI local mode and HA Server REST/SSE (G1 §1.2, ARCHITECTURE §4.3).
 type Facade struct {
-	store     ports.Store
-	reg       *registry.Registry
-	exec      ports.Executor
-	secrets   ports.SecretStore
-	media     ports.MediaResolver
-	events    ports.EventSink
-	auditRec  *audit.Recorder
-	authSvc   *authz.Service
-	worker    *engine.Worker
-	osEngine  *osadapter.Engine
-	kcMgr     *multicluster.KubeconfigManager
-	notifier  *notify.Dispatcher
-	artifacts *catalog.Store
-	sshPool   *sshx.Pool
-	enableGM  bool
-	kekKind   string
-	cipherAlg string
+	store       ports.Store
+	reg         *registry.Registry
+	exec        ports.Executor
+	secrets     ports.SecretStore
+	media       ports.MediaResolver
+	events      ports.EventSink
+	auditRec    *audit.Recorder
+	authSvc     *authz.Service
+	worker      *engine.Worker
+	osEngine    *osadapter.Engine
+	kcMgr       *multicluster.KubeconfigManager
+	notifier    *notify.Dispatcher
+	artifacts   *catalog.Store
+	sshPool     *sshx.Pool
+	cmdbSvc     *cmdb.Service
+	cfgSvc      *configcenter.Service
+	pluginDSL   *plugindsl.Service
+	deliverySvc *delivery.Service
+	agentHub    *agenthub.Service
+	enableGM    bool
+	kekKind     string
+	cipherAlg   string
 }
 
 // NewFacade wires the unified Facade via explicit dependency injection (no global singletons).
@@ -80,7 +90,7 @@ func NewFacade(
 			})
 		}
 	}
-	return &Facade{
+	f := &Facade{
 		store:     st,
 		reg:       reg,
 		exec:      exec,
@@ -97,6 +107,25 @@ func NewFacade(
 		kekKind:   kekKind,
 		cipherAlg: cipherAlg,
 	}
+	if qp, ok := st.(ports.QueryExecProvider); ok && qp.WriteQE() != nil {
+		f.cmdbSvc = cmdb.NewService(qp.WriteQE(), qp.ReadQE())
+		f.cfgSvc = configcenter.NewService(qp.WriteQE(), qp.ReadQE(), sec)
+		f.pluginDSL = plugindsl.NewService(qp.WriteQE(), qp.ReadQE(), reg)
+		f.deliverySvc = delivery.NewService(qp.WriteQE(), qp.ReadQE(), f.cfgSvc, reg)
+		f.agentHub = agenthub.NewService(qp.WriteQE(), qp.ReadQE())
+	}
+	return f
+}
+
+func (f *Facade) CMDB() *cmdb.Service                 { return f.cmdbSvc }
+func (f *Facade) ConfigCenter() *configcenter.Service { return f.cfgSvc }
+func (f *Facade) PluginDSL() *plugindsl.Service       { return f.pluginDSL }
+func (f *Facade) Delivery() *delivery.Service         { return f.deliverySvc }
+func (f *Facade) AgentHub() *agenthub.Service         { return f.agentHub }
+
+// RecordAuditEvent writes an append-only tamper-evident audit entry for modular domain handlers.
+func (f *Facade) RecordAuditEvent(ctx context.Context, projectID, username, action, resourceType, resourceID string, detail map[string]any) {
+	f.recordAudit(ctx, domain.Actor{Username: username, ID: username}, projectID, action, resourceType, resourceID, "success", "", detail)
 }
 
 // IsDraining exposes Worker draining state to /readyz without letting internal/server import internal/engine (ARCHITECTURE §4.3).

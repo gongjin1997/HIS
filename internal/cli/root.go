@@ -27,11 +27,15 @@ type ServerStarter func(ctx context.Context, listenAddr string, devNoAuth bool) 
 // APIProxyRunner is injected by cmd/kinstall for `kinstall apiserver-proxy` (T-M1-20, P1 §3.1).
 type APIProxyRunner func(ctx context.Context, listenAddr, configPath string) error
 
+// AgentRunner is injected by cmd/kinstall for `kinstall agent` zero-trust outbound edge agent.
+type AgentRunner func(ctx context.Context, serverURL, enrollToken, zone, stateDir string) error
+
 // Deps supplies dependencies from the composition root cmd/kinstall/app.go (O-04).
 type Deps struct {
 	Facade      *app.Facade
 	StartServer ServerStarter
 	RunAPIProxy APIProxyRunner
+	RunAgent    AgentRunner
 	Out         io.Writer
 }
 
@@ -650,6 +654,22 @@ func NewRootCmd(deps Deps) *cobra.Command {
 	srvStart.Flags().BoolVar(&devNoAuth, "dev-no-auth", false, "Allow unauthenticated local admin access (dev only)")
 	serverCmd.AddCommand(srvStart)
 	root.AddCommand(serverCmd)
+
+	// agent (zero-trust outbound edge agent — zero inbound ports)
+	var agentZone, agentStateDir string
+	agentCmd := &cobra.Command{
+		Use:   "agent",
+		Short: "Run the zero-trust outbound edge agent (enrolls via one-time token, reports telemetry & runs tasks)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if deps.RunAgent == nil {
+				return fmt.Errorf("agent runner not configured")
+			}
+			return deps.RunAgent(cmd.Context(), serverURL, token, agentZone, agentStateDir)
+		},
+	}
+	agentCmd.Flags().StringVar(&agentZone, "zone", "default", "Security zone / network area label")
+	agentCmd.Flags().StringVar(&agentStateDir, "state-dir", "", "Directory to persist enrolled agent credentials (0600)")
+	root.AddCommand(agentCmd)
 
 	return root
 }

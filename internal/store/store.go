@@ -257,6 +257,26 @@ func (s *DBStore) SchemaVersion(ctx context.Context) (int64, error) {
 // RawWriteSQL exposes the underlying write *sql.DB solely for low-level contract tests.
 func (s *DBStore) RawWriteSQL() *sql.DB { return s.writeSQL }
 
+type bunQueryExec struct{ db *bun.DB }
+
+func (q bunQueryExec) ExecRaw(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return q.db.NewRaw(query, args...).Exec(ctx)
+}
+
+func (q bunQueryExec) ScanRaw(ctx context.Context, query string, args []any, dest ...any) error {
+	return q.db.NewRaw(query, args...).Scan(ctx, dest...)
+}
+
+func (q bunQueryExec) QueryRaw(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return q.db.QueryContext(ctx, query, args...)
+}
+
+// WriteQE exposes dialect-agnostic write SQL access for modular domain services (R5).
+func (s *DBStore) WriteQE() ports.QueryExec { return bunQueryExec{db: s.writeDB} }
+
+// ReadQE exposes dialect-agnostic read SQL access for modular domain services (R5).
+func (s *DBStore) ReadQE() ports.QueryExec { return bunQueryExec{db: s.readDB} }
+
 // Close shuts down write and read pools cleanly.
 func (s *DBStore) Close() error {
 	var firstErr error

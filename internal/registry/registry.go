@@ -19,6 +19,7 @@ type Registry struct {
 	frozen     bool
 	components map[string]sdk.Component
 	byProduct  map[string]sdk.Component
+	dynamic    map[string]sdk.Component
 	extensions map[string][]sdk.Extension
 }
 
@@ -27,6 +28,7 @@ func New() *Registry {
 	return &Registry{
 		components: make(map[string]sdk.Component),
 		byProduct:  make(map[string]sdk.Component),
+		dynamic:    make(map[string]sdk.Component),
 		extensions: make(map[string][]sdk.Extension),
 	}
 }
@@ -78,11 +80,33 @@ func (r *Registry) Freeze() {
 	r.frozen = true
 }
 
+// UpsertDynamicComponent registers or updates a runtime declarative plugin package without mutating frozen built-ins.
+func (r *Registry) UpsertDynamicComponent(c sdk.Component) {
+	if c == nil {
+		return
+	}
+	meta := c.Meta()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.dynamic[strings.ToLower(meta.Name)] = c
+}
+
+// RemoveDynamicComponent unregisters a runtime declarative plugin package.
+func (r *Registry) RemoveDynamicComponent(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.dynamic, strings.ToLower(name))
+}
+
 // Resolve finds a Component plugin by product or plugin name and validates version & deployTarget compatibility.
 func (r *Registry) Resolve(product string, target sdk.DeployTarget, version string) (sdk.Component, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	c, ok := r.byProduct[strings.ToLower(product)]
+	key := strings.ToLower(product)
+	c, ok := r.byProduct[key]
+	if !ok {
+		c, ok = r.dynamic[key]
+	}
 	if !ok {
 		return nil, sdk.NewError(sdk.CodePluginNotFound, "PLG", http.StatusNotFound, sdk.CodePluginNotFound, false,
 			fmt.Errorf("product %q not registered", product))
@@ -114,13 +138,21 @@ func (r *Registry) Resolve(product string, target sdk.DeployTarget, version stri
 	return c, nil
 }
 
-// ListComponents returns all registered component plugins sorted by name.
+// ListComponents returns all registered component plugins (built-in + declarative dynamic) sorted by name.
 func (r *Registry) ListComponents() []sdk.PluginMeta {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]sdk.PluginMeta, 0, len(r.components))
+	seen := make(map[string]bool, len(r.components)+len(r.dynamic))
+	out := make([]sdk.PluginMeta, 0, len(r.components)+len(r.dynamic))
 	for _, c := range r.components {
-		out = append(out, c.Meta())
+		m := c.Meta()
+		seen[strings.ToLower(m.Name)] = true
+		out = append(out, m)
+	}
+	for k, c := range r.dynamic {
+		if !seen[k] {
+			out = append(out, c.Meta())
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

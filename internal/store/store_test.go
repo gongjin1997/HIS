@@ -35,15 +35,15 @@ func TestAll24TablesAnd30ConcurrentWriters(t *testing.T) {
 	ctx := context.Background()
 	st := openTestSQLite(t)
 
-	// Verify all 26 domain tables exist in SQLite (24 core + 2 CMDB tables)
+	// Verify all 49 domain tables exist in SQLite (26 core + 23 enterprise CMDB/DCIM/IPAM/Config/PluginDSL/Delivery/Agent tables)
 	var tableCount int
 	err := st.RawWriteSQL().QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name <> 'goose_db_version'`).Scan(&tableCount)
 	if err != nil {
 		t.Fatalf("count tables: %v", err)
 	}
-	if tableCount != 26 {
-		t.Fatalf("expected exactly 26 domain tables, got %d", tableCount)
+	if tableCount != 49 {
+		t.Fatalf("expected exactly 49 domain tables, got %d", tableCount)
 	}
 
 	// 30 concurrent writers -> zero SQLITE_BUSY errors

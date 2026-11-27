@@ -16,6 +16,7 @@ import (
 
 	"github.com/kinstall/kinstall/internal/artifact/bundle"
 	"github.com/kinstall/kinstall/internal/artifact/catalog"
+	"github.com/kinstall/kinstall/internal/artifact/oci"
 	"github.com/kinstall/kinstall/internal/authz"
 	"github.com/kinstall/kinstall/internal/domain"
 	"github.com/kinstall/kinstall/internal/executor/sshx"
@@ -81,16 +82,18 @@ type ProductReadiness struct {
 
 // ArtifactCatalogResponse is returned by ListArtifacts for the Offline Supply Chain UI.
 type ArtifactCatalogResponse struct {
-	PrimaryRoot     string                  `json:"primaryRoot"`
-	Roots           []string                `json:"roots"`
-	OfflineStrict   bool                    `json:"offlineStrict"`
-	TotalCount      int                     `json:"totalCount"`
-	TotalBytes      int64                   `json:"totalBytes"`
-	Items           []catalog.ArtifactEntry `json:"items"`
-	ReadinessMatrix []ProductReadiness      `json:"readinessMatrix"`
+	PrimaryRoot        string                  `json:"primaryRoot"`
+	Roots              []string                `json:"roots"`
+	OfflineStrict      bool                    `json:"offlineStrict"`
+	TotalCount         int                     `json:"totalCount"`
+	TotalBytes         int64                   `json:"totalBytes"`
+	UniqueBlobs        int                     `json:"uniqueBlobs"`
+	CASDedupBytesSaved int64                   `json:"casDedupBytesSaved"`
+	Items              []catalog.ArtifactEntry `json:"items"`
+	ReadinessMatrix    []ProductReadiness      `json:"readinessMatrix"`
 }
 
-// ListArtifacts scans local offline roots + primary store and computes plugin readiness coverage.
+// ListArtifacts scans local offline roots + primary store and computes plugin readiness coverage & CAS dedup stats.
 func (f *Facade) ListArtifacts(ctx context.Context, actor domain.Actor, projectID string) (*ArtifactCatalogResponse, error) {
 	if err := authz.Authorize(actor, projectID, "resource.read"); err != nil {
 		return nil, err
@@ -101,9 +104,17 @@ func (f *Facade) ListArtifacts(ctx context.Context, actor domain.Actor, projectI
 	if err != nil {
 		return nil, err
 	}
-	var totalBytes int64
+	var totalBytes, savedBytes int64
+	seenSHA := make(map[string]int64, len(items))
 	for _, it := range items {
 		totalBytes += it.SizeBytes
+		if it.SHA256 != "" {
+			if _, dup := seenSHA[it.SHA256]; dup {
+				savedBytes += it.SizeBytes
+			} else {
+				seenSHA[it.SHA256] = it.SizeBytes
+			}
+		}
 	}
 
 	var matrix []ProductReadiness
@@ -148,13 +159,15 @@ func (f *Facade) ListArtifacts(ctx context.Context, actor domain.Actor, projectI
 
 	roots := append([]string{store.PrimaryRoot()}, policyRoots...)
 	return &ArtifactCatalogResponse{
-		PrimaryRoot:     store.PrimaryRoot(),
-		Roots:           roots,
-		OfflineStrict:   offlineStrict,
-		TotalCount:      len(items),
-		TotalBytes:      totalBytes,
-		Items:           items,
-		ReadinessMatrix: matrix,
+		PrimaryRoot:        store.PrimaryRoot(),
+		Roots:              roots,
+		OfflineStrict:      offlineStrict,
+		TotalCount:         len(items),
+		TotalBytes:         totalBytes,
+		UniqueBlobs:        len(seenSHA),
+		CASDedupBytesSaved: savedBytes,
+		Items:              items,
+		ReadinessMatrix:    matrix,
 	}, nil
 }
 
@@ -280,4 +293,47 @@ func (f *Facade) PushImageArtifactToHost(ctx context.Context, actor domain.Actor
 		"sha256":      sha,
 		"output":      strings.TrimSpace(res.Stdout),
 	}, nil
+}
+
+// InspectOCIArtifact parses a local offline image tarball strictly in pure Go without docker CLI.
+func (f *Facade) InspectOCIArtifact(ctx context.Context, actor domain.Actor, projectID, logicalPath string) (*oci.ImageInspectResult, error) {
+	if err := authz.Authorize(actor, projectID, "resource.read"); err != nil {
+		return nil, err
+	}
+	store := f.ensureArtifactStore()
+	policyRoots, _ := f.projectLocalRoots(ctx, projectID)
+	absPath, err := store.ResolvePath(logicalPath, policyRoots...)
+	if err != nil {
+		return nil, err
+	}
+	return oci.InspectTarball(absPath)
+}
+
+// PushOCIArtifactNative pushes an offline image tarball directly to Harbor/SWR using google/go-containerregistry
+// with fail-closed amd64/arm64 architecture verification (LiveOps 03.7 §3.2).
+func (f *Facade) PushOCIArtifactNative(ctx context.Context, actor domain.Actor, projectID, logicalPath, targetRef, expectedArch, username, password string, insecureTLS bool) (*oci.PushResult, error) {
+	if err := authz.Authorize(actor, projectID, "media.write"); err != nil {
+		return nil, err
+	}
+	store := f.ensureArtifactStore()
+	policyRoots, _ := f.projectLocalRoots(ctx, projectID)
+	absPath, err := store.ResolvePath(logicalPath, policyRoots...)
+	if err != nil {
+		return nil, err
+	}
+	res, err := oci.PushTarballNative(ctx, oci.PushRequest{
+		TarballPath:  absPath,
+		TargetRef:    targetRef,
+		ExpectedArch: expectedArch,
+		Username:     username,
+		Password:     password,
+		InsecureTLS:  insecureTLS,
+	})
+	if err != nil {
+		return nil, err
+	}
+	f.recordAudit(ctx, actor, projectID, "artifact.oci_push", "artifact", logicalPath, "success", "", map[string]any{
+		"targetRef": res.TargetRef, "digest": res.Digest, "arch": res.Architecture,
+	})
+	return res, nil
 }

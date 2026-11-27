@@ -43,6 +43,8 @@ interface CatalogResp {
   offlineStrict: boolean
   totalCount: number
   totalBytes: number
+  uniqueBlobs?: number
+  casDedupBytesSaved?: number
   items: ArtifactEntry[]
   readinessMatrix: ProductReadiness[]
 }
@@ -92,6 +94,18 @@ const pushImageDialog = reactive({
   logicalPath: '',
   hostId: '',
   output: '',
+})
+
+const ociPushDialog = reactive({
+  open: false,
+  loading: false,
+  logicalPath: '',
+  targetRef: 'harbor.internal.corp/library/app:1.0.0',
+  expectedArch: 'amd64',
+  username: '',
+  password: '',
+  insecureTls: true,
+  result: '',
 })
 
 const filteredItems = computed(() => {
@@ -228,6 +242,40 @@ function openPushImage(row: ArtifactEntry) {
   pushImageDialog.open = true
 }
 
+function openOciPush(row: ArtifactEntry) {
+  ociPushDialog.logicalPath = row.logicalPath
+  ociPushDialog.expectedArch = row.arch === 'arm64' ? 'arm64' : 'amd64'
+  ociPushDialog.result = ''
+  ociPushDialog.open = true
+}
+
+async function submitOciPush() {
+  ociPushDialog.loading = true
+  try {
+    const { data } = await apiRequest<{ targetRef: string; digest: string; architecture: string; durationMs: number }>(
+      'POST',
+      `/api/v1/projects/${ws.currentProjectId}/artifacts/oci/push`,
+      {
+        body: {
+          logicalPath: ociPushDialog.logicalPath,
+          targetRef: ociPushDialog.targetRef,
+          expectedArch: ociPushDialog.expectedArch,
+          username: ociPushDialog.username,
+          password: ociPushDialog.password,
+          insecureTls: ociPushDialog.insecureTls,
+        },
+      }
+    )
+    ociPushDialog.result = `OCI 原生直推成功：${data.targetRef}\n架构校验通过：${data.architecture}\nDigest: ${data.digest} (${data.durationMs}ms)`
+    ElMessage.success('原生 Go OCI 镜像架构校验并推送成功（零 docker CLI）')
+  } catch (e) {
+    ociPushDialog.result = String(e)
+    ElMessage.error(String(e))
+  } finally {
+    ociPushDialog.loading = false
+  }
+}
+
 async function submitPushImage() {
   if (!pushImageDialog.hostId) {
     ElMessage.warning('请选择目标主机')
@@ -293,7 +341,7 @@ onMounted(loadAll)
       <div class="ki-chip">
         <span class="ki-chip__bar ki-chip__bar--ok" />
         <div>
-          <div class="ki-chip__label">本地介质占用</div>
+          <div class="ki-chip__label">本地 CAS 介质占用</div>
           <div class="ki-chip__val">{{ formatBytes(catalog?.totalBytes || 0) }}</div>
         </div>
       </div>
@@ -371,6 +419,15 @@ onMounted(loadAll)
             </el-table-column>
             <el-table-column label="操作" width="124" align="right">
               <template #default="{ row }">
+                <el-button
+                  v-if="row.category === 'images'"
+                  link
+                  type="primary"
+                  size="small"
+                  @click="openOciPush(row)"
+                >
+                  OCI 直推
+                </el-button>
                 <el-button
                   v-if="row.category === 'images'"
                   link
@@ -530,6 +587,36 @@ onMounted(loadAll)
       <template #footer>
         <el-button @click="pushImageDialog.open = false">关闭</el-button>
         <el-button type="primary" :loading="pushImageDialog.loading" @click="submitPushImage">推送并加载镜像</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 纯 Go 原生 OCI 架构校验直推 Harbor/SWR 弹窗 -->
+    <el-dialog v-model="ociPushDialog.open" title="纯 Go 原生 OCI 架构校验直推（零 docker CLI）" width="540px">
+      <el-form label-position="top">
+        <el-form-item label="离线镜像 Tarball">
+          <el-input :model-value="ociPushDialog.logicalPath" disabled class="ki-mono" />
+        </el-form-item>
+        <div class="ki-grid-2">
+          <el-form-item label="目标 Harbor/SWR 引用">
+            <el-input v-model="ociPushDialog.targetRef" class="ki-mono" />
+          </el-form-item>
+          <el-form-item label="强制校验目标架构（防混推）">
+            <el-select v-model="ociPushDialog.expectedArch" class="ki-w-full">
+              <el-option label="amd64 (x86_64)" value="amd64" />
+              <el-option label="arm64 (鲲鹏/飞腾)" value="arm64" />
+            </el-select>
+          </el-form-item>
+        </div>
+        <div class="ki-grid-2">
+          <el-form-item label="仓库用户名（可选）"><el-input v-model="ociPushDialog.username" /></el-form-item>
+          <el-form-item label="仓库密码（可选）"><el-input v-model="ociPushDialog.password" type="password" show-password /></el-form-item>
+        </div>
+        <el-checkbox v-model="ociPushDialog.insecureTls">允许自签名内网 TLS 仓库</el-checkbox>
+      </el-form>
+      <pre v-if="ociPushDialog.result" class="ki-mono load-out">{{ ociPushDialog.result }}</pre>
+      <template #footer>
+        <el-button @click="ociPushDialog.open = false">关闭</el-button>
+        <el-button type="primary" :loading="ociPushDialog.loading" @click="submitOciPush">校验架构并直推仓库</el-button>
       </template>
     </el-dialog>
   </div>

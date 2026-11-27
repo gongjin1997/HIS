@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kinstall/kinstall/internal/agenthub"
 	"github.com/kinstall/kinstall/internal/apiproxy"
 	"github.com/kinstall/kinstall/internal/app"
 	"github.com/kinstall/kinstall/internal/artifact/catalog"
@@ -367,7 +368,16 @@ func (a *Application) NewRootCommand() *cli.Deps {
 		Facade:      a.Facade,
 		StartServer: a.RunServer,
 		RunAPIProxy: a.RunAPIProxy,
-		Out:         os.Stdout,
+		RunAgent: func(ctx context.Context, serverURL, enrollToken, zone, stateDir string) error {
+			return agenthub.RunAgent(ctx, agenthub.RunnerConfig{
+				ServerURL:   serverURL,
+				EnrollToken: enrollToken,
+				Zone:        zone,
+				StateDir:    stateDir,
+				Logger:      a.Logger,
+			})
+		},
+		Out: os.Stdout,
 	}
 }
 

@@ -684,6 +684,18 @@ async function submitBatchTopology() {
   await runBatchAction('update_topology', payload)
 }
 
+async function syncHostsToCI() {
+  try {
+    const { data } = await apiRequest<{ syncedHosts: number; totalHosts: number }>(
+      'POST',
+      `/api/v1/projects/${ws.currentProjectId}/cmdb/sync-hosts`
+    )
+    ElMessage.success(`已同步 ${data.syncedHosts}/${data.totalHosts} 台主机及监听进程至动态 CMDB CI 资源库`)
+  } catch (e) {
+    ElMessage.error(String(e))
+  }
+}
+
 async function submitBatchCredential() {
   if (!batchCredDialog.credentialId) {
     ElMessage.warning('请选择目标凭据')
@@ -768,6 +780,9 @@ onMounted(loadAll)
             </el-dropdown-menu>
           </template>
         </el-dropdown>
+        <el-button v-if="auth.can('host:write', ws.currentProjectId)" @click="syncHostsToCI">
+          <RefreshCw :size="14" class="btn-ico" /> 同步至 CI 库
+        </el-button>
         <el-button v-if="auth.can('host:probe', ws.currentProjectId)" @click="discoverDialog.open = true">
           <Radar :size="14" class="btn-ico" /> 网段发现
         </el-button>

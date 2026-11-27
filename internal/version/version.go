@@ -10,7 +10,7 @@ var (
 )
 
 // MaxCompatibleSchemaVersion is the highest goose schema version this binary can safely write to (G1 §6.2).
-const MaxCompatibleSchemaVersion int64 = 4
+const MaxCompatibleSchemaVersion int64 = 5
 
 // Info represents structured build & compatibility metadata.
 type Info struct {
