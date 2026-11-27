@@ -49,7 +49,7 @@ async function decide(opId: string, approve: boolean) {
   const action = approve ? ':approve' : ':reject'
   try {
     await apiRequest('POST', `/api/v1/projects/${ws.currentProjectId}/operations/${opId}${action}`, {
-      body: { note: noteMap.value[opId] || (approve ? 'Approved via Four-Eyes Console' : 'Rejected') },
+      body: { note: noteMap.value[opId] || (approve ? 'Approved via Change Approval Console' : 'Rejected') },
       idempotent: true,
     })
     ElMessage.success(approve ? '审批已通过，操作已进入执行队列' : '审批已驳回')
@@ -65,11 +65,11 @@ onMounted(loadApprovals)
 
 <template>
   <div v-loading="loading">
-    <PageHeader title="四眼审批台" :refresh="loadApprovals" :refreshing="loading" />
+    <PageHeader title="变更审批" :refresh="loadApprovals" :refreshing="loading" />
 
     <KiBanner
       variant="info"
-      text="高危与生产环境变更强制双人复核，前端 + 服务层 + 数据库 chk_no_self_approval 约束三重防止自审 (ADR-037)。"
+      text="生产环境及高危变更强制执行双人复核（四眼原则），系统在界面、服务层与数据库层面三重禁止发起人自审。"
       class="ki-mb-4"
     />
 
@@ -77,7 +77,7 @@ onMounted(loadApprovals)
       <KiEmptyState
         variant="first-run"
         title="当前项目暂无待审批变更"
-        description="当生产环境实例提交 Apply 或强行覆盖配置漂移时，待复核工单将自动出现在此处。"
+        description="当生产环境实例提交 Apply、逆序卸载或强行覆盖配置漂移时，待复核工单将自动进入此列表。"
       />
     </div>
 
@@ -97,14 +97,14 @@ onMounted(loadApprovals)
 
       <div v-if="auth.user && ap.requestedBy === auth.user.id" class="self-guard ki-mb-3">
         <ShieldAlert :size="15" aria-hidden="true" />
-        <span>遵循四眼原则 (ADR-037)：当前登录用户为发起人，物理禁止审批自己的高危变更，请由另一位具备审批权限的成员复核。</span>
+        <span>当前登录账号为变更发起人，依据双人复核安全策略禁止自审，请由另一位具备审批权限的成员复核。</span>
       </div>
 
       <div class="ki-flex-row ki-flex-wrap">
         <el-input v-model="noteMap[ap.operationId]" placeholder="填写审批复核意见（可选）" class="ap-note" />
         <el-tooltip
           :disabled="!(auth.user && ap.requestedBy === auth.user.id)"
-          content="遵循四眼原则（ADR-037），发起人不可审批自己的请求"
+          content="遵循双人复核原则，发起人不可审批自己的请求"
         >
           <span>
             <el-button

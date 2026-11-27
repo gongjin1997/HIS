@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { Handle, Position } from '@xyflow/vue'
 import { Lock, Box } from 'lucide-vue-next'
 import KiStatusBadge from '@/components/ki/KiStatusBadge.vue'
@@ -14,7 +15,10 @@ export interface StackDagNodeData {
   dependsOnCount?: number
 }
 
-defineProps<{ data: StackDagNodeData }>()
+const props = defineProps<{ data: StackDagNodeData }>()
+
+const visibleOutputs = computed(() => (props.data.outputs || []).slice(0, 4))
+const extraOutputCount = computed(() => Math.max(0, (props.data.outputs || []).length - 4))
 </script>
 
 <template>
@@ -23,29 +27,30 @@ defineProps<{ data: StackDagNodeData }>()
 
     <header class="ki-dag-node__head">
       <div class="ki-flex-row ki-truncate">
-        <Box :size="13" class="ki-dag-node__icon" aria-hidden="true" />
+        <Box :size="14" class="ki-dag-node__icon" aria-hidden="true" />
         <strong class="ki-mono ki-truncate">{{ data.id }}</strong>
       </div>
       <KiStatusBadge :status="data.status || 'ready'" />
     </header>
 
     <div class="ki-dag-node__body">
-      <div class="ki-flex-between">
-        <span class="ki-dag-node__prod">{{ data.product }} {{ data.version }}</span>
+      <div class="ki-flex-between ki-dag-meta">
+        <span class="ki-dag-node__prod ki-mono">{{ data.product }} {{ data.version }}</span>
         <KiDomainTag kind="target" :value="data.target" />
       </div>
 
-      <div v-if="data.outputs && data.outputs.length" class="ki-dag-ports">
-        <div v-for="out in data.outputs" :key="out.name" class="ki-dag-port">
-          <Lock v-if="out.secret" :size="11" class="ki-text-warn" aria-hidden="true" />
+      <div v-if="visibleOutputs.length" class="ki-dag-ports">
+        <div v-for="out in visibleOutputs" :key="out.name" class="ki-dag-port">
+          <Lock v-if="out.secret" :size="10" class="ki-text-warn" aria-hidden="true" />
           <span class="ki-mono">{{ out.name }}</span>
         </div>
+        <span v-if="extraOutputCount > 0" class="ki-dag-port ki-dag-port--more ki-mono">+{{ extraOutputCount }}</span>
       </div>
     </div>
 
     <footer class="ki-dag-node__foot ki-muted">
       <span>上游依赖 {{ data.dependsOnCount ?? 0 }}</span>
-      <span>Output {{ data.outputs?.length ?? 0 }}</span>
+      <span>输出项 {{ data.outputs?.length ?? 0 }}</span>
     </footer>
 
     <Handle type="source" :position="Position.Right" class="ki-dag-handle" />
@@ -54,11 +59,20 @@ defineProps<{ data: StackDagNodeData }>()
 
 <style scoped>
 .ki-dag-node {
-  width: 248px;
-  border-radius: var(--ki-radius-md);
+  width: 264px;
+  border-radius: var(--ki-radius-card);
   border: 1px solid var(--ki-border-default);
+  border-top: 3px solid var(--ki-brand);
   background-color: var(--ki-bg-surface);
+  box-shadow: var(--ki-shadow-surface);
   overflow: hidden;
+  transition: box-shadow var(--ki-dur-fast) var(--ki-ease), border-color var(--ki-dur-fast) var(--ki-ease);
+}
+
+.ki-dag-node:hover {
+  box-shadow: var(--ki-shadow-hover);
+  border-color: var(--ki-brand-border);
+  border-top-color: var(--ki-brand);
 }
 
 .ki-dag-node__head {
@@ -78,22 +92,29 @@ defineProps<{ data: StackDagNodeData }>()
 }
 
 .ki-dag-node__body {
-  padding: var(--ki-space-2) var(--ki-space-3);
+  padding: 10px var(--ki-space-3);
   display: flex;
   flex-direction: column;
-  gap: var(--ki-space-2);
+  gap: 8px;
+}
+
+.ki-dag-meta {
+  gap: 6px;
 }
 
 .ki-dag-node__prod {
   font-size: var(--ki-fs-xs);
   font-weight: var(--ki-fw-medium);
   color: var(--ki-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ki-dag-ports {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--ki-space-1);
+  gap: 4px;
 }
 
 .ki-dag-port {
@@ -103,23 +124,30 @@ defineProps<{ data: StackDagNodeData }>()
   padding: 2px 6px;
   border-radius: var(--ki-radius-xs);
   background-color: var(--ki-bg-subtle);
+  border: 1px solid var(--ki-border-subtle);
   font-size: 11px;
   color: var(--ki-text-secondary);
+}
+
+.ki-dag-port--more {
+  color: var(--ki-brand);
+  background-color: var(--ki-brand-subtle);
+  border-color: var(--ki-brand-border);
 }
 
 .ki-dag-node__foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 26px;
+  height: 28px;
   padding: 0 var(--ki-space-3);
   border-top: 1px solid var(--ki-border-subtle);
   font-size: 11px;
 }
 
 .ki-dag-handle {
-  width: 9px;
-  height: 9px;
+  width: 10px;
+  height: 10px;
   background-color: var(--ki-brand);
   border: 2px solid var(--ki-bg-surface);
 }

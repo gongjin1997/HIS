@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Plus, Search, GitCompare, ChevronDown, Trash2 } from 'lucide-vue-next'
+import { Box, ChevronDown, GitCompare, Layers, Plus, Search, Trash2 } from 'lucide-vue-next'
 import { apiRequest } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -49,8 +49,72 @@ interface PlanDiffEnvelope {
   warnings?: Array<{ code?: string; message?: string; severity?: string }>
 }
 
+const pluginMetaMap: Record<string, { title: string; category: string; summary: string }> = {
+  kubernetes: {
+    title: 'Kubernetes 集群引擎',
+    category: '容器编排',
+    summary: '支持 K3s / kubeadm 高可用集群、Cilium / Calico 网络与离线镜像预载。',
+  },
+  postgresql: {
+    title: 'PostgreSQL 关系数据库',
+    category: '关系数据库',
+    summary: '内置 Patroni 自动主从高可用、pgBackRest 热备与按时间点恢复 (PITR)。',
+  },
+  mysql: {
+    title: 'MySQL / MariaDB 数据库',
+    category: '关系数据库',
+    summary: '支持半同步主从复制、组复制与 InnoDB 生产调优基线。',
+  },
+  valkey: {
+    title: 'Valkey 内存缓存',
+    category: '缓存与消息',
+    summary: 'Redis 开源社区延续版本，支持 Sentinel 哨兵与 Cluster 分片集群及透明大页校验。',
+  },
+  kafka: {
+    title: 'Apache Kafka 消息队列',
+    category: '缓存与消息',
+    summary: '原生 KRaft 无 ZooKeeper 架构，支持多机架副本分布与 SCRAM-SHA-512 鉴权。',
+  },
+  opensearch: {
+    title: 'OpenSearch 检索引擎',
+    category: '搜索与日志',
+    summary: '分布式全文检索与日志分析集群，内置 TLS 双向认证与堆内存安全限额。',
+  },
+  'elk-pipeline': {
+    title: '日志采集与处理管道',
+    category: '搜索与日志',
+    summary: '统一编排 Data Prepper、Fluent Bit 与 Filebeat，对接 Kafka 与对象存储归档。',
+  },
+  'object-storage': {
+    title: '企业对象存储 (S3)',
+    category: '存储与监控',
+    summary: '基于 SeaweedFS 与 RustFS 的高性能 S3 兼容存储，支持纠删码容灾。',
+  },
+  skywalking: {
+    title: 'APM 与全栈可观测平台',
+    category: '存储与监控',
+    summary: '涵盖 SkyWalking、VictoriaMetrics、Grafana 与 Alertmanager 离线监控闭环。',
+  },
+  'messaging-tx': {
+    title: '消息队列与分布式事务',
+    category: '缓存与消息',
+    summary: '提供 RocketMQ、RabbitMQ、EMQX、Nacos 与 Seata 分布式事务与服务治理。',
+  },
+  'devops-stack': {
+    title: 'DevOps 研效与制品库',
+    category: '研发交付',
+    summary: '涵盖 Harbor、GitLab、Forgejo、Jenkins、SonarQube、Reposilite 与国密网关。',
+  },
+  'datastack-apps': {
+    title: '数据智能与企业应用套件',
+    category: '应用生态',
+    summary: '提供 Milvus 向量库、MongoDB、Neo4j、OnlyOffice、Rancher 与 Zabbix 等组件。',
+  },
+}
+
 const auth = useAuthStore()
 const ws = useWorkspaceStore()
+const route = useRoute()
 const router = useRouter()
 
 const loading = ref(false)
@@ -58,9 +122,12 @@ const plugins = ref<PluginItem[]>([])
 const instances = ref<Array<Record<string, unknown>>>([])
 const hosts = ref<Array<{ id: string; name: string; address: string; arch?: string; pageSize?: number; faultZone?: string }>>([])
 const credentials = ref<Array<{ id: string; name: string }>>([])
-const activeTab = ref('instances')
+const activeTab = ref(route.query.tab === 'catalog' ? 'catalog' : 'instances')
 const filterTarget = ref('ALL')
 const keyword = ref('')
+const catalogKeyword = ref(typeof route.query.q === 'string' ? route.query.q : '')
+const catalogCategory = ref('全部')
+const initialTabSettled = ref(route.query.tab === 'catalog')
 const showWizard = ref(false)
 const showDiff = ref(false)
 const selectedDiffIdx = ref(0)
@@ -110,6 +177,39 @@ const opLabels: Record<string, string> = {
   uninstall: '安全卸载 (uninstall)',
 }
 
+function getPluginMeta(plg: PluginItem) {
+  return (
+    pluginMetaMap[plg.name] || {
+      title: plg.name,
+      category: '扩展组件',
+      summary: plg.description,
+    }
+  )
+}
+
+const catalogCategories = computed(() => {
+  const counts = new Map<string, number>()
+  for (const plg of plugins.value) {
+    const cat = getPluginMeta(plg).category
+    counts.set(cat, (counts.get(cat) || 0) + 1)
+  }
+  return [
+    { name: '全部', count: plugins.value.length },
+    ...Array.from(counts.entries()).map(([name, count]) => ({ name, count })),
+  ]
+})
+
+const filteredPlugins = computed(() => {
+  const q = catalogKeyword.value.trim().toLowerCase()
+  return plugins.value.filter((plg) => {
+    const meta = getPluginMeta(plg)
+    if (catalogCategory.value !== '全部' && meta.category !== catalogCategory.value) return false
+    if (!q) return true
+    const prodNames = (plg.products || []).map((p) => p.product).join(' ')
+    return `${plg.name} ${meta.title} ${meta.summary} ${meta.category} ${prodNames}`.toLowerCase().includes(q)
+  })
+})
+
 function findPluginByProduct(product: string): PluginItem | undefined {
   const low = product.toLowerCase()
   return plugins.value.find(
@@ -130,7 +230,7 @@ const activeSchema = computed<PluginJSONSchema>(() => {
     deployTarget: {
       type: 'string',
       default: wizard.deployTarget,
-      'x-kinstall-ui': { group: 'basic', order: 0, widget: 'deploy-target-cards', label: '三元部署形态 (ADR-066)' },
+      'x-kinstall-ui': { group: 'basic', order: 0, widget: 'deploy-target-cards', label: '目标部署形态' },
     },
     ...rawProps,
   }
@@ -175,6 +275,10 @@ async function loadData() {
     instances.value = iRes.data.items || []
     hosts.value = hRes.data.items || []
     credentials.value = cRes.data.items || []
+    if (!initialTabSettled.value) {
+      initialTabSettled.value = true
+      if (instances.value.length === 0) activeTab.value = 'catalog'
+    }
   } finally {
     loading.value = false
   }
@@ -208,7 +312,7 @@ async function submitCreateInstance() {
       },
       idempotent: true,
     })
-    ElMessage.success('实例已创建，可执行 Plan 3-Way Diff 审查')
+    ElMessage.success('实例已创建，可执行 Plan 三向差异审查')
     showWizard.value = false
     activeTab.value = 'instances'
     await loadData()
@@ -333,7 +437,7 @@ async function applyPlan(forceOverride = false) {
     showDiff.value = false
     await ws.refreshApprovalBadge()
     if (data.state === 'awaiting_approval') {
-      ElMessage.warning('生产环境或高危变更已进入四眼审批队列')
+      ElMessage.warning('生产环境或高危变更已进入变更审批队列')
       await router.push('/operations/approvals')
     } else {
       ElMessage.success(`操作 ${data.id} (${activePlan.value.action}) 已入队执行`)
@@ -350,23 +454,23 @@ onMounted(loadData)
 
 <template>
   <div>
-    <PageHeader title="实例与插件" :refresh="loadData" :refreshing="loading" />
+    <PageHeader title="实例与组件" :refresh="loadData" :refreshing="loading" />
 
     <!-- 点击筛选统计条 -->
     <div class="ki-chips">
-      <div class="ki-chip" :class="{ 'ki-chip--active': filterTarget === 'ALL' }" @click="filterTarget = 'ALL'; activeTab = 'instances'">
+      <div class="ki-chip" :class="{ 'ki-chip--active': activeTab === 'instances' && filterTarget === 'ALL' }" @click="filterTarget = 'ALL'; activeTab = 'instances'">
         <span class="ki-chip__bar" />
         <div><div class="ki-chip__label">全部实例</div><div class="ki-chip__val ki-num">{{ instances.length }}</div></div>
       </div>
-      <div class="ki-chip" :class="{ 'ki-chip--active': filterTarget === 'host-binary' }" @click="filterTarget = 'host-binary'; activeTab = 'instances'">
+      <div class="ki-chip" :class="{ 'ki-chip--active': activeTab === 'instances' && filterTarget === 'host-binary' }" @click="filterTarget = 'host-binary'; activeTab = 'instances'">
         <span class="ki-chip__bar ki-chip__bar--running" />
         <div><div class="ki-chip__label">主机二进制</div><div class="ki-chip__val ki-num">{{ instances.filter((x) => x.deployTarget === 'host-binary').length }}</div></div>
       </div>
-      <div class="ki-chip" :class="{ 'ki-chip--active': filterTarget === 'host-container' }" @click="filterTarget = 'host-container'; activeTab = 'instances'">
+      <div class="ki-chip" :class="{ 'ki-chip--active': activeTab === 'instances' && filterTarget === 'host-container' }" @click="filterTarget = 'host-container'; activeTab = 'instances'">
         <span class="ki-chip__bar ki-chip__bar--warn" />
         <div><div class="ki-chip__label">单机容器</div><div class="ki-chip__val ki-num">{{ instances.filter((x) => x.deployTarget === 'host-container').length }}</div></div>
       </div>
-      <div class="ki-chip" :class="{ 'ki-chip--active': filterTarget === 'kubernetes' }" @click="filterTarget = 'kubernetes'; activeTab = 'instances'">
+      <div class="ki-chip" :class="{ 'ki-chip--active': activeTab === 'instances' && filterTarget === 'kubernetes' }" @click="filterTarget = 'kubernetes'; activeTab = 'instances'">
         <span class="ki-chip__bar ki-chip__bar--ok" />
         <div><div class="ki-chip__label">Kubernetes 编排</div><div class="ki-chip__val ki-num">{{ instances.filter((x) => x.deployTarget === 'kubernetes').length }}</div></div>
       </div>
@@ -374,22 +478,22 @@ onMounted(loadData)
 
     <div class="ki-card">
       <div class="table-heading">
-        <span class="ki-secondary">后端驱动真实 ParamSchema + 两段式 Plan → 3-Way Diff → 四眼审批 → Day-2 生命周期</span>
+        <span class="ki-secondary">声明式组件部署向导 · 两段式 Plan 与三向漂移审查 · 全生命周期 Day-2 运维</span>
         <div class="table-actions">
           <el-button type="primary" @click="activeTab = 'catalog'">
-            <Plus :size="14" class="btn-ico" /> 浏览插件市场 ({{ plugins.length }})
+            <Plus :size="14" class="btn-ico" /> 浏览组件市场 ({{ plugins.length }})
           </el-button>
         </div>
       </div>
 
       <el-tabs v-model="activeTab">
         <el-tab-pane :label="`项目实例 (${filteredInstances.length})`" name="instances">
-          <div class="filter-bar">
+          <div v-if="instances.length > 0" class="filter-bar">
             <el-input v-model="keyword" clearable placeholder="搜索实例名 / 组件 / 版本" class="search-kw">
               <template #prefix><Search :size="14" /></template>
             </el-input>
           </div>
-          <el-table v-loading="loading" :data="filteredInstances">
+          <el-table v-if="filteredInstances.length > 0 || loading" v-loading="loading" :data="filteredInstances">
             <el-table-column prop="name" label="实例名称" min-width="180">
               <template #default="{ row }"><b class="ki-mono">{{ row.name }}</b></template>
             </el-table-column>
@@ -397,15 +501,15 @@ onMounted(loadData)
             <el-table-column label="版本" width="100">
               <template #default="{ row }"><span class="ki-mono">{{ row.productVersion }}</span></template>
             </el-table-column>
-            <el-table-column label="交付形态" width="150">
+            <el-table-column label="交付形态" width="146">
               <template #default="{ row }"><KiDomainTag kind="target" :value="String(row.deployTarget || 'host-binary')" /></template>
             </el-table-column>
-            <el-table-column label="状态" width="130">
+            <el-table-column label="状态" width="124">
               <template #default="{ row }"><KiStatusBadge :status="String(row.state || 'created')" /></template>
             </el-table-column>
-            <el-table-column label="Day-1 / Day-2 操作" width="290" fixed="right">
+            <el-table-column label="Day-1 / Day-2 操作" width="286" fixed="right">
               <template #default="{ row }">
-                <div class="row-actions">
+                <div class="ki-row-actions">
                   <el-button
                     v-if="auth.can('instance:plan', ws.currentProjectId)"
                     size="small"
@@ -441,6 +545,7 @@ onMounted(loadData)
                     size="small"
                     type="danger"
                     text
+                    aria-label="删除实例"
                     @click="openDeleteInstance(row)"
                   >
                     <Trash2 :size="13" />
@@ -448,27 +553,63 @@ onMounted(loadData)
                 </div>
               </template>
             </el-table-column>
-            <template #empty><el-empty description="当前项目暂无实例，请切换到插件市场一键部署" :image-size="70" /></template>
           </el-table>
+          <div v-else class="ki-empty-state">
+            <div class="ki-empty-state__icon"><Box :size="20" /></div>
+            <div class="ki-empty-state__title">{{ instances.length === 0 ? '当前项目尚未创建交付实例' : '没有符合条件的实例' }}</div>
+            <p class="ki-empty-state__desc">从右侧组件市场挑选所需中间件，系统将依据后端插件 Schema 实时渲染参数配置向导。</p>
+            <div class="ki-empty-state__actions">
+              <el-button type="primary" size="small" @click="activeTab = 'catalog'">
+                <Layers :size="13" class="btn-ico" /> 打开组件市场
+              </el-button>
+            </div>
+          </div>
         </el-tab-pane>
 
-        <el-tab-pane :label="`插件市场 P1–P10 (${plugins.length})`" name="catalog">
+        <el-tab-pane :label="`组件市场 (${plugins.length})`" name="catalog">
+          <div class="catalog-toolbar ki-mb-4">
+            <div class="ki-pill-tabs">
+              <button
+                v-for="cat in catalogCategories"
+                :key="cat.name"
+                type="button"
+                class="ki-pill-tab"
+                :class="{ 'ki-pill-tab--active': catalogCategory === cat.name }"
+                @click="catalogCategory = cat.name"
+              >
+                <span>{{ cat.name }}</span>
+                <span class="ki-pill-tab__count ki-num">{{ cat.count }}</span>
+              </button>
+            </div>
+            <el-input v-model="catalogKeyword" clearable placeholder="搜索插件或产品名…" class="catalog-search">
+              <template #prefix><Search :size="14" /></template>
+            </el-input>
+          </div>
+
           <div class="ki-grid-2">
-            <div v-for="plg in plugins" :key="plg.name" class="ki-surface plugin-card">
-              <div class="ki-flex-between ki-mb-3">
-                <strong class="ki-mono plugin-title">{{ plg.name }}</strong>
+            <div v-for="plg in filteredPlugins" :key="plg.name" class="ki-surface plugin-card">
+              <div class="plugin-head">
+                <div class="plugin-head__title">
+                  <strong>{{ getPluginMeta(plg).title }}</strong>
+                  <span class="ki-mono plugin-slug">{{ plg.name }}</span>
+                </div>
                 <div class="ki-flex-row">
-                  <span v-if="plg.operations?.length" class="ki-badge ki-mono plugin-ops">{{ plg.operations.length }} ops</span>
+                  <span class="ki-badge plugin-cat">{{ getPluginMeta(plg).category }}</span>
                   <span class="ki-badge ki-mono plugin-ver">v{{ plg.version }}</span>
                 </div>
               </div>
-              <p class="ki-secondary plugin-desc">{{ plg.description }}</p>
+              <p class="ki-secondary plugin-desc">{{ getPluginMeta(plg).summary }}</p>
               <div class="plugin-prods">
                 <div v-for="pr in plg.products || []" :key="pr.product" class="prod-row">
-                  <div class="ki-flex-row">
-                    <b class="ki-mono">{{ pr.product }}</b>
-                    <span class="ki-mono ki-muted">{{ pr.defaultVersion || pr.versions }}</span>
-                    <KiDomainTag kind="license" :value="licenseLabel(pr.licenseTier)" />
+                  <div class="prod-info">
+                    <div class="prod-name-line">
+                      <b class="ki-mono">{{ pr.product }}</b>
+                      <span class="ki-mono ki-muted">{{ pr.defaultVersion || pr.versions }}</span>
+                      <KiDomainTag kind="license" :value="licenseLabel(pr.licenseTier)" />
+                    </div>
+                    <div v-if="pr.targets?.length" class="prod-targets">
+                      <KiDomainTag v-for="t in pr.targets" :key="t" kind="target" :value="t" />
+                    </div>
                   </div>
                   <el-button
                     v-if="auth.can('instance:write', ws.currentProjectId)"
@@ -487,11 +628,11 @@ onMounted(loadData)
       </el-tabs>
     </div>
 
-    <!-- 部署向导抽屉（完全由后端插件 ParamSchema 实时渲染） -->
+    <!-- 部署向导抽屉 -->
     <KiDrawer
       v-model="showWizard"
       :title="`部署 ${wizard.product}`"
-      :subtitle="`当前环境：${ws.currentEnv.toUpperCase()} · 来自 /api/v1/plugins 实时 JSON-Schema`"
+      :subtitle="`当前环境：${ws.currentEnv.toUpperCase()} · 实时 JSON-Schema 动态参数向导`"
       size="md"
     >
       <el-form label-position="top">
@@ -512,7 +653,7 @@ onMounted(loadData)
       </template>
     </KiDrawer>
 
-    <!-- Plan & 真实后端 3-Way Diff 审查抽屉 -->
+    <!-- Plan & 3-Way Diff 审查抽屉 -->
     <KiDrawer
       v-model="showDiff"
       title="Plan 预检与 3-Way Diff 审查"
@@ -559,10 +700,10 @@ onMounted(loadData)
       </template>
     </KiDrawer>
 
-    <!-- PostgreSQL PITR 目标时间点恢复弹窗 (T-M4-15) -->
+    <!-- PostgreSQL PITR 恢复弹窗 -->
     <el-dialog v-model="pitrDialog.open" title="PostgreSQL PITR 按时间点恢复" width="460px">
       <el-form label-position="top">
-        <el-form-item label="目标恢复时间点 (RFC3339 / --target-time)">
+        <el-form-item label="目标恢复时间点 (RFC3339)">
           <el-input v-model="pitrDialog.targetTime" class="ki-mono" placeholder="2026-11-27T12:00:00Z" />
         </el-form-item>
       </el-form>
@@ -579,8 +720,8 @@ onMounted(loadData)
       :title="dangerModal.mode === 'delete' ? '确认删除实例元数据' : '确认生成卸载 (uninstall) Plan'"
       :resource-name="String(dangerModal.instance?.name || '')"
       :risk-summary="dangerModal.mode === 'delete'
-        ? '删除实例将释放主机端口/目录 Claim 并从控制面移除该实例记录。'
-        : '卸载操作将停止远端服务并按拓扑逆序清理托管单元（生产环境需四眼审批）。'"
+        ? '删除实例将释放主机端口/目录占用并从控制面移除该实例记录。'
+        : '卸载操作将停止远端服务并按拓扑逆序清理托管单元（生产环境需双人审批）。'"
       :confirm-label="dangerModal.mode === 'delete' ? '解锁并删除实例' : '解锁并生成卸载 Plan'"
       :loading="dangerModal.loading"
       @confirm="confirmDangerAction"
@@ -593,6 +734,18 @@ onMounted(loadData)
   width: 280px;
 }
 
+.catalog-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.catalog-search {
+  width: 240px;
+}
+
 .btn-ico {
   margin-right: 4px;
 }
@@ -601,19 +754,40 @@ onMounted(loadData)
   margin-left: 4px;
 }
 
-.row-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
 .plugin-card {
   padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.plugin-title {
-  font-size: var(--ki-fs-sub);
+.plugin-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.plugin-head__title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.plugin-head__title strong {
+  font-size: var(--ki-fs-section);
   color: var(--ki-text-primary);
+}
+
+.plugin-slug {
+  font-size: 11px;
+  color: var(--ki-text-muted);
+}
+
+.plugin-cat {
+  background-color: var(--ki-brand-subtle);
+  color: var(--ki-brand);
 }
 
 .plugin-ver {
@@ -621,30 +795,47 @@ onMounted(loadData)
   color: var(--ki-text-secondary);
 }
 
-.plugin-ops {
-  background-color: var(--ki-brand-subtle);
-  color: var(--ki-brand);
-}
-
 .plugin-desc {
-  margin: 0 0 12px;
+  margin: 0;
   font-size: var(--ki-fs-xs);
+  line-height: 1.55;
 }
 
 .plugin-prods {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  margin-top: auto;
 }
 
 .prod-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: 10px;
+  padding: 8px 10px;
   border-radius: var(--ki-radius-sm);
   background-color: var(--ki-bg-subtle);
+}
+
+.prod-info {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.prod-name-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.prod-targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 .diff-file-tabs {

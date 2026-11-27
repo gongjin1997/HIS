@@ -9,7 +9,6 @@ import {
   HardDrive,
   ShieldCheck,
   Settings,
-  Palette,
 } from 'lucide-vue-next'
 import { markRaw, type Component } from 'vue'
 
@@ -46,11 +45,11 @@ export const MENU_GROUPS: MenuGroup[] = [
     ],
   },
   {
-    title: '基础设施与交付',
+    title: '资源与编排',
     items: [
-      { path: '/hosts', key: 'nav.hosts', title: 'CMDB 主机', icon: markRaw(Server) },
-      { path: '/instances', key: 'nav.instances', title: '实例与插件', icon: markRaw(Box) },
-      { path: '/stacks', key: 'nav.stacks', title: 'Stack DAG 编排', icon: markRaw(GitBranch) },
+      { path: '/hosts', key: 'nav.hosts', title: '主机资产', icon: markRaw(Server) },
+      { path: '/instances', key: 'nav.instances', title: '实例与组件', icon: markRaw(Box) },
+      { path: '/stacks', key: 'nav.stacks', title: '应用栈编排', icon: markRaw(GitBranch) },
       { path: '/clusters', key: 'nav.clusters', title: '多集群管理', icon: markRaw(Network) },
     ],
   },
@@ -58,29 +57,31 @@ export const MENU_GROUPS: MenuGroup[] = [
     title: '执行与审批',
     items: [
       { path: '/operations', key: 'nav.operations', title: '执行中心', icon: markRaw(Terminal), workspace: 'ops' },
-      { path: '/operations/approvals', key: 'nav.approvals', title: '四眼审批台', icon: markRaw(ClipboardCheck), badge: 'approvals', workspace: 'ops' },
+      { path: '/operations/approvals', key: 'nav.approvals', title: '变更审批', icon: markRaw(ClipboardCheck), badge: 'approvals', workspace: 'ops' },
     ],
   },
   {
-    title: '安全与平台',
+    title: '供应链与治理',
     items: [
       { path: '/artifacts/media-policies', key: 'nav.mediaPolicies', title: '介质源策略', icon: markRaw(HardDrive), workspace: 'governance' },
       { path: '/security/audit', key: 'nav.audit', title: '审计与合规', icon: markRaw(ShieldCheck), workspace: 'governance' },
       { path: '/settings', key: 'nav.settings', title: '平台设置', icon: markRaw(Settings) },
-      { path: '/__design', key: 'nav.design', title: '设计系统基准', icon: markRaw(Palette) },
     ],
   },
 ]
 
 export const ALL_MENU_ITEMS: MenuItem[] = MENU_GROUPS.flatMap((g) => g.items)
 
-export const GROUP_OF_PATH: Record<string, string> = Object.fromEntries(
-  MENU_GROUPS.flatMap((g) => g.items.map((it) => [it.path, g.title]))
-)
+export const GROUP_OF_PATH: Record<string, string> = {
+  ...Object.fromEntries(MENU_GROUPS.flatMap((g) => g.items.map((it) => [it.path, g.title]))),
+  '/security/compliance': '供应链与治理',
+  '/__design': '设计系统',
+}
 
 export const TITLE_OF_PATH: Record<string, string> = {
   ...Object.fromEntries(ALL_MENU_ITEMS.map((it) => [it.path, it.title])),
   '/security/compliance': '等保密评中心',
+  '/__design': '设计系统基准',
 }
 
 export const WORKSPACES: WorkspaceGroup[] = [
@@ -89,7 +90,7 @@ export const WORKSPACES: WorkspaceGroup[] = [
     title: '执行与审批工作区',
     items: [
       { path: '/operations', label: '执行中心' },
-      { path: '/operations/approvals', label: '四眼审批台' },
+      { path: '/operations/approvals', label: '变更审批' },
     ],
   },
   {

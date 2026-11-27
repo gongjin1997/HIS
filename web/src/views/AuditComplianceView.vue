@@ -11,6 +11,15 @@ import KiStatusBadge from '@/components/ki/KiStatusBadge.vue'
 import KiMonoText from '@/components/ki/KiMonoText.vue'
 import KiAuditHashBadge from '@/components/domain/KiAuditHashBadge.vue'
 
+interface AuditEntryPayload {
+  actorId?: string
+  actorType?: string
+  action?: string
+  targetType?: string
+  targetId?: string
+  result?: string
+}
+
 const auth = useAuthStore()
 const ws = useWorkspaceStore()
 const { formatAbsTime } = useKiFormat()
@@ -23,8 +32,36 @@ const verifyRes = ref<{ valid: boolean; totalChecked: number; lastSeq: number; b
 const compReport = ref<Record<string, unknown> | null>(null)
 const highlightSeq = ref<number>(0)
 
-const latestHash = computed(() => String(logs.value[0]?.recordSha256 || ''))
-const latestSeq = computed(() => Number(verifyRes.value?.lastSeq ?? logs.value[0]?.seq ?? 0))
+const sortedLogs = computed(() =>
+  [...logs.value].sort((a, b) => Number(b.seq || 0) - Number(a.seq || 0))
+)
+
+const latestHash = computed(() => String(sortedLogs.value[0]?.recordSha256 || ''))
+const latestSeq = computed(() => Number(verifyRes.value?.lastSeq ?? sortedLogs.value[0]?.seq ?? 0))
+
+function getEntry(row: Record<string, unknown>): AuditEntryPayload {
+  const e = (row.entry || row.Entry || {}) as AuditEntryPayload
+  return e
+}
+
+function formatTarget(row: Record<string, unknown>): string {
+  const e = getEntry(row)
+  const parts = [e.targetType, e.targetId].filter((x) => Boolean(x && String(x).trim()))
+  return parts.length > 0 ? parts.join(' / ') : '—'
+}
+
+function resultStatus(result?: string): string {
+  const low = String(result || 'success').toLowerCase()
+  if (low === 'denied' || low === 'failure' || low === 'failed') return 'failed'
+  return 'ok'
+}
+
+function resultLabel(result?: string): string {
+  const low = String(result || 'success').toLowerCase()
+  if (low === 'denied') return '已拒绝'
+  if (low === 'failure' || low === 'failed') return '失败'
+  return '成功'
+}
 
 async function loadLogs() {
   if (!ws.currentProjectId) return
@@ -135,7 +172,7 @@ onMounted(loadLogs)
 
     <div class="ki-card">
       <div class="table-heading">
-        <span class="ki-secondary">单调递增防分叉 SHA-256 + 国密 SM3 双哈希审计流水</span>
+        <span class="ki-secondary">单调递增防分叉 SHA-256 + 国密 SM3 双哈希审计流水（按最新序号倒序排列）</span>
         <div class="table-actions">
           <el-button
             v-if="auth.can('compliance:report', ws.currentProjectId)"
@@ -150,24 +187,34 @@ onMounted(loadLogs)
         </div>
       </div>
 
-      <el-table v-loading="loading" :data="logs" size="small" :row-class-name="auditRowClass">
-        <el-table-column label="SEQ" width="80">
+      <el-table v-loading="loading" :data="sortedLogs" size="small" :row-class-name="auditRowClass">
+        <el-table-column label="SEQ" width="76">
           <template #default="{ row }"><b class="ki-mono">#{{ row.seq }}</b></template>
         </el-table-column>
-        <el-table-column label="发生时间" width="180">
+        <el-table-column label="发生时间" width="172">
           <template #default="{ row }"><span class="ki-mono">{{ formatAbsTime(String(row.occurredAt || '')) }}</span></template>
         </el-table-column>
-        <el-table-column label="操作动作" width="200">
-          <template #default="{ row }"><span class="ki-mono">{{ (row.entry as Record<string, unknown>)?.action }}</span></template>
+        <el-table-column label="操作主体" width="150">
+          <template #default="{ row }"><KiMonoText :value="getEntry(row).actorId || 'system'" :head="10" :tail="4" /></template>
         </el-table-column>
-        <el-table-column label="目标对象" min-width="200">
+        <el-table-column label="操作动作" width="190">
           <template #default="{ row }">
-            <span class="ki-mono">{{ (row.entry as Record<string, unknown>)?.targetType }}/{{ (row.entry as Record<string, unknown>)?.targetId }}</span>
+            <span class="ki-badge ki-mono action-pill">{{ getEntry(row).action || '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="SHA-256 链哈希" min-width="220">
+        <el-table-column label="目标对象" min-width="190">
           <template #default="{ row }">
-            <KiMonoText :value="String(row.recordSha256 || '')" :head="16" :tail="8" />
+            <span class="ki-mono">{{ formatTarget(row) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="结果" width="90">
+          <template #default="{ row }">
+            <KiStatusBadge :status="resultStatus(getEntry(row).result)" :label="resultLabel(getEntry(row).result)" />
+          </template>
+        </el-table-column>
+        <el-table-column label="SHA-256 链哈希" min-width="210">
+          <template #default="{ row }">
+            <KiMonoText :value="String(row.recordSha256 || '')" :head="14" :tail="6" />
           </template>
         </el-table-column>
         <template #empty><el-empty description="暂无审计日志记录" :image-size="60" /></template>
@@ -179,5 +226,11 @@ onMounted(loadLogs)
 <style scoped>
 .btn-ico {
   margin-right: 4px;
+}
+
+.action-pill {
+  background-color: var(--ki-bg-subtle);
+  color: var(--ki-text-primary);
+  border: 1px solid var(--ki-border-subtle);
 }
 </style>

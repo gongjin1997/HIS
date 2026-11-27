@@ -332,6 +332,155 @@ a:hover {
   color: var(--ki-status-danger-text);
 }
 
+/* Spacious single-column preference / setting rows (prevents segmented controls from wrapping) */
+.ki-setting-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.ki-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ki-space-4);
+  padding: var(--ki-space-3) 0;
+  border-bottom: 1px solid var(--ki-border-subtle);
+}
+
+.ki-setting-row:first-child {
+  padding-top: 0;
+}
+
+.ki-setting-row:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.ki-setting-row__info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ki-setting-row__label {
+  font-size: var(--ki-fs-body);
+  font-weight: var(--ki-fw-medium);
+  color: var(--ki-text-primary);
+}
+
+.ki-setting-row__desc {
+  font-size: var(--ki-fs-xs);
+  color: var(--ki-text-muted);
+}
+
+.ki-setting-row__control {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--ki-space-2);
+}
+
+/* Inline nowrap action buttons inside table columns */
+.ki-row-actions {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: var(--ki-space-2);
+  white-space: nowrap;
+}
+
+.ki-row-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
+/* Structured empty state with CTA */
+.ki-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--ki-space-7) var(--ki-space-5);
+  gap: var(--ki-space-2);
+}
+
+.ki-empty-state__icon {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--ki-radius-card);
+  background-color: var(--ki-brand-subtle);
+  color: var(--ki-brand);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: var(--ki-space-1);
+}
+
+.ki-empty-state__title {
+  font-size: var(--ki-fs-sub);
+  font-weight: var(--ki-fw-semibold);
+  color: var(--ki-text-primary);
+}
+
+.ki-empty-state__desc {
+  max-width: 420px;
+  font-size: var(--ki-fs-sm);
+  color: var(--ki-text-muted);
+  margin: 0;
+}
+
+.ki-empty-state__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--ki-space-2);
+  margin-top: var(--ki-space-2);
+}
+
+/* Horizontal pill filter bar */
+.ki-pill-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ki-space-2);
+}
+
+.ki-pill-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--ki-radius-pill);
+  border: 1px solid var(--ki-border-default);
+  background-color: var(--ki-bg-surface);
+  color: var(--ki-text-secondary);
+  font-size: var(--ki-fs-sm);
+  font-weight: var(--ki-fw-medium);
+  cursor: pointer;
+  transition: border-color var(--ki-dur-fast) var(--ki-ease),
+    background-color var(--ki-dur-fast) var(--ki-ease),
+    color var(--ki-dur-fast) var(--ki-ease);
+}
+
+.ki-pill-tab:hover {
+  border-color: var(--ki-brand-border);
+  color: var(--ki-text-primary);
+}
+
+.ki-pill-tab--active {
+  border-color: var(--ki-brand);
+  background-color: var(--ki-brand-subtle);
+  color: var(--ki-brand);
+  font-weight: var(--ki-fw-semibold);
+}
+
+.ki-pill-tab__count {
+  font-size: var(--ki-fs-xs);
+  opacity: 0.78;
+}
+
 .fade-enter-active,
 .fade-leave-active {
   transition: opacity var(--ki-dur-fast) var(--ki-ease);

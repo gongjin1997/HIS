@@ -29,14 +29,14 @@ defineEmits<{ (e: 'click'): void }>()
     @click="clickable && $emit('click')"
   >
     <div class="ki-stat-card__icon" aria-hidden="true">
-      <component :is="icon" :size="20" />
+      <component :is="icon" :size="19" />
     </div>
     <div class="ki-stat-card__body">
       <div class="ki-stat-card__title">{{ title }}</div>
       <div class="ki-stat-card__val ki-num">
         {{ value }}<small v-if="unit">{{ unit }}</small>
       </div>
-      <div v-if="sub || $slots.sub" class="ki-stat-card__sub">
+      <div v-if="sub || $slots.sub" class="ki-stat-card__sub" :title="sub || undefined">
         <slot name="sub">{{ sub }}</slot>
       </div>
     </div>
@@ -46,10 +46,10 @@ defineEmits<{ (e: 'click'): void }>()
 <style scoped>
 .ki-stat-card {
   display: flex;
-  gap: 14px;
+  gap: 12px;
   align-items: flex-start;
   height: 100%;
-  padding: 16px 18px;
+  padding: 15px 16px;
   transition: box-shadow var(--ki-dur-base) var(--ki-ease), border-color var(--ki-dur-base) var(--ki-ease);
 }
 
@@ -64,9 +64,9 @@ defineEmits<{ (e: 'click'): void }>()
 
 .ki-stat-card__icon {
   flex: none;
-  width: 40px;
-  height: 40px;
-  border-radius: var(--ki-radius-card);
+  width: 38px;
+  height: 38px;
+  border-radius: var(--ki-radius-md);
   display: grid;
   place-items: center;
 }
@@ -104,14 +104,18 @@ defineEmits<{ (e: 'click'): void }>()
 .ki-stat-card__title {
   color: var(--ki-text-secondary);
   font-size: var(--ki-fs-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ki-stat-card__val {
-  margin-top: 2px;
+  margin-top: 3px;
   font-size: var(--ki-fs-kpi);
   font-weight: var(--ki-fw-bold);
-  line-height: 1.2;
+  line-height: 1.15;
   color: var(--ki-text-primary);
+  white-space: nowrap;
 }
 
 .ki-stat-card__val small {
@@ -125,5 +129,8 @@ defineEmits<{ (e: 'click'): void }>()
   margin-top: 6px;
   font-size: var(--ki-fs-xs);
   color: var(--ki-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

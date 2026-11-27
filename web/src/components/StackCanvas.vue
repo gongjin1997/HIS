@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { VueFlow } from '@xyflow/vue'
+import { Background, Controls, MarkerType, VueFlow } from '@xyflow/vue'
 import '@xyflow/vue/dist/style.css'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { detectDagCycle } from '@/utils/dag'
@@ -23,6 +23,11 @@ const props = defineProps<{
 
 const ws = useWorkspaceStore()
 
+const COL_WIDTH = 344
+const ROW_HEIGHT = 242
+const PAD_X = 48
+const PAD_Y = 36
+
 const cycleInfo = computed(() =>
   detectDagCycle(props.instances.map((it) => ({ id: it.id, dependsOn: it.dependsOn || [] })))
 )
@@ -44,15 +49,24 @@ const nodes = computed(() => {
   }
   props.instances.forEach((it) => computeDepth(it.id))
 
-  const colCount = new Map<number, number>()
+  const colTotals = new Map<number, number>()
+  for (const it of props.instances) {
+    const col = depthMap.get(it.id) || 0
+    colTotals.set(col, (colTotals.get(col) || 0) + 1)
+  }
+  const maxRows = Math.max(1, ...Array.from(colTotals.values()))
+
+  const colRowCursor = new Map<number, number>()
   return props.instances.map((it) => {
     const col = depthMap.get(it.id) || 0
-    const row = colCount.get(col) || 0
-    colCount.set(col, row + 1)
+    const row = colRowCursor.get(col) || 0
+    colRowCursor.set(col, row + 1)
+    const colSize = colTotals.get(col) || 1
+    const yOffset = ((maxRows - colSize) * ROW_HEIGHT) / 2
     return {
       id: it.id,
       type: 'kiStackNode',
-      position: { x: 36 + col * 300, y: 36 + row * 148 },
+      position: { x: PAD_X + col * COL_WIDTH, y: PAD_Y + yOffset + row * ROW_HEIGHT },
       data: {
         id: it.id,
         product: it.product,
@@ -67,19 +81,30 @@ const nodes = computed(() => {
 })
 
 const edges = computed(() => {
-  const out: Array<{ id: string; source: string; target: string; animated: boolean }> = []
+  const out: Array<{
+    id: string
+    source: string
+    target: string
+    type: string
+    animated: boolean
+    markerEnd: MarkerType
+  }> = []
   for (const it of props.instances) {
     for (const dep of it.dependsOn || []) {
       out.push({
         id: `${dep}->${it.id}`,
         source: dep,
         target: it.id,
+        type: 'smoothstep',
         animated: it.status === 'running',
+        markerEnd: MarkerType.ArrowClosed,
       })
     }
   }
   return out
 })
+
+const flowKey = computed(() => props.instances.map((it) => `${it.id}:${(it.dependsOn || []).join(',')}`).join('|'))
 </script>
 
 <template>
@@ -87,16 +112,22 @@ const edges = computed(() => {
     <KiBanner
       v-if="cycleInfo.hasCycle"
       variant="danger"
-      :text="`检测到 Stack DAG 循环依赖：${cycleInfo.cyclePath.join(' → ')}，已阻断部署计划生成`"
+      :text="`检测到应用栈循环依赖：${cycleInfo.cyclePath.join(' → ')}，已自动阻断部署计划`"
       class="ki-mb-3"
     />
     <div class="ki-dag-canvas ki-surface">
       <VueFlow
+        :key="flowKey"
         :nodes="nodes"
         :edges="edges"
         :color-mode="ws.theme"
+        :min-zoom="0.45"
+        :max-zoom="1.5"
+        :fit-view-options="{ padding: 0.2, maxZoom: 1 }"
         fit-view-on-init
       >
+        <Background variant="dots" :gap="20" :size="1.2" />
+        <Controls position="bottom-right" :show-interactive="false" />
         <template #node-kiStackNode="nodeProps">
           <KiStackDagNode :data="(nodeProps.data as StackDagNodeData)" />
         </template>
@@ -107,9 +138,9 @@ const edges = computed(() => {
 
 <style scoped>
 .ki-dag-canvas {
-  height: 440px;
+  height: 460px;
   width: 100%;
   overflow: hidden;
-  background-color: var(--ki-bg-canvas);
+  background-color: var(--ki-canvas-bg);
 }
 </style>

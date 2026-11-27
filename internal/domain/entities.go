@@ -272,13 +272,13 @@ type AuditEntry struct {
 
 // AuditRecord is a persisted row in audit_logs (table 12: audit_logs).
 type AuditRecord struct {
-	Seq          int64     `json:"seq"`
-	OccurredAt   time.Time `json:"occurredAt"`
-	Entry        AuditEntry
-	PrevSHA256   string `json:"prevSha256"`
-	RecordSHA256 string `json:"recordSha256"`
-	PrevSM3      string `json:"prevSm3,omitempty"`
-	RecordSM3    string `json:"recordSm3,omitempty"`
+	Seq          int64      `json:"seq"`
+	OccurredAt   time.Time  `json:"occurredAt"`
+	Entry        AuditEntry `json:"entry"`
+	PrevSHA256   string     `json:"prevSha256"`
+	RecordSHA256 string     `json:"recordSha256"`
+	PrevSM3      string     `json:"prevSm3,omitempty"`
+	RecordSM3    string     `json:"recordSm3,omitempty"`
 }
 
 // AuditChainHead is the single-row chain anchor (table 11: audit_chain_head).

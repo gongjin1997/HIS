@@ -6,15 +6,14 @@ import {
   ChevronDown,
   FolderKanban,
   Keyboard,
-  Languages,
   LogOut,
-  Maximize2,
   Menu,
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
   Search,
   Settings,
+  SlidersHorizontal,
   Sun,
 } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
@@ -23,6 +22,7 @@ import { useShortcuts } from '@/composables/useShortcuts'
 import { ALL_MENU_ITEMS, GROUP_OF_PATH, MENU_GROUPS, TITLE_OF_PATH } from '@/config/menu'
 import { pageHeaderTargetKey } from '@/components/PageHeader.vue'
 import WorkspaceNav from '@/components/WorkspaceNav.vue'
+import KiBrandLogo from '@/components/ki/KiBrandLogo.vue'
 import KiCommandPalette, { type CommandItem } from '@/components/ki/KiCommandPalette.vue'
 
 const route = useRoute()
@@ -35,7 +35,7 @@ const showHelp = ref(false)
 const pageHeaderTarget = useTemplateRef<HTMLElement>('pageHeaderTarget')
 provide(pageHeaderTargetKey, pageHeaderTarget)
 
-const currentGroup = computed(() => GROUP_OF_PATH[route.path] || '工作台')
+const currentGroup = computed(() => GROUP_OF_PATH[route.path] || '交付总览')
 const currentTitle = computed(() => TITLE_OF_PATH[route.path] || (route.meta.title as string) || '总览驾驶舱')
 const currentProjectName = computed(
   () => ws.projects.find((p) => p.id === ws.currentProjectId)?.name || '默认项目'
@@ -85,6 +85,7 @@ function onEnvSelect(env: 'prod' | 'staging' | 'dev' | 'sandbox') {
 
 function onUserCommand(cmd: string) {
   if (cmd === 'settings') void router.push('/settings')
+  else if (cmd === 'density') ws.toggleDensity()
   else if (cmd === 'shortcuts') showHelp.value = true
   else if (cmd === 'logout') {
     auth.logout()
@@ -100,22 +101,16 @@ onMounted(async () => {
 
 <template>
   <el-container class="ki-layout" :class="{ 'is-collapsed': ws.sidebarCollapsed }">
-    <!-- 左侧浅色分组导航栏（对标 HCS BasicLayout：220px / 64px） -->
+    <!-- 左侧浅色分组导航栏 -->
     <el-aside
       class="ki-sider ki-shell-sidebar"
       :width="ws.sidebarCollapsed ? 'var(--ki-sidebar-collapsed-w)' : 'var(--ki-sidebar-w)'"
     >
       <div class="ki-logo" @click="router.push('/dashboard')">
-        <span class="ki-logo-mark" aria-hidden="true">
-          <svg viewBox="0 0 32 32" width="30" height="30">
-            <rect width="32" height="32" rx="8" fill="currentColor" />
-            <path d="M16 6l8 3v6c0 5-3.4 9.3-8 11-4.6-1.7-8-6-8-11V9z" fill="none" stroke="var(--ki-text-on-solid)" stroke-width="2" />
-            <path d="M12 16l3 3 5-6" fill="none" stroke="var(--ki-text-on-solid)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-        </span>
+        <KiBrandLogo :size="30" variant="badge" />
         <div v-show="!ws.sidebarCollapsed" class="ki-brand">
-          <b>kinstall 交付平台</b>
-          <span>Enterprise Offline Ops</span>
+          <b>kinstall</b>
+          <span>基础设施交付控制台</span>
         </div>
       </div>
 
@@ -152,21 +147,21 @@ onMounted(async () => {
       </el-scrollbar>
 
       <div class="ki-sider-foot">
-        <el-button
-          text
-          circle
+        <button
+          type="button"
+          class="ki-collapse-btn"
           :aria-label="ws.sidebarCollapsed ? '展开导航栏' : '折叠导航栏'"
           @click="ws.sidebarCollapsed = !ws.sidebarCollapsed"
         >
           <PanelLeftOpen v-if="ws.sidebarCollapsed" :size="16" />
           <PanelLeftClose v-else :size="16" />
-        </el-button>
+          <span v-show="!ws.sidebarCollapsed">收起导航</span>
+        </button>
       </div>
     </el-aside>
 
-    <!-- 右侧主区域 -->
+    <!-- 右侧主工作区 -->
     <el-container direction="vertical" class="ki-main-wrap">
-      <!-- 顶部全局工具栏 56px -->
       <el-header class="ki-header ki-shell-topbar" height="auto">
         <div class="ki-toolbar">
           <div class="ki-toolbar-left">
@@ -193,17 +188,16 @@ onMounted(async () => {
 
           <button type="button" class="ki-search-trigger" @click="showCmdK = true">
             <Search :size="14" class="ki-muted" aria-hidden="true" />
-            <span class="ki-search-placeholder">搜索模块 / 主机 / 实例…</span>
+            <span class="ki-search-placeholder">搜索模块、主机或组件…</span>
             <kbd class="ki-kbd ki-mono">/</kbd>
           </button>
 
           <div class="ki-toolbar-right">
             <div ref="pageHeaderTarget" class="ki-refresh-host" />
 
-            <!-- 项目 + 环境双维度胶囊（对标 HCS tenant-switch） -->
+            <!-- 项目上下文 -->
             <el-dropdown trigger="click" @command="onProjectSelect">
-              <div class="ki-scope-pill" :class="`ki-scope-pill--${ws.currentEnv}`">
-                <i class="ki-scope-dot" />
+              <div class="ki-scope-pill">
                 <FolderKanban :size="13" aria-hidden="true" />
                 <span class="ki-scope-name">{{ currentProjectName }}</span>
                 <ChevronDown :size="12" aria-hidden="true" />
@@ -223,6 +217,7 @@ onMounted(async () => {
               </template>
             </el-dropdown>
 
+            <!-- 环境风险标签 -->
             <el-dropdown trigger="click" @command="onEnvSelect">
               <div class="ki-env-pill" :class="`ki-env-pill--${ws.currentEnv}`">
                 <i class="ki-scope-dot" />
@@ -240,29 +235,19 @@ onMounted(async () => {
               </template>
             </el-dropdown>
 
-            <el-tooltip content="物理离线严格模式：零外网 CDN，介质源锁定内网" placement="bottom">
+            <el-tooltip content="离线严格模式：零外网 CDN，介质与更新锁定内网" placement="bottom">
               <span class="ki-live-pill">
                 <i class="ki-live-dot ki-dot-pulse" />
                 离线就绪
               </span>
             </el-tooltip>
 
-            <el-tooltip :content="ws.theme === 'light' ? '切换到暗色主题' : '切换到浅色主题'" placement="bottom">
+            <span class="ki-toolbar-sep" aria-hidden="true" />
+
+            <el-tooltip :content="ws.theme === 'light' ? '切换暗色主题' : '切换浅色主题'" placement="bottom">
               <el-button text circle aria-label="切换明暗主题" @click="ws.toggleTheme">
                 <Moon v-if="ws.theme === 'light'" :size="16" />
                 <Sun v-else :size="16" />
-              </el-button>
-            </el-tooltip>
-
-            <el-tooltip :content="ws.density === 'comfortable' ? '切换到紧凑行密度' : '切换到舒适行密度'" placement="bottom">
-              <el-button text circle aria-label="切换界面密度" @click="ws.toggleDensity">
-                <Maximize2 :size="15" />
-              </el-button>
-            </el-tooltip>
-
-            <el-tooltip content="切换界面语言 (中文 / EN)" placement="bottom">
-              <el-button text circle aria-label="切换语言" @click="ws.toggleLang">
-                <Languages :size="15" />
               </el-button>
             </el-tooltip>
 
@@ -286,9 +271,13 @@ onMounted(async () => {
                   <div class="ki-user-card">
                     <b>{{ auth.user?.displayName || auth.user?.username || 'admin' }}</b>
                     <span>账号：{{ auth.user?.username || 'admin' }} · 角色：{{ auth.primaryRole }}</span>
-                    <span>当前项目：{{ currentProjectName }} ({{ ws.currentEnv.toUpperCase() }})</span>
+                    <span>上下文：{{ currentProjectName }} / {{ ws.currentEnv.toUpperCase() }}</span>
                   </div>
-                  <el-dropdown-item command="shortcuts" divided>
+                  <el-dropdown-item command="density" divided>
+                    <SlidersHorizontal :size="14" class="ki-dd-icon" />
+                    {{ ws.density === 'comfortable' ? '切换到紧凑行密度' : '切换到舒适行密度' }}
+                  </el-dropdown-item>
+                  <el-dropdown-item command="shortcuts">
                     <Keyboard :size="14" class="ki-dd-icon" /> 快捷键速查 (?)
                   </el-dropdown-item>
                   <el-dropdown-item command="settings">
@@ -350,12 +339,6 @@ onMounted(async () => {
   border-bottom: 1px solid var(--ki-border-subtle);
 }
 
-.ki-logo-mark {
-  display: inline-flex;
-  color: var(--ki-brand);
-  flex: none;
-}
-
 .ki-brand {
   display: flex;
   flex-direction: column;
@@ -365,8 +348,9 @@ onMounted(async () => {
 
 .ki-brand b {
   color: var(--ki-text-primary);
-  font-size: var(--ki-fs-section);
+  font-size: var(--ki-fs-page);
   font-weight: var(--ki-fw-bold);
+  letter-spacing: var(--ki-tracking-snug);
 }
 
 .ki-brand span {
@@ -379,12 +363,14 @@ onMounted(async () => {
 }
 
 .ki-menu {
-  padding: 6px 10px 14px;
+  padding: 8px 10px 14px;
 }
 
 .ki-group-title {
-  padding: 14px 10px 6px;
-  font-size: var(--ki-fs-xs);
+  padding: 14px 10px 5px;
+  font-size: 11px;
+  font-weight: var(--ki-fw-semibold);
+  letter-spacing: 0.03em;
   color: var(--ki-text-muted);
 }
 
@@ -458,22 +444,42 @@ onMounted(async () => {
 }
 
 .ki-sider-foot {
-  height: 48px;
   flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  padding: 0 12px;
+  padding: 8px 10px;
   border-top: 1px solid var(--ki-border-subtle);
 }
 
-.ki-layout.is-collapsed .ki-menu-item {
+.ki-collapse-btn {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: var(--ki-radius-md);
+  background-color: transparent;
+  color: var(--ki-text-muted);
+  font-family: var(--ki-font-sans);
+  font-size: var(--ki-fs-sm);
+  cursor: pointer;
+  transition: background-color var(--ki-dur-fast) var(--ki-ease), color var(--ki-dur-fast) var(--ki-ease);
+}
+
+.ki-collapse-btn:hover {
+  background-color: var(--ki-bg-subtle);
+  color: var(--ki-text-primary);
+}
+
+.ki-layout.is-collapsed .ki-logo {
   justify-content: center;
   padding: 0;
 }
 
-.ki-layout.is-collapsed .ki-sider-foot {
+.ki-layout.is-collapsed .ki-menu-item,
+.ki-layout.is-collapsed .ki-collapse-btn {
   justify-content: center;
+  padding: 0;
 }
 
 .ki-main-wrap {
@@ -519,7 +525,7 @@ onMounted(async () => {
   align-items: center;
   gap: 8px;
   height: 32px;
-  width: 230px;
+  width: 224px;
   padding: 0 10px;
   background-color: var(--ki-bg-subtle);
   border: 1px solid var(--ki-border-subtle);
@@ -556,12 +562,18 @@ onMounted(async () => {
 .ki-toolbar-right {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
 .ki-refresh-host {
   display: inline-flex;
   align-items: center;
+}
+
+.ki-toolbar-sep {
+  width: 1px;
+  height: 18px;
+  background-color: var(--ki-border-default);
 }
 
 .ki-scope-pill,
@@ -575,9 +587,18 @@ onMounted(async () => {
   font-size: var(--ki-fs-sm);
   font-weight: var(--ki-fw-semibold);
   cursor: pointer;
-  border: 1px solid var(--ki-brand-border);
-  background-color: var(--ki-brand-subtle);
-  color: var(--ki-brand);
+  white-space: nowrap;
+}
+
+.ki-scope-pill {
+  border: 1px solid var(--ki-border-default);
+  background-color: var(--ki-bg-subtle);
+  color: var(--ki-text-primary);
+}
+
+.ki-scope-pill:hover {
+  border-color: var(--ki-brand-border);
+  background-color: var(--ki-bg-hover);
 }
 
 .ki-scope-name {
@@ -598,7 +619,7 @@ onMounted(async () => {
 .ki-env-pill--prod {
   color: var(--ki-env-prod-text);
   background-color: var(--ki-env-prod-bg);
-  border-color: var(--ki-status-danger-border);
+  border: 1px solid var(--ki-status-danger-border);
 }
 
 .ki-env-pill--prod .ki-scope-dot {
@@ -608,7 +629,7 @@ onMounted(async () => {
 .ki-env-pill--staging {
   color: var(--ki-env-staging-text);
   background-color: var(--ki-env-staging-bg);
-  border-color: var(--ki-status-warn-border);
+  border: 1px solid var(--ki-status-warn-border);
 }
 
 .ki-env-pill--staging .ki-scope-dot {
@@ -618,7 +639,7 @@ onMounted(async () => {
 .ki-env-pill--dev {
   color: var(--ki-env-dev-text);
   background-color: var(--ki-env-dev-bg);
-  border-color: var(--ki-status-ok-border);
+  border: 1px solid var(--ki-status-ok-border);
 }
 
 .ki-env-pill--dev .ki-scope-dot {
@@ -628,7 +649,7 @@ onMounted(async () => {
 .ki-env-pill--sandbox {
   color: var(--ki-env-sandbox-text);
   background-color: var(--ki-env-sandbox-bg);
-  border-color: var(--ki-status-neutral-border);
+  border: 1px solid var(--ki-status-neutral-border);
 }
 
 .ki-live-pill {
@@ -637,20 +658,19 @@ onMounted(async () => {
   gap: 6px;
   font-size: var(--ki-fs-xs);
   color: var(--ki-status-ok-text);
-  margin: 0 4px;
   white-space: nowrap;
 }
 
 .ki-live-dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: var(--ki-radius-pill);
   background-color: var(--ki-status-ok);
   box-shadow: var(--ki-live-halo);
 }
 
 .ki-bell {
-  margin-right: 2px;
+  display: inline-flex;
 }
 
 .ki-user-trigger {
@@ -725,7 +745,7 @@ onMounted(async () => {
 }
 
 .ki-content {
-  padding: 18px 22px 28px;
+  padding: 20px 24px 32px;
   background-color: var(--ki-bg-canvas);
 }
 
@@ -745,6 +765,7 @@ onMounted(async () => {
 
   .ki-search-trigger,
   .ki-live-pill,
+  .ki-toolbar-sep,
   .ki-user-who {
     display: none;
   }

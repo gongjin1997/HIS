@@ -153,7 +153,7 @@ async function rewrapSecrets() {
       { idempotent: true }
     )
     rewrappedCount.value = data.rewrapped
-    ElMessage.success(`KEK 信封密钥重包装完成：已轮换 ${data.rewrapped} 条凭据`)
+    ElMessage.success(`主密钥重包装完成：已轮换 ${data.rewrapped} 条凭据`)
   } catch (e) {
     ElMessage.error(String(e))
   } finally {
@@ -309,7 +309,7 @@ onMounted(loadGovernance)
 
 <template>
   <div>
-    <PageHeader title="平台治理与系统设置" :refresh="loadGovernance" :refreshing="loading" />
+    <PageHeader title="平台设置" :refresh="loadGovernance" :refreshing="loading" />
 
     <div class="ki-card">
       <el-tabs v-model="activeTab">
@@ -317,7 +317,7 @@ onMounted(loadGovernance)
         <el-tab-pane label="项目与外观" name="general">
           <div class="ki-grid-2">
             <div class="ki-surface panel-box">
-              <div class="section-title">新建租户项目</div>
+              <div class="section-title">新建交付项目</div>
               <el-form label-position="top">
                 <el-form-item label="项目标识"><el-input v-model="newProj.name" placeholder="his-prod" class="ki-mono" /></el-form-item>
                 <el-form-item label="项目说明"><el-input v-model="newProj.description" placeholder="核心生产集群" /></el-form-item>
@@ -329,26 +329,60 @@ onMounted(loadGovernance)
 
             <div class="ki-surface panel-box">
               <div class="section-title">外观与界面偏好</div>
-              <div class="kv-grid">
-                <div class="k">界面主题</div>
-                <div>
-                  <el-radio-group :model-value="ws.themePreference" size="small" @update:model-value="(v: string) => ws.setTheme(v as 'light' | 'dark' | 'system')">
-                    <el-radio-button value="light">浅色（默认）</el-radio-button>
-                    <el-radio-button value="dark">暗色</el-radio-button>
-                    <el-radio-button value="system">跟随系统</el-radio-button>
-                  </el-radio-group>
+              <div class="ki-setting-list">
+                <div class="ki-setting-row">
+                  <div class="ki-setting-row__info">
+                    <span class="ki-setting-row__label">界面主题</span>
+                    <span class="ki-setting-row__desc">支持日间浅色、夜间暗色或随操作系统切换</span>
+                  </div>
+                  <div class="ki-setting-row__control">
+                    <el-radio-group
+                      :model-value="ws.themePreference"
+                      size="small"
+                      @update:model-value="(v: string) => ws.setTheme(v as 'light' | 'dark' | 'system')"
+                    >
+                      <el-radio-button value="light">浅色（默认）</el-radio-button>
+                      <el-radio-button value="dark">暗色</el-radio-button>
+                      <el-radio-button value="system">跟随系统</el-radio-button>
+                    </el-radio-group>
+                  </div>
                 </div>
-                <div class="k">行密度</div>
-                <div>
-                  <el-radio-group v-model="ws.density" size="small">
-                    <el-radio-button value="comfortable">舒适 (44px)</el-radio-button>
-                    <el-radio-button value="compact">紧凑 (34px)</el-radio-button>
-                  </el-radio-group>
+
+                <div class="ki-setting-row">
+                  <div class="ki-setting-row__info">
+                    <span class="ki-setting-row__label">表格行密度</span>
+                    <span class="ki-setting-row__desc">在大规模主机与流水台账中可切换紧凑视图</span>
+                  </div>
+                  <div class="ki-setting-row__control">
+                    <el-radio-group v-model="ws.density" size="small">
+                      <el-radio-button value="comfortable">舒适 (44px)</el-radio-button>
+                      <el-radio-button value="compact">紧凑 (34px)</el-radio-button>
+                    </el-radio-group>
+                  </div>
                 </div>
-                <div class="k">当前角色</div>
-                <div class="ki-flex-row"><ShieldCheck :size="14" class="ki-text-ok" /> <b class="ki-mono">{{ auth.primaryRole }}</b></div>
-                <div class="k">界面语言</div>
-                <div><el-button size="small" @click="ws.toggleLang">{{ ws.lang }}</el-button></div>
+
+                <div class="ki-setting-row">
+                  <div class="ki-setting-row__info">
+                    <span class="ki-setting-row__label">当前登录角色</span>
+                    <span class="ki-setting-row__desc">基于 RBAC 策略自动控制页面写操作权限</span>
+                  </div>
+                  <div class="ki-setting-row__control">
+                    <span class="role-badge">
+                      <ShieldCheck :size="14" class="ki-text-ok" />
+                      <b class="ki-mono">{{ auth.primaryRole }}</b>
+                    </span>
+                  </div>
+                </div>
+
+                <div class="ki-setting-row">
+                  <div class="ki-setting-row__info">
+                    <span class="ki-setting-row__label">控制台语言</span>
+                    <span class="ki-setting-row__desc">当前日期格式与状态文案的区域设定</span>
+                  </div>
+                  <div class="ki-setting-row__control">
+                    <el-button size="small" @click="ws.toggleLang">{{ ws.lang }}</el-button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -383,7 +417,7 @@ onMounted(loadGovernance)
             </div>
 
             <div class="ki-surface panel-box">
-              <div class="section-title">KEK 主密钥零停机重包装 (O-11)</div>
+              <div class="section-title">主密钥 (KEK) 零停机轮换重包装</div>
               <p class="ki-secondary settings-desc">
                 使用最新 KEK 版本重新封装当前项目内全部凭据的 DEK，密文不落明文、全过程写入 SHA-256 + SM3 审计链。
               </p>
@@ -430,7 +464,7 @@ onMounted(loadGovernance)
         <!-- Tab 3: 通知通道 & 防风暴 -->
         <el-tab-pane :label="`通知通道 (${channels.length})`" name="notify">
           <div class="ki-surface panel-box ki-mb-4">
-            <div class="section-title">新增告警与审批通知通道 (5min 防风暴折叠)</div>
+            <div class="section-title">新增告警与审批通知通道（5 分钟防风暴折叠）</div>
             <el-form label-position="top">
               <div class="ki-grid-3">
                 <el-form-item label="通道名称"><el-input v-model="newChan.name" class="ki-mono" /></el-form-item>
@@ -553,7 +587,7 @@ onMounted(loadGovernance)
 
               <div class="ki-surface panel-box">
                 <div class="table-heading">
-                  <span class="section-title no-mb">外部 CMDB 资产同步 (cmdb:sync)</span>
+                  <span class="section-title no-mb">外部 CMDB 资产同步</span>
                   <el-button size="small" @click="syncExternalCMDB">
                     <Database :size="13" class="btn-ico" /> 推送同步
                   </el-button>
@@ -616,6 +650,17 @@ onMounted(loadGovernance)
 
 .settings-desc {
   margin: 0 0 12px;
+  font-size: var(--ki-fs-sm);
+}
+
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--ki-radius-sm);
+  background-color: var(--ki-status-ok-subtle);
+  color: var(--ki-status-ok-text);
   font-size: var(--ki-fs-sm);
 }
 

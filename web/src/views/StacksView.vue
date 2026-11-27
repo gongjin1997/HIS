@@ -26,7 +26,7 @@ const router = useRouter()
 
 const presets: Record<string, { label: string; name: string; yaml: string }> = {
   logging: {
-    label: 'P3 日志分析栈 (S3+Kafka+OS+DataPrepper)',
+    label: '日志分析栈 (S3 + Kafka + OpenSearch + DataPrepper)',
     name: 'prod-t3-logging-platform',
     yaml: `apiVersion: kinstall.io/v1alpha1
 kind: Stack
@@ -55,7 +55,7 @@ spec:
 `,
   },
   hisCore: {
-    label: 'P4 核心交易栈 (PG+Valkey+Kafka)',
+    label: '核心交易栈 (PostgreSQL + Valkey + Kafka)',
     name: 'his-core-app-stack',
     yaml: `apiVersion: kinstall.io/v1alpha1
 kind: Stack
@@ -79,7 +79,7 @@ spec:
 `,
   },
   devops: {
-    label: 'P8 研发治理栈 (PG+Valkey+GitLab+Harbor)',
+    label: '研发交付栈 (PG + Valkey + GitLab + Harbor)',
     name: 'devops-platform-stack',
     yaml: `apiVersion: kinstall.io/v1alpha1
 kind: Stack
@@ -114,6 +114,7 @@ const validating = ref(false)
 const stacks = ref<Array<Record<string, unknown>>>([])
 const stackName = ref(presets.logging.name)
 const specYaml = ref(presets.logging.yaml)
+const activePreset = ref('logging')
 const canvasNodes = ref<StackNodeInput[]>([])
 const resolvedDag = ref<ResolvedDAG | null>(null)
 const validateError = ref('')
@@ -147,12 +148,14 @@ async function validateAndRender() {
 function selectPreset(key: string) {
   const p = presets[key]
   if (!p) return
+  activePreset.value = key
   stackName.value = p.name
   specYaml.value = p.yaml
   void validateAndRender()
 }
 
 function loadStackIntoEditor(row: Record<string, unknown>) {
+  activePreset.value = ''
   stackName.value = String(row.name || '')
   if (typeof row.specYaml === 'string' && row.specYaml.trim()) {
     specYaml.value = row.specYaml
@@ -178,7 +181,7 @@ async function createStack() {
       body: { env: ws.currentEnv, name: stackName.value, specYaml: specYaml.value },
       idempotent: true,
     })
-    ElMessage.success('Stack DAG 拓扑排序与 OutputSchema 静态校验通过并已保存')
+    ElMessage.success('应用栈拓扑与输出参数校验通过，已保存')
     await loadStacks()
   } catch (e) {
     ElMessage.error(String(e))
@@ -194,10 +197,10 @@ async function applyStack(row: Record<string, unknown>) {
     )
     await ws.refreshApprovalBadge()
     if (data.state === 'awaiting_approval') {
-      ElMessage.warning(`生产环境 Stack ${row.name} 已进入四眼审批队列`)
+      ElMessage.warning(`生产环境应用栈 ${row.name} 已进入变更审批队列`)
       await router.push('/operations/approvals')
     } else {
-      ElMessage.success(`Stack 分层编排操作 ${data.id} 已下发`)
+      ElMessage.success(`应用栈分层部署任务 ${data.id} 已下发`)
       await router.push(`/operations?id=${data.id}`)
     }
   } catch (e) {
@@ -222,10 +225,10 @@ async function confirmUninstallStack() {
     uninstallModal.open = false
     await ws.refreshApprovalBadge()
     if (data.state === 'awaiting_approval') {
-      ElMessage.warning('逆序卸载已进入四眼审批队列')
+      ElMessage.warning('逆序卸载已进入变更审批队列')
       await router.push('/operations/approvals')
     } else {
-      ElMessage.success(`逆序卸载操作 ${data.id} 已入队（externalRefs 已自动保护）`)
+      ElMessage.success(`逆序卸载操作 ${data.id} 已入队（外部引用已自动保护）`)
       await router.push(`/operations?id=${data.id}`)
     }
   } catch (e) {
@@ -241,17 +244,17 @@ onMounted(loadStacks)
 
 <template>
   <div>
-    <PageHeader title="Stack DAG 编排" :refresh="loadStacks" :refreshing="loading" />
+    <PageHeader title="应用栈编排" :refresh="loadStacks" :refreshing="loading" />
 
     <div class="ki-card ki-mb-4">
       <div class="ki-card__title">
-        <span>复合栈实时 DAG 画布<span class="sub">后端 Kahn 拓扑排序 + 环路阻断 (KI-STACK-0001) + 真实插件 OutputSchema 句柄</span></span>
+        <span>复合应用栈拓扑画布<span class="sub">实时依赖分层校验 · 自动阻断循环依赖 · 插件输出参数自动关联</span></span>
         <div class="ki-flex-row">
           <el-button :loading="validating" @click="validateAndRender">
-            <CheckCircle2 :size="14" class="btn-ico" /> 实时校验并渲染 DAG
+            <CheckCircle2 :size="14" class="btn-ico" /> 校验并渲染拓扑
           </el-button>
           <el-button v-if="auth.can('stack:write', ws.currentProjectId)" type="primary" @click="createStack">
-            <Save :size="14" class="btn-ico" /> 校验并保存 Stack
+            <Save :size="14" class="btn-ico" /> 校验并保存应用栈
           </el-button>
         </div>
       </div>
@@ -259,12 +262,12 @@ onMounted(loadStacks)
       <KiBanner v-if="validateError" variant="danger" :text="validateError" class="ki-mb-3" />
 
       <div v-if="resolvedDag" class="dag-layers ki-mb-3">
-        <span class="ki-secondary">安装分层：</span>
+        <span class="ki-secondary">安装执行分层：</span>
         <span v-for="(layer, i) in resolvedDag.installLayers" :key="i" class="ki-badge ki-mono layer-pill">
-          L{{ i }}: {{ layer.join(', ') }}
+          L{{ i }} · {{ layer.join(', ') }}
         </span>
         <span v-if="resolvedDag.externalRefIds?.length" class="ki-badge ki-mono ext-pill">
-          受保护 externalRefs: {{ resolvedDag.externalRefIds.join(', ') }}
+          受保护外部引用：{{ resolvedDag.externalRefIds.join(', ') }}
         </span>
       </div>
 
@@ -277,49 +280,58 @@ onMounted(loadStacks)
           <span>声明式 Stack YAML</span>
           <el-input v-model="stackName" size="small" class="ki-mono stack-name-input" />
         </div>
-        <div class="preset-bar ki-mb-3">
-          <el-button v-for="(p, key) in presets" :key="key" size="small" plain @click="selectPreset(key)">
+        <div class="ki-pill-tabs ki-mb-3">
+          <button
+            v-for="(p, key) in presets"
+            :key="key"
+            type="button"
+            class="ki-pill-tab"
+            :class="{ 'ki-pill-tab--active': activePreset === key }"
+            @click="selectPreset(key)"
+          >
             {{ p.label }}
-          </el-button>
+          </button>
         </div>
         <el-input v-model="specYaml" type="textarea" :rows="14" class="ki-mono" />
       </div>
 
       <div class="ki-card">
         <div class="ki-card__title">
-          <span>已注册 Stack 清单<span class="sub">共 {{ stacks.length }} 个 · 点击行可在画布加载 DAG</span></span>
+          <span>已保存应用栈清单<span class="sub">共 {{ stacks.length }} 套 · 点击行载入上方画布</span></span>
         </div>
         <el-table v-loading="loading" :data="stacks" size="small" @row-click="loadStackIntoEditor">
-          <el-table-column prop="name" label="名称" min-width="150">
+          <el-table-column prop="name" label="应用栈名称" min-width="140">
             <template #default="{ row }"><b class="ki-mono">{{ row.name }}</b></template>
           </el-table-column>
-          <el-table-column label="环境" width="95">
+          <el-table-column label="环境" width="106">
             <template #default="{ row }"><KiEnvBadge :env="String(row.env || ws.currentEnv)" /></template>
           </el-table-column>
-          <el-table-column label="状态" width="95">
+          <el-table-column label="状态" width="96">
             <template #default="{ row }"><KiStatusBadge :status="String(row.state || 'ready')" /></template>
           </el-table-column>
-          <el-table-column label="操作" width="145" fixed="right">
+          <el-table-column label="操作" width="148">
             <template #default="{ row }">
-              <el-button
-                v-if="auth.can('stack:write', ws.currentProjectId)"
-                link
-                type="primary"
-                @click.stop="applyStack(row)"
-              >
-                <Play :size="13" class="btn-ico" /> Apply
-              </el-button>
-              <el-button
-                v-if="auth.can('stack:write', ws.currentProjectId)"
-                link
-                type="danger"
-                @click.stop="openUninstallStack(row)"
-              >
-                <Trash2 :size="13" class="btn-ico" /> 逆序卸载
-              </el-button>
+              <div class="ki-row-actions">
+                <el-button
+                  v-if="auth.can('stack:write', ws.currentProjectId)"
+                  link
+                  type="primary"
+                  @click.stop="applyStack(row)"
+                >
+                  <Play :size="13" class="btn-ico" /> Apply
+                </el-button>
+                <el-button
+                  v-if="auth.can('stack:write', ws.currentProjectId)"
+                  link
+                  type="danger"
+                  @click.stop="openUninstallStack(row)"
+                >
+                  <Trash2 :size="13" class="btn-ico" /> 逆序卸载
+                </el-button>
+              </div>
             </template>
           </el-table-column>
-          <template #empty><el-empty description="暂无已保存 Stack，点击上方按钮保存当前模板" :image-size="60" /></template>
+          <template #empty><el-empty description="暂无已保存应用栈，点击上方按钮保存当前模板" :image-size="60" /></template>
         </el-table>
       </div>
     </div>
@@ -327,9 +339,9 @@ onMounted(loadStacks)
     <KiDangerConfirmModal
       v-model="uninstallModal.open"
       :env="String(uninstallModal.stack?.env || ws.currentEnv)"
-      title="确认逆序卸载 Stack 复合栈"
+      title="确认逆序卸载应用栈"
       :resource-name="String(uninstallModal.stack?.name || '')"
-      risk-summary="将严格按照反向拓扑分层 (UninstallLayers) 逐层卸载栈内自建实例；externalRefs 声明的外部云服务绝不会被触碰。"
+      risk-summary="将严格按依赖逆序分层卸载栈内自建实例；externalRefs 声明的外部托管服务绝不会被修改或删除。"
       confirm-label="解锁并逆序卸载"
       :loading="uninstallModal.loading"
       @confirm="confirmUninstallStack"
@@ -343,13 +355,7 @@ onMounted(loadStacks)
 }
 
 .stack-name-input {
-  width: 220px;
-}
-
-.preset-bar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  width: 230px;
 }
 
 .dag-layers {

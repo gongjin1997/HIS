@@ -18,6 +18,7 @@ interface MediaSourceConfig {
   region?: string
   bucket?: string
   driver?: string
+  credentialRef?: string
   baseUrl?: string
 }
 
@@ -37,6 +38,7 @@ const ws = useWorkspaceStore()
 const loading = ref(false)
 const probing = ref(false)
 const policies = ref<MediaPolicyItem[]>([])
+const credentials = ref<Array<{ id: string; name: string; kind: string }>>([])
 const probeResult = ref<Record<string, unknown> | null>(null)
 const activeEtag = ref('')
 const activeId = ref('')
@@ -48,7 +50,16 @@ const editor = reactive({
   obsPreset: 'huawei-obs',
   sources: [
     { type: 'local', priority: 1, internal: true, roots: ['/var/lib/kinstall/artifacts'] },
-    { type: 'obs', priority: 2, internal: true, endpoint: 'https://obs.cn-north-4.myhuaweicloud.com', region: 'cn-north-4', bucket: 'kinstall-artifacts-prod', driver: 's3v4' },
+    {
+      type: 'obs',
+      priority: 2,
+      internal: true,
+      endpoint: 'https://obs.cn-north-4.myhuaweicloud.com',
+      region: 'cn-north-4',
+      bucket: 'kinstall-artifacts-prod',
+      driver: 's3v4',
+      credentialRef: '',
+    },
     { type: 'online', priority: 3, internal: false, baseUrl: 'https://releases.kinstall.io' },
   ] as MediaSourceConfig[],
 })
@@ -105,8 +116,15 @@ async function loadPolicies() {
   if (!ws.currentProjectId) return
   loading.value = true
   try {
-    const { data } = await apiRequest<{ items: MediaPolicyItem[] }>('GET', `/api/v1/projects/${ws.currentProjectId}/media-policies`)
-    policies.value = data.items || []
+    const [pRes, cRes] = await Promise.all([
+      apiRequest<{ items: MediaPolicyItem[] }>('GET', `/api/v1/projects/${ws.currentProjectId}/media-policies`),
+      apiRequest<{ items: Array<{ id: string; name: string; kind: string }> }>(
+        'GET',
+        `/api/v1/projects/${ws.currentProjectId}/credentials`
+      ).catch(() => ({ data: { items: [] } })),
+    ])
+    policies.value = pRes.data.items || []
+    credentials.value = cRes.data.items || []
     if (policies.value.length > 0) {
       const p = policies.value[0]
       activeId.value = p.id
@@ -136,7 +154,7 @@ async function savePolicy() {
         { body: payload, etag: activeEtag.value }
       )
       activeEtag.value = etag || `"v-${data.version}"`
-      ElMessage.success('三元介质策略已更新（ETag 乐观锁校验通过）')
+      ElMessage.success('介质源策略已保存并生效')
     } else {
       const { data, etag } = await apiRequest<MediaPolicyItem>(
         'POST',
@@ -145,7 +163,7 @@ async function savePolicy() {
       )
       activeId.value = data.id
       activeEtag.value = etag || `"v-${data.version}"`
-      ElMessage.success('三元介质策略已创建')
+      ElMessage.success('介质源策略已创建')
     }
     await loadPolicies()
   } catch (e) {
@@ -163,7 +181,7 @@ async function testPolicy() {
       `/api/v1/projects/${ws.currentProjectId}/media-policies/${activeId.value}:test`
     )
     probeResult.value = data
-    ElMessage.success('三元介质源连通性与签名权限探测完成')
+    ElMessage.success('介质源连通性与签名权限探测完成')
   } catch (e) {
     ElMessage.error(String(e))
   } finally {
@@ -182,13 +200,13 @@ onMounted(loadPolicies)
     <KiBanner
       v-if="editor.offlineStrict"
       variant="offline-lock"
-      text="严格物理离线模式 (offlineStrict=true) 已开启：自动封禁公网 Online 上游与非内网对象存储桶，后端门禁 KI-SRC-0005 同步生效。"
+      text="严格物理离线模式已启用：系统将自动阻断公网在线上游与非内网白名单对象存储桶，确保全部软件包与镜像仅从受控内网介质源拉取。"
       class="ki-mb-4"
     />
 
     <div class="ki-card ki-mb-4">
       <div class="ki-card__title">
-        <span>策略全局开关与分发模式<span class="sub">支持 Alt+↑/↓ 键盘重排介质源优先级</span></span>
+        <span>策略全局开关与分发模式<span class="sub">按优先级自动回退，支持 Alt+↑/↓ 键盘调整顺序</span></span>
         <div class="table-actions">
           <el-button :loading="probing" @click="testPolicy">
             <Activity :size="14" class="btn-ico" /> 探测连通与权限
@@ -199,18 +217,29 @@ onMounted(loadPolicies)
         </div>
       </div>
 
-      <div class="ki-flex-between ki-flex-wrap">
-        <div class="ki-flex-row">
-          <span class="ki-secondary">严格物理离线模式 (offlineStrict)：</span>
-          <el-switch v-model="editor.offlineStrict" />
+      <div class="ki-setting-list">
+        <div class="ki-setting-row">
+          <div class="ki-setting-row__info">
+            <span class="ki-setting-row__label">严格物理离线模式</span>
+            <span class="ki-setting-row__desc">开启后仅允许本地制品目录与标记为内网白名单的对象存储源</span>
+          </div>
+          <div class="ki-setting-row__control">
+            <el-switch v-model="editor.offlineStrict" />
+          </div>
         </div>
-        <div class="ki-flex-row">
-          <span class="ki-secondary">制品分发模式：</span>
-          <el-radio-group v-model="editor.deliveryMode" size="small">
-            <el-radio-button value="auto">auto 智能</el-radio-button>
-            <el-radio-button value="relay-cache">relay-cache 部署机中转</el-radio-button>
-            <el-radio-button value="direct-presigned">direct-presigned 15m 预签名直拉</el-radio-button>
-          </el-radio-group>
+
+        <div class="ki-setting-row">
+          <div class="ki-setting-row__info">
+            <span class="ki-setting-row__label">制品分发模式</span>
+            <span class="ki-setting-row__desc">控制目标主机通过部署机缓存中转或 15 分钟短期预签名 URL 直接拉取</span>
+          </div>
+          <div class="ki-setting-row__control">
+            <el-radio-group v-model="editor.deliveryMode" size="small">
+              <el-radio-button value="auto">智能自动</el-radio-button>
+              <el-radio-button value="relay-cache">部署机中转</el-radio-button>
+              <el-radio-button value="direct-presigned">15m 预签名直拉</el-radio-button>
+            </el-radio-group>
+          </div>
         </div>
       </div>
     </div>
@@ -234,23 +263,40 @@ onMounted(loadPolicies)
     <!-- 对象存储配置细项 -->
     <div v-for="src in editor.sources.filter((s) => s.type === 'obs' || s.type === 's3')" :key="src.type" class="ki-card ki-mb-4">
       <div class="section-title">对象存储参数（华为云 OBS / SeaweedFS S3）</div>
-      <div class="ki-grid-2">
-        <el-form-item label="厂商快速预设">
-          <el-select v-model="editor.obsPreset" class="ki-w-full" @change="applyVendorPreset">
-            <el-option label="华为云 OBS (S3v4 WhenRequired 兼容)" value="huawei-obs" />
-            <el-option label="内网 SeaweedFS S3 (P6)" value="seaweedfs" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="Endpoint"><el-input v-model="src.endpoint" class="ki-mono" /></el-form-item>
-        <el-form-item label="Bucket 桶名"><el-input v-model="src.bucket" class="ki-mono" /></el-form-item>
-        <el-form-item label="内网白名单 (offlineStrict 放行)">
-          <el-switch v-model="src.internal" />
-        </el-form-item>
-      </div>
+      <el-form label-position="top">
+        <div class="ki-grid-3">
+          <el-form-item label="厂商快速预设">
+            <el-select v-model="editor.obsPreset" class="ki-w-full" @change="applyVendorPreset">
+              <el-option label="华为云 OBS (S3v4 兼容)" value="huawei-obs" />
+              <el-option label="内网 SeaweedFS S3" value="seaweedfs" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="Endpoint 地址">
+            <el-input v-model="src.endpoint" class="ki-mono" />
+          </el-form-item>
+          <el-form-item label="Bucket 桶名">
+            <el-input v-model="src.bucket" class="ki-mono" />
+          </el-form-item>
+          <el-form-item label="Region 区域">
+            <el-input v-model="src.region" placeholder="cn-north-4" class="ki-mono" />
+          </el-form-item>
+          <el-form-item label="Vault 访问凭据引用 (AK/SK)">
+            <el-select v-model="src.credentialRef" clearable class="ki-w-full" placeholder="可选：选择保险库 s3_aksk 凭据">
+              <el-option v-for="c in credentials" :key="c.id" :label="`${c.name} (${c.kind})`" :value="c.id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="内网白名单放行">
+            <div class="whitelist-row">
+              <el-switch v-model="src.internal" />
+              <span class="ki-muted">离线模式下允许访问该内网存储</span>
+            </div>
+          </el-form-item>
+        </div>
+      </el-form>
     </div>
 
     <div v-if="probeResult" class="ki-card">
-      <div class="section-title">最近一次探活响应 (:test)</div>
+      <div class="section-title">最近一次连通性探测结果</div>
       <pre class="ki-mono probe-pre">{{ JSON.stringify(probeResult, null, 2) }}</pre>
     </div>
   </div>
@@ -259,6 +305,14 @@ onMounted(loadPolicies)
 <style scoped>
 .btn-ico {
   margin-right: 4px;
+}
+
+.whitelist-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  font-size: var(--ki-fs-xs);
 }
 
 .probe-pre {
