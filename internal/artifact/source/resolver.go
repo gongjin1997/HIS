@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -431,14 +432,51 @@ func (s *OnlineSource) PresignGet(context.Context, ArtifactSpec, time.Duration) 
 	return "", "", ErrPresignNotSupported
 }
 
+// CredentialDecryptor resolves a Vault credential reference ID into plaintext bytes.
+type CredentialDecryptor func(ctx context.Context, credID string) ([]byte, error)
+
 // PolicyMediaResolver adapts Resolver to ports.MediaResolver driven by domain.MediaPolicy.
 type PolicyMediaResolver struct {
-	cacheDir string
-	client   *http.Client
+	cacheDir    string
+	client      *http.Client
+	credDecrypt CredentialDecryptor
 }
 
 func NewPolicyMediaResolver(cacheDir string) *PolicyMediaResolver {
 	return &PolicyMediaResolver{cacheDir: cacheDir, client: &http.Client{Timeout: 30 * time.Second}}
+}
+
+// WithCredentialDecryptor injects Vault credential decryption so OBS/S3 sources authenticate with real AK/SK.
+func (p *PolicyMediaResolver) WithCredentialDecryptor(fn CredentialDecryptor) *PolicyMediaResolver {
+	p.credDecrypt = fn
+	return p
+}
+
+func parseAKSK(raw []byte) (ak, sk string) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return "", ""
+	}
+	var obj map[string]string
+	if err := json.Unmarshal([]byte(trimmed), &obj); err == nil {
+		for _, k := range []string{"ak", "accessKey", "access_key", "accessKeyId"} {
+			if v := strings.TrimSpace(obj[k]); v != "" {
+				ak = v
+				break
+			}
+		}
+		for _, k := range []string{"sk", "secretKey", "secret_key", "secretAccessKey"} {
+			if v := strings.TrimSpace(obj[k]); v != "" {
+				sk = v
+				break
+			}
+		}
+		return ak, sk
+	}
+	if a, s, ok := strings.Cut(trimmed, ":"); ok {
+		return strings.TrimSpace(a), strings.TrimSpace(s)
+	}
+	return "", ""
 }
 
 func (p *PolicyMediaResolver) Resolve(ctx context.Context, policy domain.MediaPolicy, ref sdk.MediaRef) (*ports.ResolvedMedia, error) {
@@ -450,7 +488,14 @@ func (p *PolicyMediaResolver) Resolve(ctx context.Context, policy domain.MediaPo
 			sources = append(sources, NewLocalSource(sc.Priority))
 			localRoots = append(localRoots, sc.Roots...)
 		case "obs", "s3":
-			sources = append(sources, NewObjectStoreSource(sc, "", "", p.client))
+			ak, sk := "", ""
+			if sc.CredentialRef != "" && p.credDecrypt != nil {
+				if raw, derr := p.credDecrypt(ctx, sc.CredentialRef); derr == nil {
+					ak, sk = parseAKSK(raw)
+					clear(raw)
+				}
+			}
+			sources = append(sources, NewObjectStoreSource(sc, ak, sk, p.client))
 		case "online":
 			sources = append(sources, NewOnlineSource(sc.Priority, sc.BaseURL, nil, p.client))
 		}

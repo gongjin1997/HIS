@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	sdk "github.com/kinstall/kinstall/pkg/sdk/v1alpha1"
@@ -106,12 +107,35 @@ func (p *Plugin) Validate(_ context.Context, req *sdk.ValidateRequest) (*sdk.Val
 	if req.Instance.DeployTarget != sdk.TargetKubernetes && len(req.Hosts) > 0 && len(req.Hosts) < 2 {
 		rep.Warn(sdk.CodePlanTopologyMinHosts, "SkyWalking OAP production recommends >= 2 nodes with Satellite 1.4 L7 gRPC balancing (P7 §2.1)")
 	}
+	if req.CheckClaims != nil && req.Instance.DeployTarget != sdk.TargetKubernetes {
+		hc := skywalkingHostClaims(req.Instance.Name)
+		for _, h := range req.Hosts {
+			if err := req.CheckClaims(h.ID, hc); err != nil {
+				rep.BlockHost(h.ID, sdk.CodeHostClaimConflict, err.Error())
+			}
+		}
+	}
 	return rep, nil
+}
+
+func skywalkingHostClaims(instName string) sdk.HostRoleClaims {
+	return sdk.HostRoleClaims{
+		Ports: []sdk.PortClaim{{Port: 11800, Proto: "tcp"}, {Port: 8080, Proto: "tcp"}},
+		Dirs:  []string{"/data/skywalking/" + instName},
+	}
 }
 
 func (p *Plugin) Plan(ctx context.Context, req *sdk.PlanRequest) (*sdk.PlanResult, error) {
 	spec := parseSpec(req.Instance.Spec)
-	pl, err := p.buildInstall(ctx, &sdk.OpRequest{Instance: req.Instance, Hosts: req.Hosts})
+	opName := req.Operation
+	if opName == "" {
+		opName = "install"
+	}
+	op, ok := p.Operation(opName)
+	if !ok {
+		return nil, sdk.NewError(sdk.CodeAPIInvalidRequest, "SW", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, fmt.Errorf("unknown op %q", opName))
+	}
+	pl, err := op.Build(ctx, &sdk.OpRequest{Instance: req.Instance, Hosts: req.Hosts, BOM: req.BOM})
 	if err != nil {
 		return nil, err
 	}
@@ -119,8 +143,16 @@ func (p *Plugin) Plan(ctx context.Context, req *sdk.PlanRequest) (*sdk.PlanResul
 	if len(req.Hosts) > 0 && req.Hosts[0].Address != "" {
 		host = req.Hosts[0].Address
 	}
+	claims := make(map[string]sdk.HostRoleClaims, len(req.Hosts))
+	if req.Instance.DeployTarget != sdk.TargetKubernetes {
+		hc := skywalkingHostClaims(req.Instance.Name)
+		for _, h := range req.Hosts {
+			claims[h.ID] = hc
+		}
+	}
 	return &sdk.PlanResult{
-		Summary:  fmt.Sprintf("SkyWalking %s (storage=%s, satellite=%v, slow>%dms)", req.Instance.ProductVersion, spec.StorageEngine, spec.EnableSatellite, spec.TailSampleSlowMs),
+		Summary:  fmt.Sprintf("SkyWalking %s (%s / storage=%s, satellite=%v, slow>%dms)", req.Instance.ProductVersion, opName, spec.StorageEngine, spec.EnableSatellite, spec.TailSampleSlowMs),
+		Claims:   claims,
 		Pipeline: pl,
 		Outputs: map[string]any{
 			"collectorGRPC": fmt.Sprintf("%s:11800", host),

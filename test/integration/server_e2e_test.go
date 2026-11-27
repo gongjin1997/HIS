@@ -131,7 +131,11 @@ func TestFullControlPlaneEndToEnd(t *testing.T) {
 	var prj struct{ ID string }
 	_ = json.Unmarshal(rec.Body.Bytes(), &prj)
 
-	// 3. Credentials vault: create, list (must redact EnvelopeJSON), rewrap, delete
+	// 3. Credentials vault: reject empty secret, create with "secret" key, list (must redact EnvelopeJSON), rewrap
+	rec = doJSON(t, router, "POST", "/api/v1/projects/"+prj.ID+"/credentials", tok1, map[string]string{"name": "empty-bad", "kind": "ssh_password"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty credential should be rejected with 400, got %d %s", rec.Code, rec.Body.String())
+	}
 	rec = doJSON(t, router, "POST", "/api/v1/projects/"+prj.ID+"/credentials", tok1, map[string]string{"name": "ssh-root", "kind": "ssh_password", "secret": "TopSecret#99"})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create cred: %d %s", rec.Code, rec.Body.String())
@@ -166,8 +170,23 @@ func TestFullControlPlaneEndToEnd(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("host init failed: %d %s", rec.Code, rec.Body.String())
 	}
+	// Multi-profile baseline check AFTER hosts:init (profile="base,cache") must succeed (no 422)!
+	rec = doJSON(t, router, "POST", "/api/v1/projects/"+prj.ID+"/hosts/"+hostID+":check", tok1, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("multi-profile host check failed after init: %d %s", rec.Code, rec.Body.String())
+	}
+	// External CMDB sync: create new host (resolving default credential!) AND update existing host zone!
+	rec = doJSON(t, router, "POST", "/api/v1/projects/"+prj.ID+"/cmdb:sync", tok1, map[string]any{
+		"hosts": []map[string]any{
+			{"name": "cmdb-sync-01", "address": "10.20.9.11", "faultZone": "az-9"},
+			{"name": "node-02", "address": "10.20.1.12", "faultZone": "az-updated"},
+		},
+	})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"created":1`) || !strings.Contains(rec.Body.String(), `"updated":1`) {
+		t.Fatalf("cmdb sync failed: %d %s", rec.Code, rec.Body.String())
+	}
 
-	// 5. Plugin ParamSchema lookup + Instance Create + Plan (real 3-Way Diff!) + Prod Apply -> Four-Eyes Approval
+	// 5. Plugin ParamSchema lookup + Instance Create + Plan (real rendered valkey.conf 3-Way Diff + DriftIgnore!) + Prod Apply -> Four-Eyes Approval
 	rec = doJSON(t, router, "GET", "/api/v1/plugins/valkey", tok1, nil)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "paramSchema") {
 		t.Fatalf("plugin schema failed: %d %s", rec.Code, rec.Body.String())
@@ -183,8 +202,11 @@ func TestFullControlPlaneEndToEnd(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &inst)
 
 	rec = doJSON(t, router, "POST", "/api/v1/projects/"+prj.ID+"/instances/"+inst.ID+":plan", tok1, map[string]any{"action": "install"})
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "configDiffs") {
-		t.Fatalf("plan failed or missing real configDiffs: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "valkey.conf") {
+		t.Fatalf("plan failed or did not render real valkey.conf configDiffs: %d %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "sentinel.conf") {
+		t.Fatalf("DriftIgnore O-08 violated: sentinel.conf should be ignored in configDiffs")
 	}
 	var planResp struct{ Plan struct{ ID string } }
 	_ = json.Unmarshal(rec.Body.Bytes(), &planResp)
@@ -197,6 +219,37 @@ func TestFullControlPlaneEndToEnd(t *testing.T) {
 	}
 	var opResp struct{ ID string }
 	_ = json.Unmarshal(rec.Body.Bytes(), &opResp)
+
+	// Cross-instance host port collision protection: second Valkey on port 6379 MUST be blocked by persisted instance_host_claims!
+	rec = doJSON(t, router, "POST", "/api/v1/projects/"+prj.ID+"/instances", tok1, map[string]any{
+		"env": "dev", "name": "valkey-clash", "product": "valkey", "productVersion": "9.1.4", "deployTarget": "host-binary",
+		"desiredSpec": map[string]any{"topology": "standalone", "port": 6379},
+	})
+	var clashInst struct{ ID string }
+	_ = json.Unmarshal(rec.Body.Bytes(), &clashInst)
+	rec = doJSON(t, router, "POST", "/api/v1/projects/"+prj.ID+"/instances/"+clashInst.ID+":plan", tok1, map[string]any{"action": "install"})
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), sdk.CodeHostClaimConflict) {
+		t.Fatalf("expected KI-HOST-0001 port collision on overlapping Valkey 6379, got %d %s", rec.Code, rec.Body.String())
+	}
+	_ = doJSON(t, router, "DELETE", "/api/v1/projects/"+prj.ID+"/instances/"+clashInst.ID, tok1, nil)
+
+	// PostgreSQL PITR targetTime parameter pass-through into Plan pipeline!
+	rec = doJSON(t, router, "POST", "/api/v1/projects/"+prj.ID+"/instances", tok1, map[string]any{
+		"env": "dev", "name": "pg-pitr", "product": "postgresql", "productVersion": "18.7.0", "deployTarget": "host-binary",
+		"desiredSpec": map[string]any{"topology": "patroni-ha", "port": 5432},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create pg instance failed: %d %s", rec.Code, rec.Body.String())
+	}
+	var pgInst struct{ ID string }
+	_ = json.Unmarshal(rec.Body.Bytes(), &pgInst)
+	rec = doJSON(t, router, "POST", "/api/v1/projects/"+prj.ID+"/instances/"+pgInst.ID+":plan", tok1, map[string]any{
+		"action": "restore", "params": map[string]any{"targetTime": "2026-11-27T12:34:56Z"},
+	})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "2026-11-27T12:34:56Z") {
+		t.Fatalf("pg PITR targetTime not baked into plan pipeline: %d %s", rec.Code, rec.Body.String())
+	}
+	_ = doJSON(t, router, "DELETE", "/api/v1/projects/"+prj.ID+"/instances/"+pgInst.ID, tok1, nil)
 
 	// Self-approval by admin1 MUST be rejected (ADR-037)!
 	rec = doJSON(t, router, "POST", "/api/v1/projects/"+prj.ID+"/operations/"+opResp.ID+":approve", tok1, map[string]string{"note": "self"})

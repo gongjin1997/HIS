@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,14 +10,18 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"al.essio.dev/pkg/shellescape"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
 
 	"github.com/kinstall/kinstall/internal/domain"
+	"github.com/kinstall/kinstall/internal/obs"
 	"github.com/kinstall/kinstall/internal/osadapter"
 	"github.com/kinstall/kinstall/internal/ports"
 	"github.com/kinstall/kinstall/internal/version"
@@ -26,14 +31,18 @@ import (
 // HostResolver maps HostSelector and host IDs to live HostView + SSH Target material.
 type HostResolver func(ctx context.Context, op *domain.Operation, sel sdk.HostSelector) ([]HostExecBinding, error)
 
+// NotifyFunc dispatches operation lifecycle alerts (e.g. operation.failed) to notification channels.
+type NotifyFunc func(ctx context.Context, projectID, eventType, severity, dedupKey, summary string)
+
 // HostExecBinding pairs a HostView with its connection Target for execution.
 type HostExecBinding struct {
 	View   sdk.HostView
 	Target ports.Target
 }
 
-// Worker executes queued Operations with lease heartbeat (10s/30s), monotonic Fencing Token,
-// Stack->Instance->Host sorted locking, --resume skip semantics, and schema-version draining (D2 §2, G1 §6).
+// Worker executes queued Operations with lease & lock heartbeat (10s/30s), monotonic Fencing Token,
+// Stack->Instance->Host sorted locking, rolling batches, scrubbed SSE task.log streaming,
+// notify handlers, Class-A LIFO rollback, --resume skip semantics, and post-run state persistence (D2 §2, G1 §6).
 type Worker struct {
 	workerID    string
 	store       ports.Store
@@ -49,6 +58,7 @@ type Worker struct {
 	osEngine    *osadapter.Engine
 	tasks       *TaskRegistry
 	hostResolve HostResolver
+	notifier    NotifyFunc
 	logger      *slog.Logger
 
 	leaseTTL       time.Duration
@@ -73,6 +83,10 @@ func WithLeaseTiming(ttl, heartbeat time.Duration) WorkerOption {
 
 func WithHostResolver(fn HostResolver) WorkerOption {
 	return func(w *Worker) { w.hostResolve = fn }
+}
+
+func WithNotifier(fn NotifyFunc) WorkerOption {
+	return func(w *Worker) { w.notifier = fn }
 }
 
 func NewWorker(
@@ -159,13 +173,78 @@ func (w *Worker) RunClaimLoop(ctx context.Context) error {
 	}
 }
 
-// ExecuteClaimed runs an already-claimed Operation under lease renewal and Fencing Token enforcement.
+// opStateTracker accumulates per-file lastApplied SHAs and scrubbed file snapshots across hosts during an Operation.
+type opStateTracker struct {
+	mu           sync.Mutex
+	shas         map[string]string
+	scrubbedText map[string]string
+	dirty        bool
+}
+
+func newOpStateTracker(inst *domain.Instance) *opStateTracker {
+	tr := &opStateTracker{
+		shas:         map[string]string{},
+		scrubbedText: map[string]string{},
+	}
+	if inst == nil || len(inst.StateJSON) == 0 {
+		return tr
+	}
+	var st struct {
+		LastAppliedShas  map[string]string `json:"lastAppliedShas"`
+		LastAppliedFiles map[string]string `json:"lastAppliedFiles"`
+	}
+	if err := json.Unmarshal(inst.StateJSON, &st); err == nil {
+		for k, v := range st.LastAppliedFiles {
+			tr.scrubbedText[k] = v
+			sum := sha256.Sum256([]byte(v))
+			tr.shas[k] = hex.EncodeToString(sum[:])
+		}
+		for k, v := range st.LastAppliedShas {
+			tr.shas[k] = v
+		}
+	}
+	return tr
+}
+
+func (s *opStateTracker) snapshotSHAs() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make(map[string]string, len(s.shas))
+	for k, v := range s.shas {
+		cp[k] = v
+	}
+	return cp
+}
+
+func (s *opStateTracker) record(shas, rawContents map[string]string, secrets []string) {
+	if len(shas) == 0 && len(rawContents) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, v := range shas {
+		if s.shas[k] != v {
+			s.shas[k] = v
+			s.dirty = true
+		}
+	}
+	for k, v := range rawContents {
+		scrubbed := obs.RedactString(v, secrets...)
+		if s.scrubbedText[k] != scrubbed {
+			s.scrubbedText[k] = scrubbed
+			s.dirty = true
+		}
+	}
+}
+
+// ExecuteClaimed runs an already-claimed Operation under lease & lock renewal and Fencing Token enforcement.
 func (w *Worker) ExecuteClaimed(parentCtx context.Context, op *domain.Operation) error {
 	opCtx, cancelOp := context.WithCancel(parentCtx)
 	defer cancelOp()
 
-	// Lease heartbeat goroutine: if RenewLease returns false (another worker took over), IMMEDIATELY cancel opCtx!
+	// Lease + resource lock heartbeat goroutine: if RenewLease returns false (another worker took over), IMMEDIATELY cancel opCtx!
 	var leaseLost atomic.Bool
+	var locksHeld atomic.Bool
 	hbDone := make(chan struct{})
 	go func() { //nolint:gosec // G118: heartbeat intentionally uses detached context so final renew check does not fail on cancel race
 		defer close(hbDone)
@@ -182,6 +261,9 @@ func (w *Worker) ExecuteClaimed(parentCtx context.Context, op *domain.Operation)
 					cancelOp()
 					return
 				}
+				if w.locker != nil && locksHeld.Load() {
+					_ = w.locker.Renew(context.Background(), op.ID, op.FencingToken, w.leaseTTL*2)
+				}
 			}
 		}
 	}()
@@ -194,21 +276,60 @@ func (w *Worker) ExecuteClaimed(parentCtx context.Context, op *domain.Operation)
 		return err
 	}
 
+	// Load target Instance (when applicable) for Stack lock hierarchy & LastApplied 3-Way Diff baseline
+	var targetInst *domain.Instance
+	if op.TargetType == "instance" && w.store != nil {
+		if inst, gerr := w.store.Instances().Get(opCtx, op.TargetID); gerr == nil {
+			targetInst = inst
+		}
+	}
+	stateTrack := newOpStateTracker(targetInst)
+
+	// Pre-resolve phase host bindings once so we can acquire Stack -> Instance -> Host sorted locks BEFORE running any phase!
+	phaseBindings := make([][]HostExecBinding, len(pl.Phases))
+	defer func() {
+		for _, bs := range phaseBindings {
+			for i := range bs {
+				zeroBindingAuth(&bs[i])
+			}
+		}
+	}()
+	for i, ph := range pl.Phases {
+		bs, rerr := w.resolvePhaseHosts(opCtx, op, ph.Hosts)
+		if rerr != nil {
+			cancelOp()
+			<-hbDone
+			code := sdk.ErrorCode(rerr)
+			if code == "" {
+				code = sdk.CodeExecSSHFailed
+			}
+			_, _ = w.store.Operations().Finish(context.Background(), op.ID, w.workerID, op.FencingToken, domain.OpFailed, code, rerr.Error())
+			w.emit(context.Background(), op.ID, nil, "op.state", map[string]any{"state": domain.OpFailed, "errorCode": code, "detail": rerr.Error()})
+			return rerr
+		}
+		phaseBindings[i] = bs
+	}
+
 	w.emit(opCtx, op.ID, nil, "op.state", map[string]any{"state": domain.OpRunning, "fencingToken": op.FencingToken})
 
-	// Acquire Stack/Instance/Host locks if locker configured
+	// Acquire sorted Stack -> Instance -> Host locks (D2 §2.3)
 	var releaseLocks func(context.Context) error
 	if w.locker != nil {
-		keys := []ports.LockKey{{Kind: op.TargetType, ID: op.TargetID, Mode: "exclusive"}}
+		keys := buildSortedLockKeys(op, targetInst, phaseBindings)
 		rel, err := w.locker.AcquireAll(opCtx, op.ID, op.FencingToken, keys, w.leaseTTL*2)
 		if err != nil {
 			cancelOp()
 			<-hbDone
 			_, _ = w.store.Operations().Finish(context.Background(), op.ID, w.workerID, op.FencingToken, domain.OpFailed, sdk.ErrorCode(err), err.Error())
+			w.emit(context.Background(), op.ID, nil, "op.state", map[string]any{"state": domain.OpFailed, "errorCode": sdk.ErrorCode(err), "detail": err.Error()})
 			return err
 		}
+		locksHeld.Store(true)
 		releaseLocks = rel
-		defer func() { _ = releaseLocks(context.Background()) }()
+		defer func() {
+			locksHeld.Store(false)
+			_ = releaseLocks(context.Background())
+		}()
 	}
 
 	// Load prior TaskRuns to support --resume skipping already Succeeded/Skipped steps with unchanged digest!
@@ -230,7 +351,7 @@ func (w *Worker) ExecuteClaimed(parentCtx context.Context, op *domain.Operation)
 		}
 	}
 
-	runErr := w.runPipeline(opCtx, op, &pl, priorRuns, mediaPolicy)
+	runErr := w.runPipeline(opCtx, op, &pl, phaseBindings, priorRuns, mediaPolicy, stateTrack)
 
 	cancelOp()
 	<-hbDone
@@ -256,6 +377,9 @@ func (w *Worker) ExecuteClaimed(parentCtx context.Context, op *domain.Operation)
 		errMsg = runErr.Error()
 	}
 
+	// Persist Instance/Host convergence state & 3-Way Diff file baseline snapshots
+	w.persistOutcome(context.Background(), op, finalState, stateTrack)
+
 	_, _ = w.store.Operations().Finish(context.Background(), op.ID, w.workerID, op.FencingToken, finalState, errCode, errMsg)
 	w.emit(context.Background(), op.ID, nil, "op.state", map[string]any{"state": finalState, "errorCode": errCode})
 	if w.audit != nil {
@@ -269,21 +393,186 @@ func (w *Worker) ExecuteClaimed(parentCtx context.Context, op *domain.Operation)
 			Result: res, ErrCode: errCode, PayloadJSON: fmt.Sprintf(`{"operationId":%q,"action":%q}`, op.ID, op.Action),
 		})
 	}
+	if finalState == domain.OpFailed && w.notifier != nil {
+		w.notifier(
+			context.Background(),
+			op.ProjectID,
+			"operation.failed",
+			"critical",
+			fmt.Sprintf("op.failed:%s:%s", op.TargetType, op.TargetID),
+			fmt.Sprintf("Operation %s (%s on %s/%s) failed [%s]: %s", op.ID, op.Action, op.TargetType, op.TargetID, errCode, errMsg),
+		)
+	}
 	return runErr
 }
 
-func (w *Worker) runPipeline(ctx context.Context, op *domain.Operation, pl *sdk.Pipeline, prior map[string]domain.TaskRun, mp domain.MediaPolicy) error {
+func (w *Worker) persistOutcome(ctx context.Context, op *domain.Operation, finalState domain.OpState, stateTrack *opStateTracker) {
+	if w.store == nil {
+		return
+	}
+	switch op.TargetType {
+	case "instance":
+		inst, err := w.store.Instances().Get(ctx, op.TargetID)
+		if err != nil || inst == nil {
+			return
+		}
+		stateMap := map[string]any{}
+		if len(inst.StateJSON) > 0 {
+			_ = json.Unmarshal(inst.StateJSON, &stateMap)
+		}
+		stateTrack.mu.Lock()
+		if stateTrack.dirty || len(stateTrack.shas) > 0 {
+			stateMap["lastAppliedShas"] = stateTrack.shas
+			if len(stateTrack.scrubbedText) > 0 {
+				stateMap["lastAppliedFiles"] = stateTrack.scrubbedText
+			}
+		}
+		stateTrack.mu.Unlock()
+		stateMap["lastOperationId"] = op.ID
+		stateMap["lastOperationAction"] = op.Action
+		stateMap["lastOperationState"] = string(finalState)
+		if b, merr := json.Marshal(stateMap); merr == nil {
+			inst.StateJSON = b
+		}
+		switch finalState {
+		case domain.OpSucceeded:
+			if op.Action == "uninstall" {
+				inst.State = "uninstalled"
+				_ = w.store.Instances().ReplaceClaims(ctx, inst.ID, nil)
+			} else {
+				inst.State = "ready"
+				if len(inst.DesiredSpecJSON) > 0 {
+					inst.LastAppliedJSON = append([]byte(nil), inst.DesiredSpecJSON...)
+				}
+			}
+		case domain.OpFailed:
+			inst.State = "failed"
+		}
+		_ = w.store.Instances().Update(ctx, inst)
+
+	case "host":
+		if op.Action == "hostinit" && finalState == domain.OpSucceeded {
+			if h, err := w.store.Hosts().Get(ctx, op.TargetID); err == nil && h != nil {
+				h.State = domain.HostReady
+				_ = w.store.Hosts().Update(ctx, h)
+			}
+		}
+	}
+}
+
+func buildSortedLockKeys(op *domain.Operation, inst *domain.Instance, phaseBindings [][]HostExecBinding) []ports.LockKey {
+	seen := map[string]ports.LockKey{}
+	add := func(kind, id, mode string) {
+		if kind == "" || id == "" || id == "local" {
+			return
+		}
+		k := kind + ":" + id
+		if cur, ok := seen[k]; ok {
+			if mode == "exclusive" && cur.Mode != "exclusive" {
+				cur.Mode = "exclusive"
+				seen[k] = cur
+			}
+			return
+		}
+		seen[k] = ports.LockKey{Kind: kind, ID: id, Mode: mode}
+	}
+
+	if inst != nil && inst.StackID != nil && *inst.StackID != "" {
+		add("stack", *inst.StackID, "shared")
+	}
+	add(op.TargetType, op.TargetID, "exclusive")
+	for _, bs := range phaseBindings {
+		for _, hb := range bs {
+			add("host", hb.View.ID, "exclusive")
+		}
+	}
+
+	rank := func(kind string) int {
+		switch kind {
+		case "stack":
+			return 0
+		case "instance":
+			return 1
+		case "host":
+			return 2
+		default:
+			return 3
+		}
+	}
+	keys := make([]ports.LockKey, 0, len(seen))
+	for _, lk := range seen {
+		keys = append(keys, lk)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		ri, rj := rank(keys[i].Kind), rank(keys[j].Kind)
+		if ri != rj {
+			return ri < rj
+		}
+		return keys[i].ID < keys[j].ID
+	})
+	return keys
+}
+
+func zeroBindingAuth(hb *HostExecBinding) {
+	if hb == nil {
+		return
+	}
+	hb.Target.Auth.Zero()
+	for i := range hb.Target.Jumps {
+		hb.Target.Jumps[i].Auth.Zero()
+	}
+}
+
+func (w *Worker) runPipeline(
+	ctx context.Context,
+	op *domain.Operation,
+	pl *sdk.Pipeline,
+	phaseBindings [][]HostExecBinding,
+	prior map[string]domain.TaskRun,
+	mp domain.MediaPolicy,
+	stateTrack *opStateTracker,
+) error {
 	for phaseIdx, phase := range pl.Phases {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		bindings, err := w.resolvePhaseHosts(ctx, op, phase.Hosts)
-		if err != nil {
-			return err
+		var bindings []HostExecBinding
+		if phaseIdx < len(phaseBindings) {
+			bindings = phaseBindings[phaseIdx]
 		}
 		if len(bindings) == 0 {
 			// Hostless phase (e.g. local helm/wait) runs once against default local target
 			bindings = []HostExecBinding{{View: sdk.HostView{ID: "local", Name: "local"}}}
+		}
+
+		// Rolling wave execution (P1 worker upgrade, D2 §2.2)
+		if phase.Rolling != nil && phase.Rolling.MaxUnavailable > 0 {
+			batchSize := phase.Rolling.MaxUnavailable
+			for start := 0; start < len(bindings); start += batchSize {
+				end := start + batchSize
+				if end > len(bindings) {
+					end = len(bindings)
+				}
+				wave := bindings[start:end]
+				eg, egCtx := errgroup.WithContext(ctx)
+				for _, hb := range wave {
+					binding := hb
+					eg.Go(func() error {
+						return w.runPhaseOnHost(egCtx, op, phaseIdx, phase, binding, prior, mp, stateTrack)
+					})
+				}
+				if err := eg.Wait(); err != nil {
+					return err
+				}
+				if end < len(bindings) && phase.Rolling.PauseBetween > 0 {
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(phase.Rolling.PauseBetween):
+					}
+				}
+			}
+			continue
 		}
 
 		conc := phase.Concurrency
@@ -300,7 +589,7 @@ func (w *Worker) runPipeline(ctx context.Context, op *domain.Operation, pl *sdk.
 			}
 			eg.Go(func() error {
 				defer sem.Release(1)
-				return w.runPhaseOnHost(egCtx, op, phaseIdx, phase, binding, prior, mp)
+				return w.runPhaseOnHost(egCtx, op, phaseIdx, phase, binding, prior, mp, stateTrack)
 			})
 		}
 		if err := eg.Wait(); err != nil {
@@ -308,6 +597,54 @@ func (w *Worker) runPipeline(ctx context.Context, op *domain.Operation, pl *sdk.
 		}
 	}
 	return nil
+}
+
+type appliedStep struct {
+	impl    Task
+	spec    sdk.TaskSpec
+	res     ApplyResult
+	stepKey string
+}
+
+// sseLineWriter splits incoming stream chunks into lines and emits task.log SSE events.
+type sseLineWriter struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	emitted bool
+	emitFn  func(line string)
+}
+
+func (l *sseLineWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.buf.Write(p)
+	for {
+		data := l.buf.Bytes()
+		idx := bytes.IndexByte(data, '\n')
+		if idx < 0 {
+			break
+		}
+		line := strings.TrimRight(string(data[:idx]), "\r")
+		l.buf.Next(idx + 1)
+		if line != "" {
+			l.emitted = true
+			l.emitFn(line)
+		}
+	}
+	return len(p), nil
+}
+
+func (l *sseLineWriter) Flush() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.buf.Len() > 0 {
+		line := strings.TrimRight(l.buf.String(), "\r\n")
+		l.buf.Reset()
+		if line != "" {
+			l.emitted = true
+			l.emitFn(line)
+		}
+	}
 }
 
 func (w *Worker) runPhaseOnHost(
@@ -318,8 +655,10 @@ func (w *Worker) runPhaseOnHost(
 	binding HostExecBinding,
 	prior map[string]domain.TaskRun,
 	mp domain.MediaPolicy,
+	stateTrack *opStateTracker,
 ) error {
 	sess, err := w.executor.Connect(ctx, binding.Target)
+	zeroBindingAuth(&binding)
 	if err != nil {
 		return err
 	}
@@ -337,39 +676,113 @@ func (w *Worker) runPhaseOnHost(
 
 	var secretsMu sync.Mutex
 	var dynamicSecrets []string
+	var activeOutRW, activeErrRW *obs.RedactWriter
+
+	var notifyMu sync.Mutex
+	var notifiedHandlers []string
+	notifiedSeen := map[string]bool{}
+
 	rc := &RunContext{
-		OpID:        op.ID,
-		PhaseName:   phase.Name,
-		Host:        binding.View,
-		Session:     sess,
-		OS:          adapter,
-		Render:      w.render,
-		Eval:        w.eval,
-		Secrets:     w.secrets,
-		Media:       w.media,
-		MediaPolicy: mp,
-		PKI:         w.pki,
-		Logger:      w.logger,
-		LastApplied: make(map[string]string),
+		OpID:               op.ID,
+		PhaseName:          phase.Name,
+		Host:               binding.View,
+		Session:            sess,
+		OS:                 adapter,
+		Render:             w.render,
+		Eval:               w.eval,
+		Secrets:            w.secrets,
+		Media:              w.media,
+		MediaPolicy:        mp,
+		PKI:                w.pki,
+		Logger:             w.logger,
+		LastApplied:        stateTrack.snapshotSHAs(),
+		LastAppliedContent: make(map[string]string),
+		Notify: func(handler string) {
+			handler = strings.TrimSpace(handler)
+			if handler == "" {
+				return
+			}
+			notifyMu.Lock()
+			if !notifiedSeen[handler] {
+				notifiedSeen[handler] = true
+				notifiedHandlers = append(notifiedHandlers, handler)
+			}
+			notifyMu.Unlock()
+		},
 		RegisterSecret: func(raw string) {
+			if len(raw) < 3 {
+				return
+			}
 			secretsMu.Lock()
 			dynamicSecrets = append(dynamicSecrets, raw)
+			if activeOutRW != nil {
+				activeOutRW.RegisterSecret(raw)
+			}
+			if activeErrRW != nil {
+				activeErrRW.RegisterSecret(raw)
+			}
 			secretsMu.Unlock()
 		},
 	}
 
+	var appliedSteps []appliedStep
+	rollbackApplied := func() {
+		if len(appliedSteps) == 0 {
+			return
+		}
+		rbCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		for i := len(appliedSteps) - 1; i >= 0; i-- {
+			step := appliedSteps[i]
+			rberr := step.impl.Rollback(rbCtx, rc, step.spec, step.res)
+			payload := map[string]any{
+				"phase":   phase.Name,
+				"step":    step.stepKey,
+				"stepKey": step.stepKey,
+				"host":    binding.View.Name,
+				"status":  "rolled_back",
+			}
+			if rberr != nil {
+				payload["status"] = "rollback_failed"
+				payload["error"] = rberr.Error()
+			}
+			w.emit(rbCtx, op.ID, nil, "task.rollback", payload)
+		}
+	}
+
+	defer func() {
+		secretsMu.Lock()
+		secs := append([]string(nil), dynamicSecrets...)
+		secretsMu.Unlock()
+		stateTrack.record(rc.LastApplied, rc.LastAppliedContent, secs)
+	}()
+
 	for tIdx, tSpec := range phase.Tasks {
-		stepKey := tSpec.Key
-		if stepKey == "" {
-			stepKey = fmt.Sprintf("%s:%d:%s", binding.View.ID, tIdx, tSpec.Type)
+		baseKey := tSpec.Key
+		if baseKey == "" {
+			baseKey = fmt.Sprintf("%d:%s", tIdx, tSpec.Type)
+		}
+		stepKey := baseKey
+		if binding.View.ID != "" && binding.View.ID != "local" {
+			stepKey = binding.View.ID + ":" + baseKey
 		}
 		digest := paramsDigest(tSpec)
 
-		// --resume skip check: skip TaskRun that already succeeded/skipped with identical ParamsDigest
+		// --resume skip check: skip TaskRun that already succeeded/skipped with identical ParamsDigest;
+		// on retry of a prior failed/interrupted step, reuse its TaskRun ID and increment Attempt so Upsert+UpdateWithFencing stay consistent!
+		trID := domain.NewID(domain.PrefixTaskRun)
+		attempt := 1
 		if prev, ok := prior[fmt.Sprintf("%d|%s", phaseIdx, stepKey)]; ok {
 			if (prev.State == domain.TaskSucceeded || prev.State == domain.TaskSkipped) && prev.ParamsDigest == digest {
-				w.emit(ctx, op.ID, &prev.ID, "task.state", map[string]any{"stepKey": stepKey, "state": domain.TaskSkipped, "resumed": true})
+				w.emit(ctx, op.ID, &prev.ID, "task.state", map[string]any{
+					"phase": phase.Name, "step": stepKey, "stepKey": stepKey,
+					"host": binding.View.Name, "state": domain.TaskSkipped, "resumed": true,
+				})
 				continue
+			}
+			if prev.ID != "" {
+				trID = prev.ID
+				attempt = prev.Attempt + 1
 			}
 		}
 
@@ -377,6 +790,7 @@ func (w *Worker) runPhaseOnHost(
 		if tSpec.When != "" && w.eval != nil {
 			pass, werr := w.eval.EvalBool(tSpec.When, map[string]any{"host": binding.View, "facts": binding.View.Facts})
 			if werr != nil {
+				rollbackApplied()
 				return werr
 			}
 			if !pass {
@@ -386,6 +800,7 @@ func (w *Worker) runPhaseOnHost(
 
 		impl, err := w.tasks.Get(tSpec.Type)
 		if err != nil {
+			rollbackApplied()
 			return err
 		}
 
@@ -396,7 +811,7 @@ func (w *Worker) runPhaseOnHost(
 			hostIDPtr = &id
 		}
 		tr := &domain.TaskRun{
-			ID:           domain.NewID(domain.PrefixTaskRun),
+			ID:           trID,
 			OperationID:  op.ID,
 			PhaseIdx:     phaseIdx,
 			StepKey:      stepKey,
@@ -404,22 +819,73 @@ func (w *Worker) runPhaseOnHost(
 			TaskType:     tSpec.Type,
 			ParamsDigest: digest,
 			State:        domain.TaskRunning,
-			Attempt:      1,
+			Attempt:      attempt,
 			FencingToken: op.FencingToken,
 			StartedAt:    &now,
 		}
 		rc.TaskRunID = tr.ID
 		if err := w.store.TaskRuns().Upsert(ctx, tr); err != nil {
+			rollbackApplied()
 			return err
 		}
-		w.emit(ctx, op.ID, &tr.ID, "task.state", map[string]any{"stepKey": stepKey, "taskType": tSpec.Type, "host": binding.View.Name, "state": domain.TaskRunning})
+		w.emit(ctx, op.ID, &tr.ID, "task.state", map[string]any{
+			"phase": phase.Name, "step": stepKey, "stepKey": stepKey,
+			"taskType": tSpec.Type, "host": binding.View.Name, "state": domain.TaskRunning,
+		})
+
+		// Wire scrubbed live stdout/stderr SSE streams for this task
+		outLines := &sseLineWriter{emitFn: func(line string) {
+			w.emit(ctx, op.ID, &tr.ID, "task.log", map[string]any{
+				"phase": phase.Name, "step": stepKey, "host": binding.View.Name, "stream": "stdout", "line": line,
+			})
+		}}
+		errLines := &sseLineWriter{emitFn: func(line string) {
+			w.emit(ctx, op.ID, &tr.ID, "task.log", map[string]any{
+				"phase": phase.Name, "step": stepKey, "host": binding.View.Name, "stream": "stderr", "line": line,
+			})
+		}}
+		secretsMu.Lock()
+		outRW := obs.NewRedactWriter(outLines, dynamicSecrets...)
+		errRW := obs.NewRedactWriter(errLines, dynamicSecrets...)
+		activeOutRW = outRW
+		activeErrRW = errRW
+		secretsMu.Unlock()
+		rc.LogStdout = outRW
+		rc.LogStderr = errRW
+
+		flushTaskLogs := func(fallbackOutput string) {
+			_ = outRW.Close()
+			_ = errRW.Close()
+			outLines.Flush()
+			errLines.Flush()
+			secretsMu.Lock()
+			activeOutRW = nil
+			activeErrRW = nil
+			secs := append([]string(nil), dynamicSecrets...)
+			secretsMu.Unlock()
+			rc.LogStdout = nil
+			rc.LogStderr = nil
+			if fallbackOutput != "" && !outLines.emitted {
+				scrubbed := obs.RedactString(fallbackOutput, secs...)
+				for _, ln := range strings.Split(strings.TrimRight(scrubbed, "\n"), "\n") {
+					if strings.TrimSpace(ln) != "" {
+						w.emit(ctx, op.ID, &tr.ID, "task.log", map[string]any{
+							"phase": phase.Name, "step": stepKey, "host": binding.View.Name, "stream": "stdout", "line": ln,
+						})
+					}
+				}
+			}
+		}
 
 		// 1. Idempotent Check() first!
 		chk, err := impl.Check(ctx, rc, tSpec)
 		if err != nil {
-			return w.failTaskRun(ctx, tr, err)
+			flushTaskLogs("")
+			rollbackApplied()
+			return w.failTaskRun(ctx, phase.Name, binding.View.Name, tr, err)
 		}
 		if chk.Converged {
+			flushTaskLogs("")
 			fin := time.Now().UTC()
 			tr.State = domain.TaskSkipped
 			tr.FinishedAt = &fin
@@ -430,15 +896,24 @@ func (w *Worker) runPhaseOnHost(
 			if !ok {
 				return sdk.NewError(sdk.CodeEngLeaseLost, "ENG", http.StatusInternalServerError, sdk.CodeEngLeaseLost, true, fmt.Errorf("stale fencing token on task %s", tr.ID))
 			}
-			w.emit(ctx, op.ID, &tr.ID, "task.state", map[string]any{"stepKey": stepKey, "state": domain.TaskSkipped, "summary": chk.Summary})
+			w.emit(ctx, op.ID, &tr.ID, "task.state", map[string]any{
+				"phase": phase.Name, "step": stepKey, "stepKey": stepKey,
+				"host": binding.View.Name, "state": domain.TaskSkipped, "summary": chk.Summary,
+			})
 			continue
 		}
 
 		// 2. Apply()
 		res, err := impl.Apply(ctx, rc, tSpec)
+		flushTaskLogs(res.Output)
 		if err != nil {
-			return w.failTaskRun(ctx, tr, err)
+			rollbackApplied()
+			return w.failTaskRun(ctx, phase.Name, binding.View.Name, tr, err)
 		}
+		if res.Changed {
+			appliedSteps = append(appliedSteps, appliedStep{impl: impl, spec: tSpec, res: res, stepKey: stepKey})
+		}
+
 		fin := time.Now().UTC()
 		tr.State = domain.TaskSucceeded
 		tr.FinishedAt = &fin
@@ -452,12 +927,32 @@ func (w *Worker) runPhaseOnHost(
 		if !ok {
 			return sdk.NewError(sdk.CodeEngLeaseLost, "ENG", http.StatusInternalServerError, sdk.CodeEngLeaseLost, true, fmt.Errorf("stale fencing token on task %s", tr.ID))
 		}
-		w.emit(ctx, op.ID, &tr.ID, "task.state", map[string]any{"stepKey": stepKey, "state": domain.TaskSucceeded})
+		w.emit(ctx, op.ID, &tr.ID, "task.state", map[string]any{
+			"phase": phase.Name, "step": stepKey, "stepKey": stepKey,
+			"host": binding.View.Name, "state": domain.TaskSucceeded,
+		})
+	}
+
+	// 3. Execute deduplicated Notify handlers triggered during this phase (e.g. systemd reload/restart)
+	for _, handler := range notifiedHandlers {
+		var cmdStr string
+		if adapter != nil {
+			cmdStr = adapter.ServiceCmd(ports.ServiceReload, handler)
+		} else {
+			cmdStr = fmt.Sprintf("systemctl reload-or-restart %s", shellescape.Quote(handler))
+		}
+		w.emit(ctx, op.ID, nil, "task.log", map[string]any{
+			"phase": phase.Name, "step": "notify:" + handler, "host": binding.View.Name,
+			"stream": "stdout", "line": "executing notify handler: " + cmdStr,
+		})
+		if _, nerr := sess.Run(ctx, ports.Command{Script: cmdStr, Sudo: true}); nerr != nil {
+			return fmt.Errorf("notify handler %q failed: %w", handler, nerr)
+		}
 	}
 	return nil
 }
 
-func (w *Worker) failTaskRun(ctx context.Context, tr *domain.TaskRun, err error) error {
+func (w *Worker) failTaskRun(_ context.Context, phaseName, hostName string, tr *domain.TaskRun, err error) error {
 	fin := time.Now().UTC()
 	tr.State = domain.TaskFailed
 	tr.FinishedAt = &fin
@@ -469,7 +964,10 @@ func (w *Worker) failTaskRun(ctx context.Context, tr *domain.TaskRun, err error)
 	tr.ErrorCode = &code
 	tr.ErrorDetail = &detail
 	_, _ = w.store.TaskRuns().UpdateWithFencing(context.Background(), tr, w.workerID)
-	w.emit(context.Background(), tr.OperationID, &tr.ID, "task.state", map[string]any{"stepKey": tr.StepKey, "state": domain.TaskFailed, "errorCode": code, "detail": detail})
+	w.emit(context.Background(), tr.OperationID, &tr.ID, "task.state", map[string]any{
+		"phase": phaseName, "step": tr.StepKey, "stepKey": tr.StepKey, "host": hostName,
+		"state": domain.TaskFailed, "errorCode": code, "detail": detail,
+	})
 	return err
 }
 
@@ -497,8 +995,10 @@ func paramsDigest(spec sdk.TaskSpec) string {
 	b, _ := json.Marshal(struct {
 		Type       string
 		Params     map[string]any
+		Template   *sdk.TemplateRef
+		Vars       map[string]any
 		ManageMode sdk.ManageMode
-	}{spec.Type, spec.Params, spec.ManageMode})
+	}{spec.Type, spec.Params, spec.Template, spec.Vars, spec.ManageMode})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }

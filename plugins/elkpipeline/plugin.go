@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	sdk "github.com/kinstall/kinstall/pkg/sdk/v1alpha1"
@@ -99,7 +100,7 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 				"topicPartitions":    map[string]any{"type": "integer", "default": 24, "minimum": 1, "maximum": 256, "x-kinstall-ui": map[string]any{"group": "network", "order": 3, "label": "Kafka Topic 分区数（需 ≥ 总线程数）"}},
 				"acknowledgments":    map[string]any{"type": "boolean", "default": true, "x-kinstall-ui": map[string]any{"group": "security", "order": 4, "label": "端到端 ACK 防丢日志 (P3 §3.3)"}},
 				"dlqBucket":          map[string]any{"type": "string", "default": "logging-dlq", "x-kinstall-ui": map[string]any{"group": "storage", "order": 5, "label": "S3/OBS 死信队列 (DLQ) 桶名"}},
-				"fluentBitMemMaxMB":  map[string]any{"type": "integer", "default": 256, "minimum": 64, "maximum": 2048, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 6, "label": "Fluent Bit 内存硬限 (MiB)"}},
+				"fluentBitMemMaxMB":  map[string]any{"type": "integer", "default": 512, "minimum": 64, "maximum": 2048, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 6, "label": "Fluent Bit 内存硬限 (MiB)"}},
 				"fluentBitDiskBufGB": map[string]any{"type": "integer", "default": 5, "minimum": 1, "maximum": 50, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 7, "label": "Fluent Bit 磁盘缓冲 (GiB)"}},
 			},
 		},
@@ -122,17 +123,47 @@ func (p *Plugin) Validate(_ context.Context, req *sdk.ValidateRequest) (*sdk.Val
 			rep.Block(sdk.CodeAPIInvalidRequest, err.Error())
 		}
 	}
+	if req.CheckClaims != nil && req.Instance.DeployTarget != sdk.TargetKubernetes {
+		hc := elkHostClaims(req.Instance.Name)
+		for _, h := range req.Hosts {
+			if err := req.CheckClaims(h.ID, hc); err != nil {
+				rep.BlockHost(h.ID, sdk.CodeHostClaimConflict, err.Error())
+			}
+		}
+	}
 	return rep, nil
+}
+
+func elkHostClaims(instName string) sdk.HostRoleClaims {
+	return sdk.HostRoleClaims{
+		Dirs: []string{"/etc/kinstall/dataprepper/" + instName},
+	}
 }
 
 func (p *Plugin) Plan(ctx context.Context, req *sdk.PlanRequest) (*sdk.PlanResult, error) {
 	spec := parseSpec(req.Instance.Spec)
-	pl, err := p.buildInstall(ctx, &sdk.OpRequest{Instance: req.Instance, Hosts: req.Hosts})
+	opName := req.Operation
+	if opName == "" {
+		opName = "install"
+	}
+	op, ok := p.Operation(opName)
+	if !ok {
+		return nil, sdk.NewError(sdk.CodeAPIInvalidRequest, "ELK", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, fmt.Errorf("unknown op %q", opName))
+	}
+	pl, err := op.Build(ctx, &sdk.OpRequest{Instance: req.Instance, Hosts: req.Hosts, BOM: req.BOM})
 	if err != nil {
 		return nil, err
 	}
+	claims := make(map[string]sdk.HostRoleClaims, len(req.Hosts))
+	if req.Instance.DeployTarget != sdk.TargetKubernetes {
+		hc := elkHostClaims(req.Instance.Name)
+		for _, h := range req.Hosts {
+			claims[h.ID] = hc
+		}
+	}
 	return &sdk.PlanResult{
-		Summary:  fmt.Sprintf("ELK Pipeline (%s %s, %d nodes x %d workers, DLQ=%s)", spec.Engine, req.Instance.ProductVersion, len(req.Hosts), spec.WorkersPerNode, spec.DLQBucket),
+		Summary:  fmt.Sprintf("ELK Pipeline (%s / %s %s, %d nodes x %d workers, DLQ=%s)", opName, spec.Engine, req.Instance.ProductVersion, len(req.Hosts), spec.WorkersPerNode, spec.DLQBucket),
+		Claims:   claims,
 		Pipeline: pl,
 		Outputs:  map[string]any{"dlqBucket": spec.DLQBucket, "pipelineHealth": "ready"},
 	}, nil

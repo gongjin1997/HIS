@@ -93,7 +93,7 @@ type TaskSpec struct {
 	Key         string         `json:"key,omitempty" yaml:"key,omitempty"`
 	Type        string         `json:"type" yaml:"type"`
 	Params      map[string]any `json:"params,omitempty" yaml:"params,omitempty"`
-	Template    *TemplateRef   `json:"-" yaml:"-"`
+	Template    *TemplateRef   `json:"template,omitempty" yaml:"template,omitempty"`
 	Vars        map[string]any `json:"vars,omitempty" yaml:"vars,omitempty"`
 	When        string         `json:"when,omitempty" yaml:"when,omitempty"`
 	Async       bool           `json:"async,omitempty" yaml:"async,omitempty"`

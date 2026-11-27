@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
 	"strings"
 	"time"
 
@@ -152,12 +153,39 @@ func (p *Plugin) Validate(_ context.Context, req *sdk.ValidateRequest) (*sdk.Val
 			}
 		}
 	}
+	if req.CheckClaims != nil && req.Instance.DeployTarget != sdk.TargetKubernetes {
+		hc := mysqlHostClaims(spec, req.Instance.Name)
+		for _, h := range req.Hosts {
+			if err := req.CheckClaims(h.ID, hc); err != nil {
+				rep.BlockHost(h.ID, sdk.CodeHostClaimConflict, err.Error())
+			}
+		}
+	}
 	return rep, nil
+}
+
+func mysqlHostClaims(spec Spec, instName string) sdk.HostRoleClaims {
+	return sdk.HostRoleClaims{
+		Ports: []sdk.PortClaim{
+			{Port: spec.Port, Proto: "tcp"},
+			{Port: spec.RouterRWPort, Proto: "tcp"},
+			{Port: spec.RouterROPort, Proto: "tcp"},
+		},
+		Dirs: []string{"/data/mysql/" + instName},
+	}
 }
 
 func (p *Plugin) Plan(ctx context.Context, req *sdk.PlanRequest) (*sdk.PlanResult, error) {
 	spec := parseSpec(req.Instance.Spec)
-	pl, err := p.buildInstall(ctx, &sdk.OpRequest{Instance: req.Instance, Hosts: req.Hosts})
+	opName := req.Operation
+	if opName == "" {
+		opName = "install"
+	}
+	op, ok := p.Operation(opName)
+	if !ok {
+		return nil, sdk.NewError(sdk.CodeAPIInvalidRequest, "MYSQL", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, fmt.Errorf("unknown op %q", opName))
+	}
+	pl, err := op.Build(ctx, &sdk.OpRequest{Instance: req.Instance, Hosts: req.Hosts, BOM: req.BOM})
 	if err != nil {
 		return nil, err
 	}
@@ -165,12 +193,20 @@ func (p *Plugin) Plan(ctx context.Context, req *sdk.PlanRequest) (*sdk.PlanResul
 	if len(req.Hosts) > 0 && req.Hosts[0].Address != "" {
 		host = req.Hosts[0].Address
 	}
+	claims := make(map[string]sdk.HostRoleClaims, len(req.Hosts))
+	if req.Instance.DeployTarget != sdk.TargetKubernetes {
+		hc := mysqlHostClaims(spec, req.Instance.Name)
+		for _, h := range req.Hosts {
+			claims[h.ID] = hc
+		}
+	}
 	dbs := map[string]any{}
 	for _, d := range spec.BootstrapDatabases {
 		dbs[d.Name] = map[string]any{"user": d.User, "dsnSecretRef": d.CredentialRef}
 	}
 	return &sdk.PlanResult{
-		Summary:  fmt.Sprintf("MySQL %s InnoDB Cluster MGR (%s)", req.Instance.ProductVersion, req.Instance.DeployTarget),
+		Summary:  fmt.Sprintf("MySQL %s (%s / InnoDB Cluster MGR %s)", req.Instance.ProductVersion, opName, req.Instance.DeployTarget),
+		Claims:   claims,
 		Pipeline: pl,
 		Outputs: map[string]any{
 			"rwEndpoint": fmt.Sprintf("%s:%d", host, spec.RouterRWPort),

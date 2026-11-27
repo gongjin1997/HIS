@@ -66,6 +66,15 @@ func NewFacade(
 	var disp *notify.Dispatcher
 	if st != nil {
 		disp = notify.NewDispatcher(st.Notifications(), 5*time.Minute)
+		if sec != nil {
+			disp.WithSecretResolver(func(ctx context.Context, credID string) ([]byte, error) {
+				c, err := st.Credentials().Get(ctx, credID)
+				if err != nil {
+					return nil, err
+				}
+				return sec.Decrypt(ctx, "credentials", c.ID, c.KeyVersion, c.EnvelopeJSON)
+			})
+		}
 	}
 	return &Facade{
 		store:     st,
@@ -193,19 +202,12 @@ func (f *Facade) ProbeHostFacts(ctx context.Context, actor domain.Actor, project
 	if f.exec == nil {
 		return nil, fmt.Errorf("executor unavailable")
 	}
-	sess, err := f.exec.Connect(ctx, ports.Target{
-		HostID:      h.ID,
-		Addr:        h.Address,
-		Port:        h.SSHPort,
-		User:        h.SSHUser,
-		HostKeyMode: ports.HostKeyMode(h.HostKeyMode),
-		HostKeyFP:   h.HostKeyFP,
-		LegacyRSA:   h.LegacyRSA,
-		WorkDir:     h.WorkDir,
-		OnHostKeyTOFU: func(tctx context.Context, hid, fp string) error {
-			return f.store.Hosts().UpdateHostKey(tctx, hid, fp)
-		},
-	})
+	target, err := BuildHostTarget(ctx, f.store, f.secrets, h)
+	if err != nil {
+		return nil, err
+	}
+	sess, err := f.exec.Connect(ctx, target)
+	ZeroTargetAuth(&target)
 	if err != nil {
 		return nil, err
 	}
@@ -333,6 +335,19 @@ func (f *Facade) GetInstance(ctx context.Context, actor domain.Actor, projectID,
 
 // PlanInstance runs plugin Validate + Claims collision check + Operation.Build and stores an immutable Plan snapshot (24h TTL).
 func (f *Facade) PlanInstance(ctx context.Context, actor domain.Actor, projectID, instID, action string, hostRoles map[string][]string, bom sdk.BOMView) (*domain.Plan, *sdk.ValidationReport, error) {
+	return f.PlanInstanceWithParams(ctx, actor, projectID, instID, action, hostRoles, nil, bom)
+}
+
+// PlanInstanceWithParams runs plugin Validate + Claims collision check + real template 3-Way Diff + Operation.Build,
+// supporting optional per-operation parameter overrides (e.g. PITR targetTime, upgrade targetVersion).
+func (f *Facade) PlanInstanceWithParams(
+	ctx context.Context,
+	actor domain.Actor,
+	projectID, instID, action string,
+	hostRoles map[string][]string,
+	opParams map[string]any,
+	bom sdk.BOMView,
+) (*domain.Plan, *sdk.ValidationReport, error) {
 	if err := authz.Authorize(actor, projectID, "instance.apply"); err != nil {
 		return nil, nil, err
 	}
@@ -354,12 +369,43 @@ func (f *Facade) PlanInstance(ctx context.Context, actor domain.Actor, projectID
 	}
 	hostByID := make(map[string]domain.Host, len(allHosts))
 	var views []sdk.HostView
+	// Honor explicit hostRoles, or fallback to desiredSpec.targetHosts, or all project hosts
+	effectiveRoles := hostRoles
+	if len(effectiveRoles) == 0 {
+		preferredIDs, specRoles := extractInstanceHostHints(inst)
+		if len(specRoles) > 0 {
+			effectiveRoles = specRoles
+		} else if len(preferredIDs) > 0 {
+			effectiveRoles = make(map[string][]string, len(preferredIDs))
+			for _, id := range preferredIDs {
+				effectiveRoles[id] = nil
+			}
+		}
+	}
 	for _, h := range allHosts {
 		hostByID[h.ID] = h
-		if len(hostRoles) == 0 {
+		if len(effectiveRoles) == 0 {
 			views = append(views, h.ToHostView(nil))
-		} else if roles, ok := hostRoles[h.ID]; ok {
+		} else if roles, ok := effectiveRoles[h.ID]; ok {
 			views = append(views, h.ToHostView(roles))
+		} else if roles, ok := effectiveRoles[h.Name]; ok {
+			views = append(views, h.ToHostView(roles))
+		}
+	}
+
+	instView := inst.ToInstanceView()
+	if len(opParams) > 0 {
+		merged := map[string]any{}
+		if len(instView.Spec) > 0 {
+			_ = json.Unmarshal(instView.Spec, &merged)
+		}
+		for k, v := range opParams {
+			if v != nil && fmt.Sprint(v) != "" {
+				merged[k] = v
+			}
+		}
+		if b, merr := json.Marshal(merged); merr == nil {
+			instView.Spec = b
 		}
 	}
 
@@ -376,7 +422,7 @@ func (f *Facade) PlanInstance(ctx context.Context, actor domain.Actor, projectID
 	}
 
 	valRep, err := comp.Validate(ctx, &sdk.ValidateRequest{
-		Instance:    inst.ToInstanceView(),
+		Instance:    instView,
 		Hosts:       views,
 		BOM:         bom,
 		CheckClaims: claimsChecker,
@@ -390,7 +436,7 @@ func (f *Facade) PlanInstance(ctx context.Context, actor domain.Actor, projectID
 	}
 
 	planRes, err := comp.Plan(ctx, &sdk.PlanRequest{
-		Instance:    inst.ToInstanceView(),
+		Instance:    instView,
 		Hosts:       views,
 		BOM:         bom,
 		Operation:   action,
@@ -402,7 +448,7 @@ func (f *Facade) PlanInstance(ctx context.Context, actor domain.Actor, projectID
 
 	var pl *sdk.Pipeline
 	if op, ok := comp.Operation(action); ok {
-		pl, err = op.Build(ctx, &sdk.OpRequest{Instance: inst.ToInstanceView(), Hosts: views, BOM: bom})
+		pl, err = op.Build(ctx, &sdk.OpRequest{Instance: instView, Hosts: views, BOM: bom})
 		if err != nil {
 			return nil, valRep, err
 		}
@@ -414,11 +460,12 @@ func (f *Facade) PlanInstance(ctx context.Context, actor domain.Actor, projectID
 		pl = &sdk.Pipeline{}
 	}
 
-	configDiffs, hasDrift := buildPlanConfigDiffs(inst, pl)
+	configDiffs, hasDrift := buildPlanConfigDiffs(ctx, inst, pl, comp.Meta().DriftIgnore, views)
 	diffEnv := PlanDiffEnvelope{
 		Summary:     planRes.Summary,
 		Outputs:     planRes.Outputs,
 		Warnings:    planRes.Warnings,
+		Claims:      planRes.Claims,
 		ConfigDiffs: configDiffs,
 		HasDrift:    hasDrift,
 	}
@@ -491,6 +538,39 @@ func (f *Facade) ApplyInstance(ctx context.Context, actor domain.Actor, projectI
 		return nil, err
 	}
 	_ = f.store.Plans().MarkConsumed(ctx, plan.ID, op.ID)
+
+	// Persist or clear host resource claims (Ports / Dirs / Subnets) so cross-instance collision checks are live!
+	if action == "uninstall" {
+		_ = f.store.Instances().ReplaceClaims(ctx, inst.ID, nil)
+	} else if len(plan.DiffJSON) > 0 {
+		var diffEnv PlanDiffEnvelope
+		if uerr := json.Unmarshal(plan.DiffJSON, &diffEnv); uerr == nil && len(diffEnv.Claims) > 0 {
+			claims := make([]domain.HostClaim, 0, len(diffEnv.Claims))
+			for hostID, c := range diffEnv.Claims {
+				if hostID == "" || hostID == "local" {
+					continue
+				}
+				claims = append(claims, domain.HostClaim{
+					InstanceID: inst.ID,
+					HostID:     hostID,
+					Role:       "member",
+					Ports:      c.Ports,
+					Paths:      c.Dirs,
+					Subnets:    c.Subnets,
+					MemMB:      c.MemoryMB,
+				})
+			}
+			if len(claims) > 0 {
+				_ = f.store.Instances().ReplaceClaims(ctx, inst.ID, claims)
+			}
+		}
+		if len(diffEnv.Outputs) > 0 {
+			if ob, merr := json.Marshal(diffEnv.Outputs); merr == nil {
+				inst.OutputsJSON = ob
+				_ = f.store.Instances().Update(ctx, inst)
+			}
+		}
+	}
 
 	if needsApproval {
 		ap := &domain.Approval{
@@ -786,8 +866,50 @@ func (f *Facade) SyncExternalCMDBHosts(ctx context.Context, actor domain.Actor, 
 		h := incoming[i]
 		h.ProjectID = projectID
 		if existing, gerr := f.store.Hosts().GetByName(ctx, projectID, h.Name); gerr == nil && existing != nil {
+			if h.Address != "" {
+				existing.Address = h.Address
+			}
+			if h.SSHPort > 0 {
+				existing.SSHPort = h.SSHPort
+			}
+			if h.SSHUser != "" {
+				existing.SSHUser = h.SSHUser
+			}
+			if h.FaultZone != "" {
+				existing.FaultZone = h.FaultZone
+			}
+			if h.FaultRack != "" {
+				existing.FaultRack = h.FaultRack
+			}
+			if len(h.Labels) > 0 {
+				if existing.Labels == nil {
+					existing.Labels = map[string]string{}
+				}
+				for k, v := range h.Labels {
+					existing.Labels[k] = v
+				}
+			}
+			if h.CredentialID != "" {
+				if cid, cerr := f.resolveHostCredentialID(ctx, projectID, h.CredentialID); cerr == nil {
+					existing.CredentialID = cid
+				}
+			}
+			if uerr := f.store.Hosts().Update(ctx, existing); uerr != nil {
+				return created, updated, uerr
+			}
 			updated++
 			continue
+		}
+		credID, cerr := f.resolveHostCredentialID(ctx, projectID, h.CredentialID)
+		if cerr != nil {
+			return created, updated, cerr
+		}
+		h.CredentialID = credID
+		if h.SSHPort <= 0 {
+			h.SSHPort = 22
+		}
+		if h.SSHUser == "" {
+			h.SSHUser = "root"
 		}
 		if cerr := f.store.Hosts().Create(ctx, &h); cerr != nil {
 			return created, updated, cerr
@@ -798,7 +920,7 @@ func (f *Facade) SyncExternalCMDBHosts(ctx context.Context, actor domain.Actor, 
 	return created, updated, nil
 }
 
-// CheckHostBaseline inspects a CMDB host against its configured hostinit profile (T-M1-08).
+// CheckHostBaseline inspects a CMDB host against its configured (possibly comma-separated multi-profile) hostinit baseline (T-M1-08).
 func (f *Facade) CheckHostBaseline(ctx context.Context, actor domain.Actor, projectID, hostID string) ([]hostinit.DriftFinding, error) {
 	if err := authz.Authorize(actor, projectID, "resource.read"); err != nil {
 		return nil, err
@@ -807,11 +929,19 @@ func (f *Facade) CheckHostBaseline(ctx context.Context, actor domain.Actor, proj
 	if err != nil {
 		return nil, err
 	}
-	profileName := h.InitProfile
-	if profileName == "" {
-		profileName = "base"
+	var profiles []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(h.InitProfile, ",") {
+		p := strings.TrimSpace(part)
+		if p != "" && !seen[p] {
+			seen[p] = true
+			profiles = append(profiles, p)
+		}
 	}
-	prof, err := hostinit.MergeProfiles([]string{profileName})
+	if len(profiles) == 0 {
+		profiles = []string{"base"}
+	}
+	prof, err := hostinit.MergeProfiles(profiles)
 	if err != nil {
 		return nil, err
 	}

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"os"
 	"path"
 	"sort"
 	"strings"
@@ -225,6 +226,9 @@ func applyFileContent(ctx context.Context, rc *RunContext, spec sdk.TaskSpec, re
 	if rc.LastApplied != nil {
 		rc.LastApplied[dst] = sha
 	}
+	if rc.LastAppliedContent != nil {
+		rc.LastAppliedContent[dst] = string(desired)
+	}
 	if spec.Notify != "" && rc.Notify != nil {
 		rc.Notify(spec.Notify)
 	}
@@ -362,6 +366,8 @@ func (t *BinaryInstallTask) Apply(ctx context.Context, rc *RunContext, spec sdk.
 
 	// Resolve source content either via MediaResolver (Local/OBS/Online) or inline test content
 	var payload []byte
+	var localPath string
+	var expectedResolvedSHA string
 	if content := strParam(spec.Params, "content"); content != "" {
 		payload = []byte(content)
 	} else if rc.Media != nil {
@@ -401,10 +407,14 @@ ln -sfn %s %s`,
 				shellescape.Quote(path.Dir(vPath)),
 				shellescape.Quote(curLink),
 			)
-			if _, err := rc.Session.Run(ctx, ports.Command{Script: dl, Sudo: true, Async: spec.Async, TaskRunID: rc.TaskRunID}); err != nil {
+			if _, err := rc.Session.Run(ctx, ports.Command{Script: dl, Sudo: true, Async: spec.Async, TaskRunID: rc.TaskRunID, Stdout: rc.LogStdout, Stderr: rc.LogStderr}); err != nil {
 				return ApplyResult{}, err
 			}
 			return ApplyResult{Changed: true, BackupRef: map[string]any{"curLink": curLink, "prevTarget": prevTarget}}, nil
+		}
+		if resolved.LocalPath != "" {
+			localPath = resolved.LocalPath
+			expectedResolvedSHA = resolved.SHA256
 		}
 	}
 
@@ -412,12 +422,27 @@ ln -sfn %s %s`,
 		if _, err := rc.Session.Upload(ctx, bytes.NewReader(payload), vPath, 0o755, ""); err != nil {
 			return ApplyResult{}, err
 		}
+	} else if localPath != "" {
+		// Channel 1/2 (relay-cache): stream verified artifact directly from control-plane cache to host
+		f, err := os.Open(localPath) // #nosec G304 -- path returned by PolicyMediaResolver from configured local/cache dir
+		if err != nil {
+			return ApplyResult{}, err
+		}
+		uploadedSHA, uerr := rc.Session.Upload(ctx, f, vPath, 0o755, "")
+		_ = f.Close()
+		if uerr != nil {
+			return ApplyResult{}, uerr
+		}
+		if expectedResolvedSHA != "" && uploadedSHA != "" && !strings.EqualFold(uploadedSHA, expectedResolvedSHA) {
+			return ApplyResult{}, sdk.NewError(sdk.CodeSrcDigestMismatch, "SRC", http.StatusUnprocessableEntity, sdk.CodeSrcDigestMismatch, false,
+				fmt.Errorf("uploaded binary %s sha256 mismatch: got %s want %s", vPath, uploadedSHA, expectedResolvedSHA))
+		}
 	} else {
 		// Ensure versioned directory exists when binary already staged
 		_, _ = rc.Session.Run(ctx, ports.Command{Script: "mkdir -p " + shellescape.Quote(path.Dir(vPath)), Sudo: true})
 	}
 	linkCmd := fmt.Sprintf("ln -sfn %s %s", shellescape.Quote(path.Dir(vPath)), shellescape.Quote(curLink))
-	if _, err := rc.Session.Run(ctx, ports.Command{Script: linkCmd, Sudo: true}); err != nil {
+	if _, err := rc.Session.Run(ctx, ports.Command{Script: linkCmd, Sudo: true, Stdout: rc.LogStdout, Stderr: rc.LogStderr}); err != nil {
 		return ApplyResult{}, err
 	}
 	return ApplyResult{Changed: true, BackupRef: map[string]any{"curLink": curLink, "prevTarget": prevTarget}}, nil
@@ -633,6 +658,8 @@ func (t *CmdRunTask) Apply(ctx context.Context, rc *RunContext, spec sdk.TaskSpe
 		Async:     spec.Async,
 		Timeout:   spec.Timeout,
 		TaskRunID: rc.TaskRunID,
+		Stdout:    rc.LogStdout,
+		Stderr:    rc.LogStderr,
 	})
 	if err != nil {
 		return ApplyResult{}, err

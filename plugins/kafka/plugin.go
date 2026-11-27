@@ -90,7 +90,7 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 			"properties": map[string]any{
 				"mode":      map[string]any{"type": "string", "enum": []string{"kraft"}, "default": "kraft", "x-kinstall-ui": map[string]any{"group": "basic", "order": 1, "label": "元数据模式（Kafka 4.x 纯 KRaft）"}},
 				"port":      map[string]any{"type": "integer", "default": 9092, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 2, "label": "Broker 监听端口"}},
-				"jvmHeapGB": map[string]any{"type": "integer", "default": 6, "minimum": 2, "maximum": 8, "x-kinstall-ui": map[string]any{"group": "storage", "order": 3, "label": "JVM 堆上限 (GiB · 硬限 ≤ 8G 保 PageCache)", "riskWarning": "超过 8 GiB 将挤占 Linux Page Cache，导致 Broker 磁盘顺序吞吐断崖下降"}},
+				"jvmHeapGB": map[string]any{"type": "integer", "default": 8, "minimum": 2, "maximum": 8, "x-kinstall-ui": map[string]any{"group": "storage", "order": 3, "label": "JVM 堆上限 (GiB · 硬限 ≤ 8G 保 PageCache)", "riskWarning": "超过 8 GiB 将挤占 Linux Page Cache，导致 Broker 磁盘顺序吞吐断崖下降"}},
 			},
 		},
 		OutputSchema: map[string]string{
@@ -126,18 +126,39 @@ func (p *Plugin) Validate(_ context.Context, req *sdk.ValidateRequest) (*sdk.Val
 	return rep, nil
 }
 
+func kafkaHostClaims(spec Spec) sdk.HostRoleClaims {
+	return sdk.HostRoleClaims{
+		Ports: []sdk.PortClaim{{Port: spec.Port, Proto: "tcp"}, {Port: 9093, Proto: "tcp"}},
+		Dirs:  spec.JBODDataDirs,
+	}
+}
+
 func (p *Plugin) Plan(ctx context.Context, req *sdk.PlanRequest) (*sdk.PlanResult, error) {
 	spec := parseSpec(req.Instance.Spec)
-	pl, err := p.buildInstall(ctx, &sdk.OpRequest{Instance: req.Instance, Hosts: req.Hosts, BOM: req.BOM})
+	opName := req.Operation
+	if opName == "" {
+		opName = "install"
+	}
+	op, ok := p.Operation(opName)
+	if !ok {
+		return nil, sdk.NewError(sdk.CodeAPIInvalidRequest, "KAFKA", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, fmt.Errorf("unknown op %q", opName))
+	}
+	pl, err := op.Build(ctx, &sdk.OpRequest{Instance: req.Instance, Hosts: req.Hosts, BOM: req.BOM})
 	if err != nil {
 		return nil, err
 	}
 	var addrs []string
+	claims := make(map[string]sdk.HostRoleClaims, len(req.Hosts))
+	hc := kafkaHostClaims(spec)
 	for _, h := range req.Hosts {
 		addrs = append(addrs, fmt.Sprintf("%s:%d", h.Address, spec.Port))
+		if req.Instance.DeployTarget != sdk.TargetKubernetes {
+			claims[h.ID] = hc
+		}
 	}
 	return &sdk.PlanResult{
-		Summary:  fmt.Sprintf("Apache Kafka %s KRaft (KIP-848/KIP-858, heap=%dG) on %d brokers", req.Instance.ProductVersion, spec.JVMHeapGB, len(req.Hosts)),
+		Summary:  fmt.Sprintf("Apache Kafka %s (%s / KRaft KIP-848/858, heap=%dG) on %d brokers", req.Instance.ProductVersion, opName, spec.JVMHeapGB, len(req.Hosts)),
+		Claims:   claims,
 		Pipeline: pl,
 		Outputs: map[string]any{
 			"bootstrapServers": strings.Join(addrs, ","),

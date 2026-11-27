@@ -28,14 +28,19 @@ type BootstrapDB struct {
 
 // Spec defines the typed PostgreSQL HA + PITR instance configuration (P4 §1-§4).
 type Spec struct {
+	Topology           string        `json:"topology"`    // patroni-ha | standalone
 	SyncProfile        string        `json:"syncProfile"` // async | sync | sync-strict
 	Port               int           `json:"port"`
 	PgBouncerPort      int           `json:"pgbouncerPort"`
 	HAProxyWritePort   int           `json:"haproxyWritePort"`
 	HAProxyReadPort    int           `json:"haproxyReadPort"`
+	HAProxyRWPortAlias int           `json:"haproxyRWPort,omitempty"` // legacy UI alias
+	HAProxyROPortAlias int           `json:"haproxyROPort,omitempty"` // legacy UI alias
 	PgBackRestVersion  string        `json:"pgBackRestVersion"`
+	BackupRepoType     string        `json:"backupRepoType"` // local | s3 | obs
 	BackupS3Bucket     string        `json:"backupS3Bucket"`
 	BackupCredRef      string        `json:"backupCredRef"`
+	CredentialRefAlias string        `json:"credentialRef,omitempty"` // legacy UI alias
 	OSReserveMB        int           `json:"osReserveMB"`
 	BootstrapDatabases []BootstrapDB `json:"bootstrapDatabases,omitempty"`
 	TargetTime         string        `json:"targetTime,omitempty"`    // PITR restore target
@@ -44,17 +49,31 @@ type Spec struct {
 
 func parseSpec(raw json.RawMessage) Spec {
 	s := Spec{
+		Topology:          "patroni-ha",
 		SyncProfile:       "sync",
 		Port:              5432,
 		PgBouncerPort:     6432,
 		HAProxyWritePort:  5000,
 		HAProxyReadPort:   5001,
 		PgBackRestVersion: "2.60.0",
+		BackupRepoType:    "local",
 		BackupS3Bucket:    "kinstall-pg-backups",
 		OSReserveMB:       2048,
 	}
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &s)
+	}
+	if s.HAProxyRWPortAlias > 0 && s.HAProxyWritePort == 5000 {
+		s.HAProxyWritePort = s.HAProxyRWPortAlias
+	}
+	if s.HAProxyROPortAlias > 0 && s.HAProxyReadPort == 5001 {
+		s.HAProxyReadPort = s.HAProxyROPortAlias
+	}
+	if s.BackupCredRef == "" && s.CredentialRefAlias != "" {
+		s.BackupCredRef = s.CredentialRefAlias
+	}
+	if s.Topology == "" {
+		s.Topology = "patroni-ha"
 	}
 	if s.SyncProfile == "" {
 		s.SyncProfile = "sync"
@@ -74,10 +93,31 @@ func parseSpec(raw json.RawMessage) Spec {
 	if s.PgBackRestVersion == "" {
 		s.PgBackRestVersion = "2.60.0"
 	}
+	if s.BackupRepoType == "" {
+		s.BackupRepoType = "local"
+	}
 	if s.OSReserveMB <= 0 {
 		s.OSReserveMB = 2048
 	}
 	return s
+}
+
+func pgHostClaims(spec Spec, instName string) sdk.HostRoleClaims {
+	ports := []sdk.PortClaim{
+		{Port: spec.Port, Proto: "tcp"},
+		{Port: spec.PgBouncerPort, Proto: "tcp"},
+		{Port: 8008, Proto: "tcp"},
+	}
+	if spec.Topology != "standalone" {
+		ports = append(ports,
+			sdk.PortClaim{Port: spec.HAProxyWritePort, Proto: "tcp"},
+			sdk.PortClaim{Port: spec.HAProxyReadPort, Proto: "tcp"},
+		)
+	}
+	return sdk.HostRoleClaims{
+		Ports: ports,
+		Dirs:  []string{"/data/postgresql/" + instName},
+	}
 }
 
 // MemoryTuning holds the P4 §1 exact PostgreSQL memory & kernel dirty-page parameters.
@@ -155,13 +195,14 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 			"title": "PostgreSQL 18/19 Patroni HA 与 pgBackRest 参数",
 			"properties": map[string]any{
 				"topology":          map[string]any{"type": "string", "enum": []string{"standalone", "patroni-ha"}, "default": "patroni-ha", "x-kinstall-ui": map[string]any{"group": "basic", "order": 1, "label": "高可用架构"}},
-				"port":              map[string]any{"type": "integer", "default": 5432, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 2, "label": "PostgreSQL 端口"}},
-				"haproxyRWPort":     map[string]any{"type": "integer", "default": 5000, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 3, "label": "HAProxy 主写端口", "visibleWhen": "topology == 'patroni-ha'"}},
-				"haproxyROPort":     map[string]any{"type": "integer", "default": 5001, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 4, "label": "HAProxy 只读端口", "visibleWhen": "topology == 'patroni-ha'"}},
-				"pgBackRestVersion": map[string]any{"type": "string", "default": "2.60.0", "x-kinstall-ui": map[string]any{"group": "storage", "order": 5, "label": "pgBackRest 版本 (>= 2.60.0)"}},
-				"backupRepoType":    map[string]any{"type": "string", "enum": []string{"local", "s3", "obs"}, "default": "local", "x-kinstall-ui": map[string]any{"group": "storage", "order": 6, "label": "PITR 备份仓库类型"}},
-				"credentialRef":     map[string]any{"type": "string", "default": "", "x-kinstall-ui": map[string]any{"group": "security", "order": 7, "widget": "credential-select", "label": "超级管理员加密凭据引用"}},
-				"osReserveMB":       map[string]any{"type": "integer", "default": 2048, "minimum": 512, "maximum": 32768, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 8, "label": "OS 内存预留 (MiB)"}},
+				"syncProfile":       map[string]any{"type": "string", "enum": []string{"async", "sync", "sync-strict"}, "default": "sync", "x-kinstall-ui": map[string]any{"group": "basic", "order": 2, "label": "同步复制策略 (RPO)"}},
+				"port":              map[string]any{"type": "integer", "default": 5432, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 3, "label": "PostgreSQL 端口"}},
+				"haproxyWritePort":  map[string]any{"type": "integer", "default": 5000, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 4, "label": "HAProxy 主写端口", "visibleWhen": "topology == 'patroni-ha'"}},
+				"haproxyReadPort":   map[string]any{"type": "integer", "default": 5001, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 5, "label": "HAProxy 只读端口", "visibleWhen": "topology == 'patroni-ha'"}},
+				"pgBackRestVersion": map[string]any{"type": "string", "default": "2.60.0", "x-kinstall-ui": map[string]any{"group": "storage", "order": 6, "label": "pgBackRest 版本 (>= 2.60.0)"}},
+				"backupRepoType":    map[string]any{"type": "string", "enum": []string{"local", "s3", "obs"}, "default": "local", "x-kinstall-ui": map[string]any{"group": "storage", "order": 7, "label": "PITR 备份仓库类型"}},
+				"backupCredRef":     map[string]any{"type": "string", "default": "", "x-kinstall-ui": map[string]any{"group": "security", "order": 8, "widget": "credential-select", "label": "备份/管理加密凭据引用"}},
+				"osReserveMB":       map[string]any{"type": "integer", "default": 2048, "minimum": 512, "maximum": 32768, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 9, "label": "OS 内存预留 (MiB)"}},
 			},
 		},
 		OutputSchema: map[string]string{
@@ -211,15 +252,9 @@ func (p *Plugin) Validate(_ context.Context, req *sdk.ValidateRequest) (*sdk.Val
 	}
 
 	if target != sdk.TargetKubernetes && req.CheckClaims != nil {
+		hc := pgHostClaims(spec, req.Instance.Name)
 		for _, h := range req.Hosts {
-			if err := req.CheckClaims(h.ID, sdk.HostRoleClaims{
-				Ports: []sdk.PortClaim{
-					{Port: spec.Port, Proto: "tcp"},
-					{Port: spec.PgBouncerPort, Proto: "tcp"},
-					{Port: 8008, Proto: "tcp"},
-				},
-				Dirs: []string{"/data/postgresql/" + req.Instance.Name},
-			}); err != nil {
+			if err := req.CheckClaims(h.ID, hc); err != nil {
 				rep.BlockHost(h.ID, sdk.CodeHostClaimConflict, err.Error())
 			}
 		}
@@ -252,8 +287,16 @@ func (p *Plugin) Plan(ctx context.Context, req *sdk.PlanRequest) (*sdk.PlanResul
 			"dsnSecretRef": db.CredentialRef,
 		}
 	}
+	claims := make(map[string]sdk.HostRoleClaims, len(req.Hosts))
+	if req.Instance.DeployTarget != sdk.TargetKubernetes {
+		hc := pgHostClaims(spec, req.Instance.Name)
+		for _, h := range req.Hosts {
+			claims[h.ID] = hc
+		}
+	}
 	return &sdk.PlanResult{
-		Summary:  fmt.Sprintf("PostgreSQL %s (%s / syncProfile=%s) across %d nodes", req.Instance.ProductVersion, req.Instance.DeployTarget, spec.SyncProfile, len(req.Hosts)),
+		Summary:  fmt.Sprintf("PostgreSQL %s (%s / %s / syncProfile=%s) across %d nodes", req.Instance.ProductVersion, opName, req.Instance.DeployTarget, spec.SyncProfile, len(req.Hosts)),
+		Claims:   claims,
 		Pipeline: pl,
 		Outputs: map[string]any{
 			"primaryEndpoint": fmt.Sprintf("%s:%d", hostAddr, spec.HAProxyWritePort),

@@ -80,13 +80,16 @@ const { status, lastEventId } = useOperationSSE(props.projectId, props.opId, (fr
   const host = String(frame.data.host || frame.data.hostId || 'control-plane')
   const phase = String(frame.data.phase || frame.data.step || frame.event || 'exec')
   const key = `${phase}@${host}`
-  const isErr = frame.event.includes('fail') || frame.event.includes('error')
-  const text = `[#${frame.id}][${phase}][${host}] ${JSON.stringify(frame.data)}`
+  const isErr = frame.event.includes('fail') || frame.event.includes('error') || frame.data.stream === 'stderr' || frame.data.state === 'failed'
+  const text =
+    frame.event === 'task.log' && typeof frame.data.line === 'string'
+      ? `[#${frame.id}][${phase}][${host}] ${frame.data.line}`
+      : `[#${frame.id}][${phase}][${host}] ${JSON.stringify(frame.data)}`
 
   const prev = phases.value.get(key)
   const nextState: PhaseNode['state'] = isErr
     ? 'failed'
-    : frame.event.includes('done') || frame.event.includes('succeeded')
+    : frame.event.includes('done') || frame.data.state === 'succeeded' || frame.data.state === 'skipped'
       ? 'ok'
       : 'running'
   phases.value.set(key, {

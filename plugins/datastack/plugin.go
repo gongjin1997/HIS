@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -189,10 +190,34 @@ func (p *Plugin) Validate(_ context.Context, req *sdk.ValidateRequest) (*sdk.Val
 	return rep, nil
 }
 
+func datastackHostClaims(prod string, spec Spec, instName string) sdk.HostRoleClaims {
+	ports := []sdk.PortClaim{{Port: spec.Port, Proto: "tcp"}}
+	if prod == "milvus" && spec.AttuPort > 0 {
+		ports = append(ports, sdk.PortClaim{Port: spec.AttuPort, Proto: "tcp"})
+	}
+	var subnets []string
+	if spec.DockerSubnet != "" {
+		subnets = append(subnets, spec.DockerSubnet)
+	}
+	return sdk.HostRoleClaims{
+		Ports:   ports,
+		Dirs:    []string{fmt.Sprintf("/data/%s/%s", prod, instName)},
+		Subnets: subnets,
+	}
+}
+
 func (p *Plugin) Plan(ctx context.Context, req *sdk.PlanRequest) (*sdk.PlanResult, error) {
 	prod := strings.ToLower(req.Instance.Product)
 	spec := parseSpec(req.Instance.Spec, prod)
-	pl, err := p.buildInstall(ctx, &sdk.OpRequest{Instance: req.Instance, Hosts: req.Hosts})
+	opName := req.Operation
+	if opName == "" {
+		opName = "install"
+	}
+	op, ok := p.Operation(opName)
+	if !ok {
+		return nil, sdk.NewError(sdk.CodeAPIInvalidRequest, "DATASTACK", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, fmt.Errorf("unknown op %q", opName))
+	}
+	pl, err := op.Build(ctx, &sdk.OpRequest{Instance: req.Instance, Hosts: req.Hosts, BOM: req.BOM})
 	if err != nil {
 		return nil, err
 	}
@@ -200,8 +225,16 @@ func (p *Plugin) Plan(ctx context.Context, req *sdk.PlanRequest) (*sdk.PlanResul
 	if len(req.Hosts) > 0 && req.Hosts[0].Address != "" {
 		host = req.Hosts[0].Address
 	}
+	claims := make(map[string]sdk.HostRoleClaims, len(req.Hosts))
+	if req.Instance.DeployTarget != sdk.TargetKubernetes {
+		hc := datastackHostClaims(prod, spec, req.Instance.Name)
+		for _, h := range req.Hosts {
+			claims[h.ID] = hc
+		}
+	}
 	return &sdk.PlanResult{
-		Summary:  fmt.Sprintf("%s %s (%s)", prod, req.Instance.ProductVersion, req.Instance.DeployTarget),
+		Summary:  fmt.Sprintf("%s %s (%s / %s)", prod, req.Instance.ProductVersion, opName, req.Instance.DeployTarget),
+		Claims:   claims,
 		Pipeline: pl,
 		Outputs: map[string]any{
 			"endpoint": fmt.Sprintf("%s:%d", host, spec.Port),

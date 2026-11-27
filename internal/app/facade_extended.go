@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -17,8 +19,10 @@ import (
 	"github.com/kinstall/kinstall/internal/hostinit"
 	"github.com/kinstall/kinstall/internal/inventory"
 	"github.com/kinstall/kinstall/internal/notify"
+	"github.com/kinstall/kinstall/internal/obs"
 	"github.com/kinstall/kinstall/internal/planner"
 	"github.com/kinstall/kinstall/internal/stack"
+	"github.com/kinstall/kinstall/internal/template"
 	sdk "github.com/kinstall/kinstall/pkg/sdk/v1alpha1"
 )
 
@@ -33,18 +37,19 @@ type ConfigDiffItem struct {
 	Outcome      string `json:"outcome"`
 }
 
-// PlanDiffEnvelope wraps the plugin PlanResult with real 3-Way Diff file hunks for UI & CLI review.
+// PlanDiffEnvelope wraps the plugin PlanResult with real 3-Way Diff file hunks and host claims for UI & CLI review.
 type PlanDiffEnvelope struct {
-	Summary     string           `json:"summary"`
-	Outputs     map[string]any   `json:"outputs,omitempty"`
-	Warnings    []sdk.Finding    `json:"warnings,omitempty"`
-	ConfigDiffs []ConfigDiffItem `json:"configDiffs"`
-	HasDrift    bool             `json:"hasDrift"`
+	Summary     string                        `json:"summary"`
+	Outputs     map[string]any                `json:"outputs,omitempty"`
+	Warnings    []sdk.Finding                 `json:"warnings,omitempty"`
+	Claims      map[string]sdk.HostRoleClaims `json:"claims,omitempty"`
+	ConfigDiffs []ConfigDiffItem              `json:"configDiffs"`
+	HasDrift    bool                          `json:"hasDrift"`
 }
 
-// buildPlanConfigDiffs extracts rendered file.sync/template.render configs from the planned pipeline
-// and evaluates them against lastApplied snapshots stored in inst.StateJSON using planner.Evaluate3Way.
-func buildPlanConfigDiffs(inst *domain.Instance, pl *sdk.Pipeline) ([]ConfigDiffItem, bool) {
+// buildPlanConfigDiffs renders real file.sync/template.render configs (including embedded .tmpl templates),
+// skips DriftIgnore globs (O-08), scrubs sensitive values, and evaluates 3-Way Diffs via planner.Evaluate3Way.
+func buildPlanConfigDiffs(ctx context.Context, inst *domain.Instance, pl *sdk.Pipeline, driftIgnore []string, hosts []sdk.HostView) ([]ConfigDiffItem, bool) {
 	lastApplied := map[string]string{}
 	liveObserved := map[string]string{}
 	if len(inst.StateJSON) > 0 {
@@ -62,6 +67,14 @@ func buildPlanConfigDiffs(inst *domain.Instance, pl *sdk.Pipeline) ([]ConfigDiff
 		}
 	}
 
+	tplEng := template.New(func(_ context.Context, name string) (string, error) {
+		return "[SECRET_REF:" + name + "]", nil
+	})
+	var sampleHost sdk.HostView
+	if len(hosts) > 0 {
+		sampleHost = hosts[0]
+	}
+
 	var diffs []ConfigDiffItem
 	anyDrift := false
 	if pl != nil {
@@ -70,16 +83,17 @@ func buildPlanConfigDiffs(inst *domain.Instance, pl *sdk.Pipeline) ([]ConfigDiff
 				if t.Type != "file.sync" && t.Type != "template.render" {
 					continue
 				}
-				dst, _ := t.Params["dest"].(string)
-				if dst == "" {
-					dst, _ = t.Params["path"].(string)
-				}
+				dst := firstStringParam(t.Params, "dst", "dest", "path")
 				if dst == "" {
 					continue
 				}
-				desired := extractInlineTemplate(t.Params["template"])
+				// O-08: skip runtime-mutated files matching plugin DriftIgnore patterns (e.g. sentinel.conf, postgresql.auto.conf)
+				if matchesDriftIgnore(dst, driftIgnore) {
+					continue
+				}
+				desired := renderTaskPreview(ctx, tplEng, t, sampleHost)
 				if desired == "" {
-					desired, _ = t.Params["content"].(string)
+					continue
 				}
 				base := lastApplied[dst]
 				live, hasLive := liveObserved[dst]
@@ -95,7 +109,9 @@ func buildPlanConfigDiffs(inst *domain.Instance, pl *sdk.Pipeline) ([]ConfigDiff
 					liveSHA = planner.SHA256Hex([]byte(live))
 				}
 				desiredSHA := planner.SHA256Hex([]byte(desired))
-				res := planner.Evaluate3Way(dst, baseSHA, liveSHA, desiredSHA, live != "", planner.DiffOptions{})
+				res := planner.Evaluate3Way(dst, baseSHA, liveSHA, desiredSHA, live != "", planner.DiffOptions{
+					ManageMode: t.ManageMode,
+				})
 				drifted := res.Decision == planner.DiffBlocked
 				if drifted {
 					anyDrift = true
@@ -137,6 +153,64 @@ func buildPlanConfigDiffs(inst *domain.Instance, pl *sdk.Pipeline) ([]ConfigDiff
 		})
 	}
 	return diffs, anyDrift
+}
+
+func firstStringParam(params map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if s, ok := params[k].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func matchesDriftIgnore(targetPath string, patterns []string) bool {
+	for _, pat := range patterns {
+		if pat == "" {
+			continue
+		}
+		if matched, err := path.Match(pat, targetPath); err == nil && matched {
+			return true
+		}
+		// Support trailing prefix wildcard such as /var/lib/kubelet/pki/*
+		if strings.HasSuffix(pat, "/*") && strings.HasPrefix(targetPath, strings.TrimSuffix(pat, "*")) {
+			return true
+		}
+	}
+	return false
+}
+
+func renderTaskPreview(ctx context.Context, tplEng *template.Engine, t sdk.TaskSpec, host sdk.HostView) string {
+	var raw string
+	if t.Template != nil {
+		if t.Type == "template.render" {
+			vars := map[string]any{"Host": host}
+			for k, v := range t.Vars {
+				vars[k] = v
+			}
+			var secrets []string
+			if rendered, err := tplEng.Render(ctx, *t.Template, vars, func(s string) { secrets = append(secrets, s) }); err == nil {
+				return obs.RedactString(string(rendered), secrets...)
+			}
+		}
+		switch {
+		case len(t.Template.Content) > 0:
+			raw = string(t.Template.Content)
+		case t.Template.Inline != "":
+			raw = t.Template.Inline
+		case t.Template.FS != nil && t.Template.Path != "":
+			if b, err := fs.ReadFile(t.Template.FS, t.Template.Path); err == nil {
+				raw = string(b)
+			}
+		}
+	}
+	if raw == "" {
+		raw = extractInlineTemplate(t.Params["template"])
+	}
+	if raw == "" {
+		raw, _ = t.Params["content"].(string)
+	}
+	return obs.RedactString(raw)
 }
 
 func extractInlineTemplate(raw any) string {

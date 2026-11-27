@@ -26,6 +26,7 @@ type Spec struct {
 	MaxMemoryMB        int    `json:"maxMemoryMB"`
 	TLSEnabled         bool   `json:"tlsEnabled"`
 	AdminCredentialRef string `json:"adminCredentialRef"`
+	CredentialRef      string `json:"credentialRef,omitempty"` // legacy UI alias
 	EnableExporter     bool   `json:"enableExporter"`
 	AcceptRedLicense   bool   `json:"acceptRedLicense"`
 	OSReserveMB        int    `json:"osReserveMB"`
@@ -45,6 +46,9 @@ func parseSpec(raw json.RawMessage) Spec {
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &s)
 	}
+	if s.AdminCredentialRef == "" && s.CredentialRef != "" {
+		s.AdminCredentialRef = s.CredentialRef
+	}
 	if s.Topology == "" {
 		s.Topology = "replication-sentinel"
 	}
@@ -58,6 +62,23 @@ func parseSpec(raw json.RawMessage) Spec {
 		s.OSReserveMB = 2048
 	}
 	return s
+}
+
+func valkeyHostClaims(spec Spec, instName string) sdk.HostRoleClaims {
+	ports := []sdk.PortClaim{{Port: spec.Port, Proto: "tcp"}}
+	if spec.Topology == "replication-sentinel" {
+		ports = append(ports, sdk.PortClaim{Port: spec.SentinelPort, Proto: "tcp"})
+	}
+	if spec.Topology == "cluster" {
+		ports = append(ports, sdk.PortClaim{Port: spec.Port + 10000, Proto: "tcp"})
+	}
+	if spec.EnableExporter {
+		ports = append(ports, sdk.PortClaim{Port: 9121, Proto: "tcp"})
+	}
+	return sdk.HostRoleClaims{
+		Ports: ports,
+		Dirs:  []string{"/data/valkey/" + instName},
+	}
 }
 
 // ComputeMaxMemoryMB calculates the COW-safe Valkey maxmemory ceiling (P2 §2.2, 07 §7):
@@ -244,12 +265,12 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 		ParamSchema: map[string]any{
 			"title": "Valkey / Redis 全拓扑交付参数",
 			"properties": map[string]any{
-				"topology":         map[string]any{"type": "string", "enum": []string{"standalone", "replication-sentinel", "cluster"}, "default": "replication-sentinel", "x-kinstall-ui": map[string]any{"group": "basic", "order": 1, "label": "高可用拓扑"}},
-				"port":             map[string]any{"type": "integer", "default": 6379, "minimum": 1024, "maximum": 55535, "x-kinstall-ui": map[string]any{"group": "network", "order": 2, "label": "服务监听端口"}},
-				"sentinelPort":     map[string]any{"type": "integer", "default": 26379, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 3, "label": "Sentinel 端口", "visibleWhen": "topology == 'replication-sentinel'"}},
-				"tlsEnabled":       map[string]any{"type": "boolean", "default": true, "x-kinstall-ui": map[string]any{"group": "security", "order": 4, "label": "启用全链路 TLS 1.3"}},
-				"credentialRef":    map[string]any{"type": "string", "default": "", "x-kinstall-ui": map[string]any{"group": "security", "order": 5, "widget": "credential-select", "label": "ACL 管理员凭据引用"}},
-				"acceptRedLicense": map[string]any{"type": "boolean", "default": false, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 6, "label": "确认红灯许可证（仅 Redis 8.x 需勾选）", "riskWarning": "Redis 8.x 含 SSPL/RSAL 限制协议，禁止打入公共离线包，默认推荐使用 Valkey BSD-3"}},
+				"topology":           map[string]any{"type": "string", "enum": []string{"standalone", "replication-sentinel", "cluster"}, "default": "replication-sentinel", "x-kinstall-ui": map[string]any{"group": "basic", "order": 1, "label": "高可用拓扑"}},
+				"port":               map[string]any{"type": "integer", "default": 6379, "minimum": 1024, "maximum": 55535, "x-kinstall-ui": map[string]any{"group": "network", "order": 2, "label": "服务监听端口"}},
+				"sentinelPort":       map[string]any{"type": "integer", "default": 26379, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "network", "order": 3, "label": "Sentinel 端口", "visibleWhen": "topology == 'replication-sentinel'"}},
+				"tlsEnabled":         map[string]any{"type": "boolean", "default": true, "x-kinstall-ui": map[string]any{"group": "security", "order": 4, "label": "启用全链路 TLS 1.3"}},
+				"adminCredentialRef": map[string]any{"type": "string", "default": "", "x-kinstall-ui": map[string]any{"group": "security", "order": 5, "widget": "credential-select", "label": "ACL 管理员凭据引用"}},
+				"acceptRedLicense":   map[string]any{"type": "boolean", "default": false, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 6, "label": "确认红灯许可证（仅 Redis 8.x 需勾选）", "riskWarning": "Redis 8.x 含 SSPL/RSAL 限制协议，禁止打入公共离线包，默认推荐使用 Valkey BSD-3"}},
 			},
 		},
 		OutputSchema: map[string]string{
@@ -313,20 +334,7 @@ func (p *Plugin) Validate(_ context.Context, req *sdk.ValidateRequest) (*sdk.Val
 			}
 		}
 		if req.CheckClaims != nil && target != sdk.TargetKubernetes {
-			ports := []sdk.PortClaim{{Port: spec.Port, Proto: "tcp"}}
-			if spec.Topology == "replication-sentinel" {
-				ports = append(ports, sdk.PortClaim{Port: spec.SentinelPort, Proto: "tcp"})
-			}
-			if spec.Topology == "cluster" {
-				ports = append(ports, sdk.PortClaim{Port: spec.Port + 10000, Proto: "tcp"})
-			}
-			if spec.EnableExporter {
-				ports = append(ports, sdk.PortClaim{Port: 9121, Proto: "tcp"})
-			}
-			if err := req.CheckClaims(h.ID, sdk.HostRoleClaims{
-				Ports: ports,
-				Dirs:  []string{"/data/valkey/" + req.Instance.Name},
-			}); err != nil {
+			if err := req.CheckClaims(h.ID, valkeyHostClaims(spec, req.Instance.Name)); err != nil {
 				rep.BlockHost(h.ID, sdk.CodeHostClaimConflict, err.Error())
 			}
 		}
@@ -349,11 +357,17 @@ func (p *Plugin) Plan(ctx context.Context, req *sdk.PlanRequest) (*sdk.PlanResul
 		return nil, err
 	}
 	var endpoints []string
+	claims := make(map[string]sdk.HostRoleClaims, len(req.Hosts))
+	hc := valkeyHostClaims(spec, req.Instance.Name)
 	for _, h := range req.Hosts {
 		endpoints = append(endpoints, fmt.Sprintf("%s:%d", h.Address, spec.Port))
+		if req.Instance.DeployTarget != sdk.TargetKubernetes {
+			claims[h.ID] = hc
+		}
 	}
 	return &sdk.PlanResult{
-		Summary:  fmt.Sprintf("Valkey %s (%s/%s) across %d hosts", req.Instance.ProductVersion, spec.Topology, req.Instance.DeployTarget, len(req.Hosts)),
+		Summary:  fmt.Sprintf("Valkey %s (%s/%s/%s) across %d hosts", req.Instance.ProductVersion, opName, spec.Topology, req.Instance.DeployTarget, len(req.Hosts)),
+		Claims:   claims,
 		Pipeline: pl,
 		Outputs: map[string]any{
 			"endpoints":         strings.Join(endpoints, ","),
@@ -490,7 +504,7 @@ func (p *Plugin) buildInstall(_ context.Context, req *sdk.OpRequest) (*sdk.Pipel
 	if target == sdk.TargetHostContainer {
 		composeYAML := fmt.Sprintf(`services:
   valkey:
-    image: valkey/valkey:%s@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    image: valkey/valkey:%s
     network_mode: host
     restart: unless-stopped
     volumes:

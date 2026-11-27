@@ -224,6 +224,7 @@ type LockKey struct {
 
 type Locker interface {
 	AcquireAll(ctx context.Context, opID string, fencing int64, keys []LockKey, ttl time.Duration) (release func(context.Context) error, err error)
+	Renew(ctx context.Context, opID string, fencing int64, ttl time.Duration) error
 }
 
 // --- Store Port (24 Tables, 05 §3.8, D2 §1.3, G1 §6.3) ---

@@ -27,14 +27,17 @@ import (
 	"github.com/kinstall/kinstall/internal/inventory"
 	"github.com/kinstall/kinstall/internal/lock"
 	"github.com/kinstall/kinstall/internal/multicluster"
+	"github.com/kinstall/kinstall/internal/notify"
 	"github.com/kinstall/kinstall/internal/obs"
 	"github.com/kinstall/kinstall/internal/osadapter"
 	"github.com/kinstall/kinstall/internal/pki"
+	"github.com/kinstall/kinstall/internal/ports"
 	"github.com/kinstall/kinstall/internal/registry"
 	"github.com/kinstall/kinstall/internal/secrets"
 	"github.com/kinstall/kinstall/internal/server"
 	"github.com/kinstall/kinstall/internal/store"
 	"github.com/kinstall/kinstall/internal/template"
+	sdk "github.com/kinstall/kinstall/pkg/sdk/v1alpha1"
 )
 
 // Application is the sole composition root wiring all adapters, plugins, workers, and HTTP/SSE server (G1 §7.3).
@@ -86,25 +89,18 @@ func BuildApplication(ctx context.Context) (*Application, error) {
 	}
 
 	// KEK & Envelope encryption (AES-256-GCM default; SM4-GCM when KINSTALL_GM_ENABLED=true)
+	// Auto-select KEK provider: OpenBao Transit -> Env KINSTALL_MASTER_KEY -> Local 0600 keyring file (D1 §3.2)
 	enableGM := strings.EqualFold(os.Getenv("KINSTALL_GM_ENABLED"), "true") || os.Getenv("KINSTALL_GM_ENABLED") == "1"
 	alg := secrets.AlgAES256GCM
 	if enableGM {
 		alg = secrets.AlgSM4GCM
 	}
-	keyPath := filepath.Join(dataDir, "master.key")
-	// #nosec G703 -- keyPath derived from cleaned operator KINSTALL_DATA_DIR
-	if _, statErr := os.Stat(keyPath); errors.Is(statErr, os.ErrNotExist) {
-		if genErr := secrets.GenerateKeyringFile(keyPath); genErr != nil {
-			_ = st.Close()
-			return nil, fmt.Errorf("generate master keyring: %w", genErr)
-		}
-	}
-	kek, err := secrets.NewFileKEKProvider("local-file-kek", keyPath)
+	kek, kekKind, err := initKEKProvider(ctx, dataDir, logger)
 	if err != nil {
 		_ = st.Close()
 		return nil, err
 	}
-	secStore := secrets.NewEnvelopeStore(kek, "file", alg)
+	secStore := secrets.NewEnvelopeStore(kek, kekKind, alg)
 
 	osEng, err := osadapter.LoadWithOverride(filepath.Join(dataDir, "spec-override"))
 	if err != nil {
@@ -154,14 +150,45 @@ func BuildApplication(ctx context.Context) (*Application, error) {
 			logger.Info("enabled OIDC PKCE SSO provider", slog.String("issuer", issuer))
 		}
 	}
-	mediaRes := source.NewPolicyMediaResolver(filepath.Join(dataDir, "cache"))
+	credDecrypt := func(dctx context.Context, credID string) ([]byte, error) {
+		c, cerr := st.Credentials().Get(dctx, credID)
+		if cerr != nil {
+			return nil, cerr
+		}
+		return secStore.Decrypt(dctx, "credentials", c.ID, c.KeyVersion, c.EnvelopeJSON)
+	}
+	mediaRes := source.NewPolicyMediaResolver(filepath.Join(dataDir, "cache")).WithCredentialDecryptor(credDecrypt)
 	pkiIssuer := pki.NewIssuer()
 	kcMgr := multicluster.NewKubeconfigManager(st.Kubeconfigs(), pkiIssuer, audRec)
-	tplEngine := template.New(nil)
+	tplEngine := template.New(func(sctx context.Context, credRef string) (string, error) {
+		raw, derr := credDecrypt(sctx, credRef)
+		if derr != nil {
+			return "", derr
+		}
+		val := string(raw)
+		clear(raw)
+		return val, nil
+	})
 	locker := lock.NewManager(st.Locks())
-	worker := engine.NewWorker(st, locker, execChain, secStore, mediaRes, pkiIssuer, tplEngine, tplEngine, evHub, audRec, osEng, logger)
+	notifier := notify.NewDispatcher(st.Notifications(), 5*time.Minute).WithSecretResolver(credDecrypt)
+	worker := engine.NewWorker(
+		st, locker, execChain, secStore, mediaRes, pkiIssuer, tplEngine, tplEngine, evHub, audRec, osEng, logger,
+		engine.WithHostResolver(func(rctx context.Context, op *domain.Operation, sel sdk.HostSelector) ([]engine.HostExecBinding, error) {
+			return app.ResolveOperationHosts(rctx, st, secStore, op, sel)
+		}),
+		engine.WithNotifier(func(nctx context.Context, projectID, eventType, severity, dedupKey, summary string) {
+			_, _, _ = notifier.Dispatch(nctx, notify.EventMessage{
+				EventType:  eventType,
+				ProjectID:  projectID,
+				Severity:   severity,
+				DedupKey:   dedupKey,
+				Summary:    summary,
+				OccurredAt: time.Now().UTC(),
+			})
+		}),
+	)
 
-	facade := app.NewFacade(st, reg, execChain, secStore, mediaRes, evHub, audRec, authSvc, worker, osEng, kcMgr, enableGM, "file", alg)
+	facade := app.NewFacade(st, reg, execChain, secStore, mediaRes, evHub, audRec, authSvc, worker, osEng, kcMgr, enableGM, kekKind, alg)
 
 	// Bootstrap initial local admin account when database is fresh
 	ensureBootstrapAdmin(ctx, authSvc, st, logger)
@@ -177,6 +204,57 @@ func BuildApplication(ctx context.Context) (*Application, error) {
 		Metrics: obs.NewMetrics(),
 		Logger:  logger,
 	}, nil
+}
+
+func initKEKProvider(ctx context.Context, dataDir string, logger *slog.Logger) (ports.KEKProvider, string, error) {
+	// 1. OpenBao 2.7.x Transit KEK (D1 §3.2) when KINSTALL_OPENBAO_ADDR is configured
+	if addr := strings.TrimSpace(os.Getenv("KINSTALL_OPENBAO_ADDR")); addr != "" {
+		keyName := strings.TrimSpace(os.Getenv("KINSTALL_OPENBAO_KEY"))
+		if keyName == "" {
+			keyName = "kinstall-kek"
+		}
+		mount := strings.TrimSpace(os.Getenv("KINSTALL_OPENBAO_MOUNT"))
+		if mount == "" {
+			mount = "transit"
+		}
+		devInsec := strings.EqualFold(os.Getenv("KINSTALL_OPENBAO_DEV_INSECURE"), "true") || os.Getenv("KINSTALL_OPENBAO_DEV_INSECURE") == "1"
+		bao, err := secrets.NewOpenBaoKEKProvider(ctx, secrets.OpenBaoConfig{
+			Address:     addr,
+			Token:       strings.TrimSpace(os.Getenv("KINSTALL_OPENBAO_TOKEN")),
+			Mount:       mount,
+			KeyName:     keyName,
+			DevInsecure: devInsec,
+		})
+		if err != nil {
+			return nil, "", fmt.Errorf("init openbao transit KEK: %w", err)
+		}
+		logger.Info("initialized OpenBao Transit KEK provider", slog.String("address", addr), slog.String("key", keyName))
+		return bao, "openbao", nil
+	}
+
+	// 2. Environment variable KEK (05 §5.5) — immediately unsets KINSTALL_MASTER_KEY after load
+	if strings.TrimSpace(os.Getenv("KINSTALL_MASTER_KEY")) != "" {
+		envKEK, err := secrets.NewEnvKEKProvider("KINSTALL_MASTER_KEY")
+		if err != nil {
+			return nil, "", fmt.Errorf("init env KEK: %w", err)
+		}
+		logger.Info("initialized environment variable KEK provider")
+		return envKEK, "env", nil
+	}
+
+	// 3. Local 0600 keyring file (default single-node / offline setup)
+	keyPath := filepath.Join(dataDir, "master.key")
+	// #nosec G703 -- keyPath derived from cleaned operator KINSTALL_DATA_DIR
+	if _, statErr := os.Stat(keyPath); errors.Is(statErr, os.ErrNotExist) {
+		if genErr := secrets.GenerateKeyringFile(keyPath); genErr != nil {
+			return nil, "", fmt.Errorf("generate master keyring: %w", genErr)
+		}
+	}
+	fileKEK, err := secrets.NewFileKEKProvider("local-file-kek", keyPath)
+	if err != nil {
+		return nil, "", err
+	}
+	return fileKEK, "file", nil
 }
 
 func ensureBootstrapAdmin(ctx context.Context, authSvc *authz.Service, st *store.DBStore, logger *slog.Logger) {

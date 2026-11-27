@@ -217,12 +217,14 @@ async function submitCreateInstance() {
   }
 }
 
-async function runPlan(inst: Record<string, unknown>, action = 'install') {
+async function runPlan(inst: Record<string, unknown>, action = 'install', params?: Record<string, unknown>) {
   try {
+    const body: Record<string, unknown> = { action }
+    if (params && Object.keys(params).length > 0) body.params = params
     const { data } = await apiRequest<{
       plan: { id: string; diff?: PlanDiffEnvelope | string; warnings?: Array<{ code?: string; message?: string; severity?: string }> }
     }>('POST', `/api/v1/projects/${ws.currentProjectId}/instances/${inst.id}:plan`, {
-      body: { action },
+      body,
     })
 
     let env: PlanDiffEnvelope = {}
@@ -311,9 +313,10 @@ async function confirmDangerAction() {
 async function submitPitrRestore() {
   if (!pitrDialog.instance) return
   const inst = pitrDialog.instance
+  const targetTime = pitrDialog.targetTime
   pitrDialog.open = false
-  ElMessage.info(`已附带 PITR 时间点 ${pitrDialog.targetTime} 生成恢复 Plan`)
-  await runPlan(inst, 'restore')
+  ElMessage.info(`已附带 PITR 时间点 ${targetTime} 生成恢复 Plan`)
+  await runPlan(inst, 'restore', { targetTime })
 }
 
 async function applyPlan(forceOverride = false) {

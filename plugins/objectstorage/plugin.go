@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -106,18 +107,48 @@ func (p *Plugin) Validate(_ context.Context, req *sdk.ValidateRequest) (*sdk.Val
 	if eng == "seaweedfs" && spec.FilerCount > 1 && strings.EqualFold(spec.FilerMetaBackend, "leveldb") {
 		rep.Block(sdk.CodeAPIInvalidRequest, "multi-filer SeaweedFS forbids local LevelDB metadata backend; configure postgresql, valkey, or raft (P6 §2.4)")
 	}
+	if req.CheckClaims != nil && req.Instance.DeployTarget != sdk.TargetKubernetes {
+		hc := objectStorageHostClaims(spec, req.Instance.Name)
+		for _, h := range req.Hosts {
+			if err := req.CheckClaims(h.ID, hc); err != nil {
+				rep.BlockHost(h.ID, sdk.CodeHostClaimConflict, err.Error())
+			}
+		}
+	}
 	return rep, nil
+}
+
+func objectStorageHostClaims(spec Spec, instName string) sdk.HostRoleClaims {
+	return sdk.HostRoleClaims{
+		Ports: []sdk.PortClaim{{Port: spec.S3Port, Proto: "tcp"}},
+		Dirs:  []string{"/data/object-storage/" + instName},
+	}
 }
 
 func (p *Plugin) Plan(ctx context.Context, req *sdk.PlanRequest) (*sdk.PlanResult, error) {
 	spec := parseSpec(req.Instance.Spec)
-	pl, err := p.buildInstall(ctx, &sdk.OpRequest{Instance: req.Instance, Hosts: req.Hosts})
+	opName := req.Operation
+	if opName == "" {
+		opName = "install"
+	}
+	op, ok := p.Operation(opName)
+	if !ok {
+		return nil, sdk.NewError(sdk.CodeAPIInvalidRequest, "S3", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, fmt.Errorf("unknown op %q", opName))
+	}
+	pl, err := op.Build(ctx, &sdk.OpRequest{Instance: req.Instance, Hosts: req.Hosts, BOM: req.BOM})
 	if err != nil {
 		return nil, err
 	}
 	host := "127.0.0.1"
 	if len(req.Hosts) > 0 && req.Hosts[0].Address != "" {
 		host = req.Hosts[0].Address
+	}
+	claims := make(map[string]sdk.HostRoleClaims, len(req.Hosts))
+	if req.Instance.DeployTarget != sdk.TargetKubernetes {
+		hc := objectStorageHostClaims(spec, req.Instance.Name)
+		for _, h := range req.Hosts {
+			claims[h.ID] = hc
+		}
 	}
 	creds := map[string]string{}
 	dlq := "logging-dlq"
@@ -128,7 +159,8 @@ func (p *Plugin) Plan(ctx context.Context, req *sdk.PlanRequest) (*sdk.PlanResul
 		}
 	}
 	return &sdk.PlanResult{
-		Summary:  fmt.Sprintf("Object Storage (%s %s, EC10+4=%v, buckets=%d)", spec.Engine, req.Instance.ProductVersion, spec.EnableEC104, len(spec.Buckets)),
+		Summary:  fmt.Sprintf("Object Storage (%s / %s %s, EC10+4=%v, buckets=%d)", opName, spec.Engine, req.Instance.ProductVersion, spec.EnableEC104, len(spec.Buckets)),
+		Claims:   claims,
 		Pipeline: pl,
 		Outputs: map[string]any{
 			"s3Endpoint":     fmt.Sprintf("https://%s:%d", host, spec.S3Port),

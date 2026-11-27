@@ -19,13 +19,16 @@ import (
 type Spec struct {
 	ClusterName          string `json:"clusterName"`
 	ControlPlaneEndpoint string `json:"controlPlaneEndpoint"`
+	APIServerVIP         string `json:"apiServerVIP,omitempty"` // UI alias for controlPlaneEndpoint
 	PodCIDR              string `json:"podCIDR"`
 	ServiceCIDR          string `json:"serviceCIDR"`
 	CRI                  string `json:"cri"`
 	CNI                  string `json:"cni"`
 	CSI                  string `json:"csi"`
 	CSISELinuxMount      *bool  `json:"csiSelinuxMount,omitempty"`
+	DualStack            bool   `json:"dualStack"`
 	MaxPods              int    `json:"maxPods"`
+	LocalProxyPort       int    `json:"localProxyPort"`
 	HardenEDR            bool   `json:"hardenEDR"`
 	EtcdBackupBucket     string `json:"etcdBackupBucket"`
 	EtcdBackupCredRef    string `json:"etcdBackupCredRef"`
@@ -34,22 +37,34 @@ type Spec struct {
 }
 
 func parseSpec(raw json.RawMessage) Spec {
+	const defaultCPEndpoint = "10.0.0.10:6443"
 	s := Spec{
 		ClusterName:          "k8s-prod",
-		ControlPlaneEndpoint: "10.0.0.10:6443",
+		ControlPlaneEndpoint: defaultCPEndpoint,
 		PodCIDR:              "10.244.0.0/16",
 		ServiceCIDR:          "10.96.0.0/12",
 		CRI:                  "containerd",
 		CNI:                  "calico",
 		CSI:                  "local-path",
 		MaxPods:              110,
+		LocalProxyPort:       8443,
 		EtcdBackupBucket:     "s3://kinstall-etcd-backups",
 	}
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &s)
 	}
+	if s.APIServerVIP != "" && (s.ControlPlaneEndpoint == "" || s.ControlPlaneEndpoint == defaultCPEndpoint) {
+		ep := s.APIServerVIP
+		if !strings.Contains(ep, ":") {
+			ep += ":6443"
+		}
+		s.ControlPlaneEndpoint = ep
+	}
 	if s.MaxPods <= 0 {
 		s.MaxPods = 110
+	}
+	if s.LocalProxyPort <= 0 {
+		s.LocalProxyPort = 8443
 	}
 	if s.CRI == "" {
 		s.CRI = "containerd"
@@ -207,14 +222,14 @@ func (p *Plugin) Meta() sdk.PluginMeta {
 		ParamSchema: map[string]any{
 			"title": "Kubernetes 生产级高可用集群参数",
 			"properties": map[string]any{
-				"apiServerVIP":   map[string]any{"type": "string", "default": "10.20.0.100", "x-kinstall-ui": map[string]any{"group": "basic", "order": 1, "label": "控制面 VIP / LB 入口"}},
-				"podCIDR":        map[string]any{"type": "string", "default": "10.244.0.0/16", "x-kinstall-ui": map[string]any{"group": "network", "order": 2, "widget": "cidr-allocator", "label": "Pod 网段 CIDR"}},
-				"serviceCIDR":    map[string]any{"type": "string", "default": "10.96.0.0/12", "x-kinstall-ui": map[string]any{"group": "network", "order": 3, "widget": "cidr-allocator", "label": "Service 网段 CIDR"}},
-				"cni":            map[string]any{"type": "string", "enum": []string{"calico", "cilium", "flannel", "kube-ovn"}, "default": "calico", "x-kinstall-ui": map[string]any{"group": "network", "order": 4, "label": "CNI 网络插件"}},
-				"cri":            map[string]any{"type": "string", "enum": []string{"containerd", "cri-dockerd"}, "default": "containerd", "x-kinstall-ui": map[string]any{"group": "basic", "order": 5, "label": "容器运行时 (CRI)"}},
-				"dualStack":      map[string]any{"type": "boolean", "default": false, "x-kinstall-ui": map[string]any{"group": "network", "order": 6, "label": "启用 IPv4/IPv6 双栈"}},
-				"maxPods":        map[string]any{"type": "integer", "default": 110, "minimum": 30, "maximum": 250, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 7, "label": "单节点 MaxPods"}},
-				"localProxyPort": map[string]any{"type": "integer", "default": 8443, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 8, "label": "节点本地 APIServer 代理端口"}},
+				"controlPlaneEndpoint": map[string]any{"type": "string", "default": "10.20.0.100:6443", "x-kinstall-ui": map[string]any{"group": "basic", "order": 1, "label": "控制面 VIP / LB 入口"}},
+				"podCIDR":              map[string]any{"type": "string", "default": "10.244.0.0/16", "x-kinstall-ui": map[string]any{"group": "network", "order": 2, "widget": "cidr-allocator", "label": "Pod 网段 CIDR"}},
+				"serviceCIDR":          map[string]any{"type": "string", "default": "10.96.0.0/12", "x-kinstall-ui": map[string]any{"group": "network", "order": 3, "widget": "cidr-allocator", "label": "Service 网段 CIDR"}},
+				"cni":                  map[string]any{"type": "string", "enum": []string{"calico", "cilium", "flannel", "kube-ovn"}, "default": "calico", "x-kinstall-ui": map[string]any{"group": "network", "order": 4, "label": "CNI 网络插件"}},
+				"cri":                  map[string]any{"type": "string", "enum": []string{"containerd", "cri-dockerd"}, "default": "containerd", "x-kinstall-ui": map[string]any{"group": "basic", "order": 5, "label": "容器运行时 (CRI)"}},
+				"dualStack":            map[string]any{"type": "boolean", "default": false, "x-kinstall-ui": map[string]any{"group": "network", "order": 6, "label": "启用 IPv4/IPv6 双栈"}},
+				"maxPods":              map[string]any{"type": "integer", "default": 110, "minimum": 30, "maximum": 250, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 7, "label": "单节点 MaxPods"}},
+				"localProxyPort":       map[string]any{"type": "integer", "default": 8443, "minimum": 1024, "maximum": 65535, "x-kinstall-ui": map[string]any{"group": "advanced", "order": 8, "label": "节点本地 APIServer 代理端口"}},
 			},
 		},
 		OutputSchema: map[string]string{
@@ -264,7 +279,7 @@ func (p *Plugin) Validate(_ context.Context, req *sdk.ValidateRequest) (*sdk.Val
 		}
 		if req.CheckClaims != nil {
 			claims := sdk.HostRoleClaims{
-				Ports: []sdk.PortClaim{{Port: 8443, Proto: "tcp"}, {Port: 10250, Proto: "tcp"}},
+				Ports: []sdk.PortClaim{{Port: spec.LocalProxyPort, Proto: "tcp"}, {Port: 10250, Proto: "tcp"}},
 				Dirs:  []string{"/var/lib/kubelet"},
 			}
 			if hasRole(h, "control-plane") || len(req.Hosts) == 1 {
@@ -313,7 +328,7 @@ func (p *Plugin) Plan(ctx context.Context, req *sdk.PlanRequest) (*sdk.PlanResul
 	for _, h := range req.Hosts {
 		resv := ComputeNodeReservation(h.Facts.MemMB, h.Facts.HugePageKB/1024, spec.MaxPods, spec.HardenEDR)
 		c := sdk.HostRoleClaims{
-			Ports:    []sdk.PortClaim{{Port: 8443, Proto: "tcp"}, {Port: 10250, Proto: "tcp"}},
+			Ports:    []sdk.PortClaim{{Port: spec.LocalProxyPort, Proto: "tcp"}, {Port: 10250, Proto: "tcp"}},
 			Dirs:     []string{"/var/lib/kubelet"},
 			MemoryMB: resv.OSReserveMi,
 		}

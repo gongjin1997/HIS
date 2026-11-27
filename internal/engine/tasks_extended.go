@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"al.essio.dev/pkg/shellescape"
+	"sigs.k8s.io/yaml"
 
 	"github.com/kinstall/kinstall/internal/pki"
 	"github.com/kinstall/kinstall/internal/planner"
@@ -131,6 +132,18 @@ func extractHelmSpec(spec sdk.TaskSpec) (sdk.HelmReleaseSpec, error) {
 	return hs, err
 }
 
+func helmValuesPath(hs sdk.HelmReleaseSpec) string {
+	safeName := strings.NewReplacer("/", "_", "..", "_").Replace(hs.Namespace + "-" + hs.ReleaseName)
+	return path.Join("/var/lib/kinstall/helm", safeName+"-values.yaml")
+}
+
+func renderHelmValuesYAML(values map[string]any) ([]byte, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	return yaml.Marshal(values)
+}
+
 func (t *HelmReleaseTask) Check(ctx context.Context, rc *RunContext, spec sdk.TaskSpec) (CheckResult, error) {
 	hs, err := extractHelmSpec(spec)
 	if err != nil {
@@ -139,10 +152,21 @@ func (t *HelmReleaseTask) Check(ctx context.Context, rc *RunContext, spec sdk.Ta
 	cmd := fmt.Sprintf("helm status %s -n %s -o json 2>/dev/null | grep -q '\"status\":\"deployed\"'",
 		shellescape.Quote(hs.ReleaseName), shellescape.Quote(hs.Namespace))
 	res, err := rc.Session.Run(ctx, ports.Command{Script: cmd})
-	if err == nil && res.ExitCode == 0 {
-		return CheckResult{Converged: true, Summary: "helm release deployed"}, nil
+	if err != nil || res.ExitCode != 0 {
+		return CheckResult{Converged: false, Summary: "deploy helm release " + hs.ReleaseName}, nil //nolint:nilerr // non-deployed release means not yet converged
 	}
-	return CheckResult{Converged: false, Summary: "deploy helm release " + hs.ReleaseName}, nil
+	// If Values are specified, verify the on-host rendered values.yaml matches desired SHA-256 so value changes trigger upgrade!
+	if len(hs.Values) > 0 {
+		valBytes, yerr := renderHelmValuesYAML(hs.Values)
+		if yerr != nil {
+			return CheckResult{}, yerr
+		}
+		st, serr := rc.Session.Stat(ctx, helmValuesPath(hs))
+		if serr != nil || !st.Exists || st.SHA256 != planner.SHA256Hex(valBytes) {
+			return CheckResult{Converged: false, Summary: "helm values changed for " + hs.ReleaseName}, nil //nolint:nilerr // missing/changed values file requires helm upgrade
+		}
+	}
+	return CheckResult{Converged: true, Summary: "helm release deployed"}, nil
 }
 
 func (t *HelmReleaseTask) Apply(ctx context.Context, rc *RunContext, spec sdk.TaskSpec) (ApplyResult, error) {
@@ -157,6 +181,17 @@ func (t *HelmReleaseTask) Apply(ctx context.Context, rc *RunContext, spec sdk.Ta
 		"-n", shellescape.Quote(hs.Namespace),
 		"--create-namespace",
 	}
+	if len(hs.Values) > 0 {
+		valBytes, yerr := renderHelmValuesYAML(hs.Values)
+		if yerr != nil {
+			return ApplyResult{}, yerr
+		}
+		vPath := helmValuesPath(hs)
+		if _, uerr := rc.Session.Upload(ctx, bytes.NewReader(valBytes), vPath, 0o640, ""); uerr != nil {
+			return ApplyResult{}, uerr
+		}
+		args = append(args, "-f", shellescape.Quote(vPath))
+	}
 	if hs.Version != "" {
 		args = append(args, "--version", shellescape.Quote(hs.Version))
 	}
@@ -166,7 +201,18 @@ func (t *HelmReleaseTask) Apply(ctx context.Context, rc *RunContext, spec sdk.Ta
 	if hs.Wait {
 		args = append(args, "--wait")
 	}
-	res, err := rc.Session.Run(ctx, ports.Command{Script: strings.Join(args, " "), Sudo: true, Async: spec.Async, TaskRunID: rc.TaskRunID})
+	if spec.Timeout > 0 {
+		args = append(args, "--timeout", shellescape.Quote(spec.Timeout.String()))
+	}
+	res, err := rc.Session.Run(ctx, ports.Command{
+		Script:    strings.Join(args, " "),
+		Sudo:      true,
+		Async:     spec.Async,
+		Timeout:   spec.Timeout,
+		TaskRunID: rc.TaskRunID,
+		Stdout:    rc.LogStdout,
+		Stderr:    rc.LogStderr,
+	})
 	if err != nil {
 		return ApplyResult{}, err
 	}

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -330,12 +331,21 @@ func (s *Server) handleCreateCredential(w http.ResponseWriter, r *http.Request) 
 		Name      string `json:"name"`
 		Kind      string `json:"kind"`
 		Plaintext string `json:"plaintext"`
+		Secret    string `json:"secret"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err))
 		return
 	}
-	c, err := s.app.CreateCredential(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), body.Name, body.Kind, []byte(body.Plaintext))
+	rawSecret := body.Plaintext
+	if rawSecret == "" {
+		rawSecret = body.Secret
+	}
+	if strings.TrimSpace(body.Name) == "" || rawSecret == "" {
+		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, fmt.Errorf("credential name and plaintext/secret are required")))
+		return
+	}
+	c, err := s.app.CreateCredential(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), body.Name, body.Kind, []byte(rawSecret))
 	if err != nil {
 		writeProblem(w, r, s.i18n, err)
 		return
@@ -484,9 +494,10 @@ func (s *Server) handlePlanInstance(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Action    string              `json:"action"`
 		HostRoles map[string][]string `json:"hostRoles"`
+		Params    map[string]any      `json:"params"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	plan, rep, err := s.app.PlanInstance(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), chi.URLParam(r, "instanceId"), body.Action, body.HostRoles, nil)
+	plan, rep, err := s.app.PlanInstanceWithParams(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), chi.URLParam(r, "instanceId"), body.Action, body.HostRoles, body.Params, nil)
 	if err != nil {
 		writeProblem(w, r, s.i18n, err)
 		return

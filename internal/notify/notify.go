@@ -26,11 +26,18 @@ type EventMessage struct {
 	OccurredAt time.Time      `json:"occurredAt"`
 }
 
-// Dispatcher handles 5 channels (webhook/email/wecom/dingtalk/feishu) with storm folding (T-M3-12).
+// SecretResolver resolves a Vault credential ID to plaintext webhook signing key bytes.
+type SecretResolver func(ctx context.Context, credID string) ([]byte, error)
+
+// Dispatcher handles 5 channels (webhook/email/wecom/dingtalk/feishu) with storm folding,
+// Vault HMAC secret resolution, and exponential-backoff retries on transient 5xx/network failures (T-M3-12).
 type Dispatcher struct {
-	repo       ports.NotificationRepo
-	client     *http.Client
-	foldWindow time.Duration
+	repo           ports.NotificationRepo
+	client         *http.Client
+	foldWindow     time.Duration
+	secretResolver SecretResolver
+	maxAttempts    int
+	baseBackoff    time.Duration
 }
 
 func NewDispatcher(repo ports.NotificationRepo, foldWindow time.Duration) *Dispatcher {
@@ -38,10 +45,29 @@ func NewDispatcher(repo ports.NotificationRepo, foldWindow time.Duration) *Dispa
 		foldWindow = 5 * time.Minute
 	}
 	return &Dispatcher{
-		repo:       repo,
-		client:     &http.Client{Timeout: 10 * time.Second},
-		foldWindow: foldWindow,
+		repo:        repo,
+		client:      &http.Client{Timeout: 10 * time.Second},
+		foldWindow:  foldWindow,
+		maxAttempts: 3,
+		baseBackoff: 200 * time.Millisecond,
 	}
+}
+
+// WithSecretResolver configures Vault credential decryption for NotificationChannel.CredentialRef.
+func (d *Dispatcher) WithSecretResolver(fn SecretResolver) *Dispatcher {
+	d.secretResolver = fn
+	return d
+}
+
+// WithRetryPolicy overrides default retry attempts and base backoff (useful for tests).
+func (d *Dispatcher) WithRetryPolicy(attempts int, baseBackoff time.Duration) *Dispatcher {
+	if attempts > 0 {
+		d.maxAttempts = attempts
+	}
+	if baseBackoff >= 0 {
+		d.baseBackoff = baseBackoff
+	}
+	return d
 }
 
 // Dispatch evaluates enabled channels for msg.ProjectID, folds storms within foldWindow,
@@ -100,27 +126,65 @@ func (d *Dispatcher) deliverChannel(ctx context.Context, ch domain.NotificationC
 	default:
 		payload, _ = json.Marshal(msg)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return err
+	var secretBytes []byte
+	if ch.CredentialRef != nil && *ch.CredentialRef != "" && d.secretResolver != nil {
+		if raw, serr := d.secretResolver(ctx, *ch.CredentialRef); serr == nil && len(raw) > 0 {
+			secretBytes = raw
+			defer clear(secretBytes)
+		}
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Kinstall-Event", msg.EventType)
-	req.Header.Set("X-Kinstall-Delivery", deliveryID)
-	if secret := cfg["hmacSecret"]; secret != "" {
-		mac := hmac.New(sha256.New, []byte(secret))
+	if len(secretBytes) == 0 && cfg["hmacSecret"] != "" {
+		secretBytes = []byte(cfg["hmacSecret"])
+	}
+	sigHeader := ""
+	if len(secretBytes) > 0 {
+		mac := hmac.New(sha256.New, secretBytes)
 		_, _ = mac.Write(payload)
-		req.Header.Set("X-Kinstall-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+		sigHeader = "sha256=" + hex.EncodeToString(mac.Sum(nil))
 	}
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return err
+
+	attempts := d.maxAttempts
+	if attempts <= 0 {
+		attempts = 1
 	}
-	_ = resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("channel %s returned HTTP %d", ch.Name, resp.StatusCode)
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Kinstall-Event", msg.EventType)
+		req.Header.Set("X-Kinstall-Delivery", deliveryID)
+		if sigHeader != "" {
+			req.Header.Set("X-Kinstall-Signature-256", sigHeader)
+		}
+		resp, err := d.client.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode < 300 {
+				return nil
+			}
+			lastErr = fmt.Errorf("channel %s returned HTTP %d", ch.Name, resp.StatusCode)
+			// Only retry 429 or 5xx transient server errors; 4xx client errors are permanent
+			if resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
+				return lastErr
+			}
+		} else {
+			lastErr = err
+		}
+		if attempt+1 < attempts {
+			wait := d.baseBackoff * time.Duration(1<<attempt)
+			if wait > 0 {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(wait):
+				}
+			}
+		}
 	}
-	return nil
+	return lastErr
 }
 
 func matchesEvent(allowed []string, ev string) bool {

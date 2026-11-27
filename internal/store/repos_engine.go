@@ -285,6 +285,7 @@ func (r *taskRunRepo) Upsert(ctx context.Context, tr *domain.TaskRun) error {
 		 remote_run_dir, remote_pgid, remote_log_offset, drift_summary_json, backup_ref_json, error_code, error_detail, started_at, finished_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (operation_id, phase_idx, step_key) DO UPDATE SET
+		 params_digest = excluded.params_digest,
 		 state = excluded.state, attempt = excluded.attempt, fencing_token = excluded.fencing_token,
 		 remote_run_dir = excluded.remote_run_dir, remote_pgid = excluded.remote_pgid, remote_log_offset = excluded.remote_log_offset,
 		 drift_summary_json = excluded.drift_summary_json, backup_ref_json = excluded.backup_ref_json,

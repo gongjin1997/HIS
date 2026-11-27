@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
 	"strings"
 	"time"
 
@@ -127,18 +128,39 @@ func (p *Plugin) Validate(_ context.Context, req *sdk.ValidateRequest) (*sdk.Val
 	return rep, nil
 }
 
+func opensearchHostClaims(spec Spec) sdk.HostRoleClaims {
+	return sdk.HostRoleClaims{
+		Ports: []sdk.PortClaim{{Port: spec.Port, Proto: "tcp"}, {Port: spec.Port + 100, Proto: "tcp"}},
+		Dirs:  []string{spec.DataPath},
+	}
+}
+
 func (p *Plugin) Plan(ctx context.Context, req *sdk.PlanRequest) (*sdk.PlanResult, error) {
 	spec := parseSpec(req.Instance.Spec)
-	pl, err := p.buildInstall(ctx, &sdk.OpRequest{Instance: req.Instance, Hosts: req.Hosts})
+	opName := req.Operation
+	if opName == "" {
+		opName = "install"
+	}
+	op, ok := p.Operation(opName)
+	if !ok {
+		return nil, sdk.NewError(sdk.CodeAPIInvalidRequest, "OS", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, fmt.Errorf("unknown op %q", opName))
+	}
+	pl, err := op.Build(ctx, &sdk.OpRequest{Instance: req.Instance, Hosts: req.Hosts, BOM: req.BOM})
 	if err != nil {
 		return nil, err
 	}
 	var eps []string
+	claims := make(map[string]sdk.HostRoleClaims, len(req.Hosts))
+	hc := opensearchHostClaims(spec)
 	for _, h := range req.Hosts {
 		eps = append(eps, fmt.Sprintf("https://%s:%d", h.Address, spec.Port))
+		if req.Instance.DeployTarget != sdk.TargetKubernetes {
+			claims[h.ID] = hc
+		}
 	}
 	return &sdk.PlanResult{
-		Summary:  fmt.Sprintf("OpenSearch %s (ISM hot=%dd/warm=%dd/archive=%dd)", req.Instance.ProductVersion, spec.HotDays, spec.WarmDays, spec.ArchiveDays),
+		Summary:  fmt.Sprintf("OpenSearch %s (%s / ISM hot=%dd/warm=%dd/archive=%dd)", req.Instance.ProductVersion, opName, spec.HotDays, spec.WarmDays, spec.ArchiveDays),
+		Claims:   claims,
 		Pipeline: pl,
 		Outputs:  map[string]any{"httpEndpoints": strings.Join(eps, ","), "caCertRef": "cred_os_ca_" + req.Instance.ID},
 	}, nil

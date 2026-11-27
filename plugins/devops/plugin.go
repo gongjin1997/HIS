@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -132,10 +133,25 @@ func (p *Plugin) Validate(_ context.Context, req *sdk.ValidateRequest) (*sdk.Val
 	return rep, nil
 }
 
+func devopsHostClaims(prod string, spec Spec, instName string) sdk.HostRoleClaims {
+	return sdk.HostRoleClaims{
+		Ports: []sdk.PortClaim{{Port: spec.Port, Proto: "tcp"}},
+		Dirs:  []string{fmt.Sprintf("/data/%s/%s", prod, instName)},
+	}
+}
+
 func (p *Plugin) Plan(ctx context.Context, req *sdk.PlanRequest) (*sdk.PlanResult, error) {
 	prod := strings.ToLower(req.Instance.Product)
 	spec := parseSpec(req.Instance.Spec, prod)
-	pl, err := p.buildInstall(ctx, &sdk.OpRequest{Instance: req.Instance, Hosts: req.Hosts})
+	opName := req.Operation
+	if opName == "" {
+		opName = "install"
+	}
+	op, ok := p.Operation(opName)
+	if !ok {
+		return nil, sdk.NewError(sdk.CodeAPIInvalidRequest, "DEVOPS", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, fmt.Errorf("unknown op %q", opName))
+	}
+	pl, err := op.Build(ctx, &sdk.OpRequest{Instance: req.Instance, Hosts: req.Hosts, BOM: req.BOM})
 	if err != nil {
 		return nil, err
 	}
@@ -143,8 +159,16 @@ func (p *Plugin) Plan(ctx context.Context, req *sdk.PlanRequest) (*sdk.PlanResul
 	if len(req.Hosts) > 0 && req.Hosts[0].Address != "" {
 		host = req.Hosts[0].Address
 	}
+	claims := make(map[string]sdk.HostRoleClaims, len(req.Hosts))
+	if req.Instance.DeployTarget != sdk.TargetKubernetes {
+		hc := devopsHostClaims(prod, spec, req.Instance.Name)
+		for _, h := range req.Hosts {
+			claims[h.ID] = hc
+		}
+	}
 	return &sdk.PlanResult{
-		Summary:  fmt.Sprintf("DevOps %s %s (%s:%d)", prod, req.Instance.ProductVersion, host, spec.Port),
+		Summary:  fmt.Sprintf("DevOps %s %s (%s / %s:%d)", prod, req.Instance.ProductVersion, opName, host, spec.Port),
+		Claims:   claims,
 		Pipeline: pl,
 		Outputs:  map[string]any{"url": fmt.Sprintf("http://%s:%d", host, spec.Port), "product": prod},
 	}, nil

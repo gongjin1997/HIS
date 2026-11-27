@@ -1,6 +1,9 @@
 package v1alpha1
 
-import "io/fs"
+import (
+	"encoding/json"
+	"io/fs"
+)
 
 // ServiceReq declares desired systemd unit state for host requirements.
 type ServiceReq struct {
@@ -74,4 +77,21 @@ type TemplateRef struct {
 	Path    string `json:"path,omitempty" yaml:"path,omitempty"`
 	Inline  string `json:"inline,omitempty" yaml:"inline,omitempty"`
 	Content []byte `json:"content,omitempty" yaml:"content,omitempty"`
+}
+
+// MarshalJSON materializes embedded fs.FS template files into Inline so frozen
+// Plan & Operation PipelineJSON snapshots remain self-contained across restarts and HA replicas.
+func (t TemplateRef) MarshalJSON() ([]byte, error) {
+	type alias struct {
+		Path    string `json:"path,omitempty"`
+		Inline  string `json:"inline,omitempty"`
+		Content []byte `json:"content,omitempty"`
+	}
+	out := alias{Path: t.Path, Inline: t.Inline, Content: t.Content}
+	if out.Inline == "" && len(out.Content) == 0 && t.FS != nil && t.Path != "" {
+		if raw, err := fs.ReadFile(t.FS, t.Path); err == nil {
+			out.Inline = string(raw)
+		}
+	}
+	return json.Marshal(out)
 }
