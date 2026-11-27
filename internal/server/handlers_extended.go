@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/kinstall/kinstall/internal/app"
 	"github.com/kinstall/kinstall/internal/domain"
 	sdk "github.com/kinstall/kinstall/pkg/sdk/v1alpha1"
 )
@@ -40,20 +41,46 @@ func (s *Server) handleDeleteCredential(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleImportHosts(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Format string `json:"format"` // csv | yaml | xlsx
-		Data   string `json:"data"`
-		DryRun bool   `json:"dryRun"`
+		Format              string                    `json:"format"` // csv | yaml | xlsx | json | ansible
+		Data                string                    `json:"data"`
+		DryRun              bool                      `json:"dryRun"`
+		ColumnMap           map[string]string         `json:"columnMap,omitempty"`
+		DefaultCredentialID string                    `json:"defaultCredentialId,omitempty"`
+		InlineCredential    *app.InlineCredentialSpec `json:"inlineCredential,omitempty"`
+		DefaultBiz          string                    `json:"defaultBiz,omitempty"`
+		DefaultSet          string                    `json:"defaultSet,omitempty"`
+		DefaultModule       string                    `json:"defaultModule,omitempty"`
+		DefaultRegion       string                    `json:"defaultRegion,omitempty"`
+		DefaultSecurityArea string                    `json:"defaultSecurityArea,omitempty"`
+		DefaultZone         string                    `json:"defaultZone,omitempty"`
+		UpdateExisting      bool                      `json:"updateExisting"`
+		SanitizeHostname    bool                      `json:"sanitizeHostname"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err))
 		return
 	}
-	res, imported, err := s.app.ImportHosts(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), body.Format, []byte(body.Data), body.DryRun)
+	res, imported, updated, err := s.app.ImportHostsWithOptions(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), app.HostImportOptions{
+		Format:              body.Format,
+		Raw:                 []byte(body.Data),
+		DryRun:              body.DryRun,
+		ColumnMap:           body.ColumnMap,
+		DefaultCredentialID: body.DefaultCredentialID,
+		InlineCredential:    body.InlineCredential,
+		DefaultBiz:          body.DefaultBiz,
+		DefaultSet:          body.DefaultSet,
+		DefaultModule:       body.DefaultModule,
+		DefaultRegion:       body.DefaultRegion,
+		DefaultSecurityArea: body.DefaultSecurityArea,
+		DefaultZone:         body.DefaultZone,
+		UpdateExisting:      body.UpdateExisting,
+		SanitizeHostname:    body.SanitizeHostname,
+	})
 	if err != nil {
 		writeProblem(w, r, s.i18n, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"result": res, "imported": imported, "dryRun": body.DryRun})
+	writeJSON(w, http.StatusOK, map[string]any{"result": res, "imported": imported, "updated": updated, "dryRun": body.DryRun})
 }
 
 func (s *Server) handleDeleteHost(w http.ResponseWriter, r *http.Request) {

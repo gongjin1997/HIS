@@ -311,13 +311,16 @@ func (r *hostRepo) ListByProject(ctx context.Context, projectID string) ([]domai
 func (r *hostRepo) Update(ctx context.Context, h *domain.Host) error {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	labelsJSON, _ := json.Marshal(nonNilMap(h.Labels))
+	if h.PageSize <= 0 {
+		h.PageSize = 4096
+	}
 	res, err := r.s.writeDB.NewRaw(
 		`UPDATE hosts SET address = ?, ssh_port = ?, ssh_user = ?, credential_id = ?, jump_host_id = ?, legacy_rsa = ?, work_dir = ?,
-		 hostkey_mode = ?, hostkey_fp = ?, state = ?, fault_zone = ?, fault_rack = ?, labels_json = ?, init_profile = ?,
+		 hostkey_mode = ?, hostkey_fp = ?, state = ?, fault_zone = ?, fault_rack = ?, labels_json = ?, arch = ?, page_size = ?, init_profile = ?,
 		 version = version + 1, updated_at = ?
 		 WHERE id = ? AND version = ?`,
 		h.Address, h.SSHPort, h.SSHUser, h.CredentialID, h.JumpHostID, h.LegacyRSA, h.WorkDir,
-		h.HostKeyMode, h.HostKeyFP, string(h.State), h.FaultZone, h.FaultRack, string(labelsJSON), h.InitProfile,
+		h.HostKeyMode, h.HostKeyFP, string(h.State), h.FaultZone, h.FaultRack, string(labelsJSON), h.Arch, h.PageSize, h.InitProfile,
 		fmtTime(now), h.ID, h.Version,
 	).Exec(ctx)
 	if err != nil {

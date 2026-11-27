@@ -121,6 +121,8 @@ const loading = ref(false)
 const plugins = ref<PluginItem[]>([])
 const instances = ref<Array<Record<string, unknown>>>([])
 const hosts = ref<Array<{ id: string; name: string; address: string; arch?: string; pageSize?: number; faultZone?: string }>>([])
+const dynamicGroups = ref<Array<{ id: string; name: string; matchedCount: number; matchedHostIds: string[] }>>([])
+const selectedGroupId = ref(typeof route.query.group === 'string' ? route.query.group : '')
 const credentials = ref<Array<{ id: string; name: string }>>([])
 const activeTab = ref(route.query.tab === 'catalog' ? 'catalog' : 'instances')
 const filterTarget = ref('ALL')
@@ -255,11 +257,19 @@ const filteredInstances = computed(() => {
   })
 })
 
+const wizardHosts = computed(() => {
+  if (!selectedGroupId.value) return hosts.value
+  const g = dynamicGroups.value.find((x) => x.id === selectedGroupId.value)
+  if (!g) return hosts.value
+  const allowed = new Set(g.matchedHostIds || [])
+  return hosts.value.filter((h) => allowed.has(h.id))
+})
+
 async function loadData() {
   if (!ws.currentProjectId) return
   loading.value = true
   try {
-    const [pRes, iRes, hRes, cRes] = await Promise.all([
+    const [pRes, iRes, hRes, cRes, gRes] = await Promise.all([
       apiRequest<{ items: PluginItem[] }>('GET', '/api/v1/plugins'),
       apiRequest<{ items: Array<Record<string, unknown>> }>('GET', `/api/v1/projects/${ws.currentProjectId}/instances`),
       apiRequest<{ items: Array<{ id: string; name: string; address: string; arch?: string; pageSize?: number; faultZone?: string }> }>(
@@ -270,11 +280,16 @@ async function loadData() {
         'GET',
         `/api/v1/projects/${ws.currentProjectId}/credentials`
       ).catch(() => ({ data: { items: [] } })),
+      apiRequest<{ items: Array<{ id: string; name: string; matchedCount: number; matchedHostIds: string[] }> }>(
+        'GET',
+        `/api/v1/projects/${ws.currentProjectId}/cmdb/groups`
+      ).catch(() => ({ data: { items: [] } })),
     ])
     plugins.value = pRes.data.items || []
     instances.value = iRes.data.items || []
     hosts.value = hRes.data.items || []
     credentials.value = cRes.data.items || []
+    dynamicGroups.value = gRes.data.items || []
     if (!initialTabSettled.value) {
       initialTabSettled.value = true
       if (instances.value.length === 0) activeTab.value = 'catalog'
@@ -640,11 +655,21 @@ onMounted(loadData)
           <el-form-item label="实例名称"><el-input v-model="wizard.name" class="ki-mono" /></el-form-item>
           <el-form-item label="目标版本"><el-input v-model="wizard.productVersion" class="ki-mono" /></el-form-item>
         </div>
+        <el-form-item v-if="dynamicGroups.length > 0" label="按 CMDB 动态分组筛选候选主机（可选）">
+          <el-select v-model="selectedGroupId" clearable class="ki-w-full" placeholder="全部纳管主机">
+            <el-option
+              v-for="g in dynamicGroups"
+              :key="g.id"
+              :label="`${g.name}（命中 ${g.matchedCount} 台）`"
+              :value="g.id"
+            />
+          </el-select>
+        </el-form-item>
       </el-form>
       <KiDynamicSchemaForm
         v-model="wizard.spec"
         :schema="activeSchema"
-        :hosts="hosts"
+        :hosts="wizardHosts"
         :credentials="credentials"
       />
       <template #footer>

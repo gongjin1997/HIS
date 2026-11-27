@@ -291,6 +291,7 @@ func (s *DBStore) Plans() ports.PlanRepo                     { return &planRepo{
 func (s *DBStore) StateBackups() ports.StateBackupRepo       { return &stateBackupRepo{s: s} }
 func (s *DBStore) Notifications() ports.NotificationRepo     { return &notificationRepo{s: s} }
 func (s *DBStore) Kubeconfigs() ports.KubeconfigRepo         { return &kubeconfigRepo{s: s} }
+func (s *DBStore) CMDB() ports.CMDBRepo                      { return &cmdbRepo{s: s} }
 
 func fmtTime(t time.Time) string {
 	return t.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano)

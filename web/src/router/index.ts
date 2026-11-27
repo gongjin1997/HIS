@@ -12,7 +12,7 @@ const router = createRouter({
       redirect: '/dashboard',
       children: [
         { path: 'dashboard', name: 'dashboard', component: () => import('@/views/DashboardView.vue'), meta: { title: '总览驾驶舱' } },
-        { path: 'hosts', name: 'hosts', component: () => import('@/views/HostsView.vue'), meta: { title: 'CMDB 主机' } },
+        { path: 'hosts', name: 'hosts', component: () => import('@/views/HostsView.vue'), meta: { title: 'CMDB 资产中心' } },
         { path: 'instances', name: 'instances', component: () => import('@/views/InstancesView.vue'), meta: { title: '实例与插件' } },
         { path: 'stacks', name: 'stacks', component: () => import('@/views/StacksView.vue'), meta: { title: 'Stack DAG 编排' } },
         { path: 'clusters', name: 'clusters', component: () => import('@/views/ClustersView.vue'), meta: { title: '多集群管理' } },

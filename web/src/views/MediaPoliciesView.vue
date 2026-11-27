@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Activity, Save } from 'lucide-vue-next'
+import { Activity, Download, Save, Upload } from 'lucide-vue-next'
 import { apiRequest } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -189,6 +189,48 @@ async function testPolicy() {
   }
 }
 
+function exportPolicyJSON() {
+  const payload = {
+    name: editor.name,
+    offlineStrict: editor.offlineStrict,
+    deliveryMode: editor.deliveryMode,
+    sources: editor.sources,
+  }
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${editor.name || 'media-policy'}.json`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+  ElMessage.success(`已导出介质策略 ${editor.name}.json`)
+}
+
+function onImportPolicyJSON(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    try {
+      const parsed = JSON.parse(String(reader.result || '{}')) as Partial<MediaPolicyItem>
+      if (parsed.name) editor.name = parsed.name
+      if (typeof parsed.offlineStrict === 'boolean') editor.offlineStrict = parsed.offlineStrict
+      if (parsed.deliveryMode) editor.deliveryMode = parsed.deliveryMode
+      if (Array.isArray(parsed.sources) && parsed.sources.length > 0) {
+        editor.sources = parsed.sources.map((s, idx) => ({ ...s, priority: s.priority || idx + 1 }))
+      }
+      ElMessage.success(`已载入介质策略文件 ${file.name}，请核对后点击「保存策略」生效`)
+    } catch (e) {
+      ElMessage.error(`策略 JSON 解析失败：${String(e)}`)
+    }
+  }
+  reader.readAsText(file)
+  input.value = ''
+}
+
 watch(() => ws.currentProjectId, loadPolicies)
 onMounted(loadPolicies)
 </script>
@@ -208,6 +250,13 @@ onMounted(loadPolicies)
       <div class="ki-card__title">
         <span>策略全局开关与分发模式<span class="sub">按优先级自动回退，支持 Alt+↑/↓ 键盘调整顺序</span></span>
         <div class="table-actions">
+          <label class="file-upload-btn">
+            <Upload :size="14" /> 导入策略
+            <input type="file" accept=".json" class="hidden-file" @change="onImportPolicyJSON" />
+          </label>
+          <el-button @click="exportPolicyJSON">
+            <Download :size="14" class="btn-ico" /> 导出策略
+          </el-button>
           <el-button :loading="probing" @click="testPolicy">
             <Activity :size="14" class="btn-ico" /> 探测连通与权限
           </el-button>
@@ -322,5 +371,22 @@ onMounted(loadPolicies)
   color: var(--ki-term-fg);
   border-radius: var(--ki-radius-sm);
   overflow: auto;
+}
+
+.file-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: var(--ki-radius-sm);
+  border: 1px solid var(--ki-border-control);
+  background-color: var(--ki-bg-surface);
+  color: var(--ki-text-primary);
+  font-size: var(--ki-fs-sm);
+  cursor: pointer;
+}
+
+.hidden-file {
+  display: none;
 }
 </style>

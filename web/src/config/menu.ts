@@ -47,7 +47,7 @@ export const MENU_GROUPS: MenuGroup[] = [
   {
     title: '资源与编排',
     items: [
-      { path: '/hosts', key: 'nav.hosts', title: '主机资产', icon: markRaw(Server) },
+      { path: '/hosts', key: 'nav.hosts', title: 'CMDB 资产中心', icon: markRaw(Server) },
       { path: '/instances', key: 'nav.instances', title: '实例与组件', icon: markRaw(Box) },
       { path: '/stacks', key: 'nav.stacks', title: '应用栈编排', icon: markRaw(GitBranch) },
       { path: '/clusters', key: 'nav.clusters', title: '多集群管理', icon: markRaw(Network) },

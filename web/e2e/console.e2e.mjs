@@ -78,17 +78,23 @@ async function main() {
     await assertNoHorizontalOverflow(page, 'Dashboard')
     console.log(`[1/8] Login + Dashboard PASS (${dashMs}ms)`)
 
-    // 2. Hosts CMDB: verify 22-module HostInit tab + Bulk Import Drawer CSV Dry-Run
+    // 2. CMDB Asset Center: verify Topology Rail, Import/Template/Export, Dynamic Groups, CI Impact, External Sync & 22 Modules
     await page.goto(`${BASE_URL}/hosts`, { waitUntil: 'networkidle' })
     const hostsText = await page.textContent('body')
+    assert(hostsText && hostsText.includes('CMDB 资产中心'), 'Hosts view missing CMDB 资产中心 title')
+    assert(hostsText && hostsText.includes('下载模板') && hostsText.includes('导出台账'), 'Hosts view missing template/export buttons')
     assert(hostsText && hostsText.includes('22 模块'), 'Hosts view missing 22 HostInit modules tab')
     await assertNoHorizontalOverflow(page, 'Hosts')
     await clickNow(page.getByRole('button', { name: '批量导入' }).first())
     await clickNow(page.getByRole('button', { name: '填入示例 CSV' }))
     await clickNow(page.getByRole('button', { name: '预检 Dry-Run' }))
-    await page.waitForFunction(() => document.body.innerText.includes('node-app-01'), { timeout: 10000 })
+    await page.waitForFunction(() => document.body.innerText.includes('node-app-01') && document.body.innerText.includes('HIS核心门诊'), { timeout: 10000 })
     await clickNow(page.getByRole('button', { name: '关闭', exact: true }))
-    console.log('[2/8] Hosts CMDB + 22 Modules + Bulk Import Dry-Run PASS')
+    await clickNow(page.getByRole('tab', { name: /动态分组/ }))
+    await clickNow(page.getByRole('tab', { name: /CI 影响面与进程/ }))
+    await clickNow(page.getByRole('tab', { name: /外部 CMDB 同步/ }))
+    await assertNoHorizontalOverflow(page, 'Hosts-CMDB-Tabs')
+    console.log('[2/8] CMDB Asset Center (Topology + Import/Template/Export + Dynamic Groups + CI Impact + Sync + 22 Modules) PASS')
 
     // 3. Media Policies (Local / OBS·S3 / Online)
     await page.goto(`${BASE_URL}/artifacts/media-policies`, { waitUntil: 'networkidle' })

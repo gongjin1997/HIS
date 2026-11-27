@@ -252,6 +252,7 @@ type Store interface {
 	StateBackups() StateBackupRepo
 	Notifications() NotificationRepo
 	Kubeconfigs() KubeconfigRepo
+	CMDB() CMDBRepo
 }
 
 type ProjectRepo interface {
@@ -397,4 +398,18 @@ type KubeconfigRepo interface {
 	Get(ctx context.Context, id string) (*domain.ClusterKubeconfig, error)
 	ListByInstance(ctx context.Context, instanceID string) ([]domain.ClusterKubeconfig, error)
 	Revoke(ctx context.Context, id, revokedBy string) error
+}
+
+type CMDBRepo interface {
+	CreateDynamicGroup(ctx context.Context, g *domain.CMDBDynamicGroup) error
+	GetDynamicGroup(ctx context.Context, id string) (*domain.CMDBDynamicGroup, error)
+	ListDynamicGroups(ctx context.Context, projectID string) ([]domain.CMDBDynamicGroup, error)
+	UpdateDynamicGroup(ctx context.Context, g *domain.CMDBDynamicGroup) error
+	DeleteDynamicGroup(ctx context.Context, id string) error
+
+	CreateSyncSource(ctx context.Context, src *domain.CMDBSyncSource) error
+	GetSyncSource(ctx context.Context, id string) (*domain.CMDBSyncSource, error)
+	ListSyncSources(ctx context.Context, projectID string) ([]domain.CMDBSyncSource, error)
+	UpdateSyncSourceStatus(ctx context.Context, id, status, summary string, syncAt time.Time) error
+	DeleteSyncSource(ctx context.Context, id string) error
 }

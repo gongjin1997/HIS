@@ -465,3 +465,64 @@ type ClusterKubeconfig struct {
 	RevokedBy  *string    `json:"revokedBy,omitempty"`
 	CreatedAt  time.Time  `json:"createdAt"`
 }
+
+// Canonical CMDB topology label keys stored on Host.Labels for unified Biz/Set/Module & Region/SecurityArea trees.
+const (
+	LabelCMDBBiz          = "cmdb.biz"
+	LabelCMDBSet          = "cmdb.set"
+	LabelCMDBModule       = "cmdb.module"
+	LabelCMDBRegion       = "cmdb.region"
+	LabelCMDBSecurityArea = "cmdb.security_area"
+	LabelCMDBOwner        = "cmdb.owner"
+	LabelCMDBAssetTag     = "cmdb.asset_tag"
+)
+
+// CMDBGroupRule defines one predicate in a CMDB dynamic host group.
+type CMDBGroupRule struct {
+	Field string `json:"field"` // biz | set | module | region | security_area | fault_zone | fault_rack | arch | os_family | state | page_size | min_cpu | min_mem_mb | label.<key>
+	Op    string `json:"op"`    // eq | neq | contains | in | prefix | gte | lte | exists
+	Value string `json:"value"`
+}
+
+// CMDBDynamicGroup represents a persisted rule-based dynamic host group (table 25: cmdb_dynamic_groups).
+type CMDBDynamicGroup struct {
+	ID          string          `json:"id"`
+	ProjectID   string          `json:"projectId"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Rules       []CMDBGroupRule `json:"rules"`
+	CreatedBy   string          `json:"createdBy"`
+	CreatedAt   time.Time       `json:"createdAt"`
+	UpdatedAt   time.Time       `json:"updatedAt"`
+}
+
+// CMDBSyncMapping configures external CMDB sync field mappings & defaults.
+type CMDBSyncMapping struct {
+	ColumnMap           map[string]string `json:"columnMap,omitempty"`
+	DefaultBiz          string            `json:"defaultBiz,omitempty"`
+	DefaultSet          string            `json:"defaultSet,omitempty"`
+	DefaultModule       string            `json:"defaultModule,omitempty"`
+	DefaultRegion       string            `json:"defaultRegion,omitempty"`
+	DefaultSecurityArea string            `json:"defaultSecurityArea,omitempty"`
+	DefaultZone         string            `json:"defaultZone,omitempty"`
+	DefaultUser         string            `json:"defaultUser,omitempty"`
+	UpdateExisting      bool              `json:"updateExisting"`
+	AuthHeader          string            `json:"authHeader,omitempty"`
+}
+
+// CMDBSyncSource configures an external CMDB / HCS / LiveOps / Ansible synchronization source (table 26: cmdb_sync_sources).
+type CMDBSyncSource struct {
+	ID           string          `json:"id"`
+	ProjectID    string          `json:"projectId"`
+	Name         string          `json:"name"`
+	Kind         string          `json:"kind"` // http_json | http_csv | liveops_json | ansible_ini | huawei_hcs
+	Endpoint     string          `json:"endpoint"`
+	CredentialID *string         `json:"credentialId,omitempty"`
+	Mapping      CMDBSyncMapping `json:"mapping"`
+	PayloadText  string          `json:"payloadText,omitempty"`
+	LastSyncAt   *time.Time      `json:"lastSyncAt,omitempty"`
+	LastStatus   string          `json:"lastStatus"`
+	LastSummary  string          `json:"lastSummary"`
+	CreatedAt    time.Time       `json:"createdAt"`
+	UpdatedAt    time.Time       `json:"updatedAt"`
+}

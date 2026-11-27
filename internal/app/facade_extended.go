@@ -1,9 +1,7 @@
 package app
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -277,112 +275,15 @@ func (f *Facade) resolveHostCredentialID(ctx context.Context, projectID, ref str
 		fmt.Errorf("project %s has no credentials in vault; create an SSH credential first", projectID))
 }
 
-// --- Hosts Bulk Import (.xlsx / CSV / YAML), HostInit Execution & Delete (T-M1-04, T-M1-06) ---
+// --- Hosts Bulk Import (.xlsx / CSV / YAML / JSON / Ansible), HostInit Execution & Delete (T-M1-04, T-M1-06) ---
 
 func (f *Facade) ImportHosts(ctx context.Context, actor domain.Actor, projectID, format string, raw []byte, dryRun bool) (*inventory.ImportResult, int, error) {
-	if err := authz.Authorize(actor, projectID, "host.write"); err != nil {
-		return nil, 0, err
-	}
-	var (
-		res *inventory.ImportResult
-		err error
-	)
-	switch strings.ToLower(strings.TrimSpace(format)) {
-	case "xlsx":
-		decoded := raw
-		if dec, derr := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw))); derr == nil && len(dec) > 4 {
-			decoded = dec
-		}
-		res, err = inventory.ParseXLSX(bytes.NewReader(decoded))
-	case "yaml", "yml":
-		res, err = inventory.ParseYAML(raw)
-	default:
-		res, err = inventory.ParseCSV(bytes.NewReader(raw))
-	}
-	if err != nil {
-		return nil, 0, sdk.NewError(sdk.CodeAPIInvalidRequest, "HOST", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err)
-	}
-
-	// Pre-validate against existing project hosts (name + address:port) and explicit credential references even during Dry-Run!
-	existingHosts, _ := f.store.Hosts().ListByProject(ctx, projectID)
-	existingByName := make(map[string]bool, len(existingHosts))
-	existingByAddrPort := make(map[string]string, len(existingHosts))
-	for _, eh := range existingHosts {
-		existingByName[eh.Name] = true
-		p := eh.SSHPort
-		if p <= 0 {
-			p = 22
-		}
-		existingByAddrPort[fmt.Sprintf("%s:%d", eh.Address, p)] = eh.Name
-	}
-	validRows := make([]inventory.HostImportRow, 0, len(res.Rows))
-	for _, r := range res.Rows {
-		rowOK := true
-		if existingByName[r.Name] {
-			res.Errors = append(res.Errors, inventory.ImportRowError{
-				RowNumber: r.RowNumber, Field: "name", Code: sdk.CodeHostClaimConflict,
-				Message: fmt.Sprintf("host %q already exists in project", r.Name),
-			})
-			rowOK = false
-		}
-		apKey := fmt.Sprintf("%s:%d", r.Address, r.Port)
-		if owner, dupAddr := existingByAddrPort[apKey]; dupAddr {
-			res.Errors = append(res.Errors, inventory.ImportRowError{
-				RowNumber: r.RowNumber, Field: "address", Code: sdk.CodeHostClaimConflict,
-				Message: fmt.Sprintf("SSH endpoint %s is already registered by host %q", apKey, owner),
-			})
-			rowOK = false
-		}
-		if strings.TrimSpace(r.Credential) != "" {
-			if _, cerr := f.resolveHostCredentialID(ctx, projectID, r.Credential); cerr != nil {
-				res.Errors = append(res.Errors, inventory.ImportRowError{
-					RowNumber: r.RowNumber, Field: "credential", Code: sdk.CodeAPIInvalidRequest, Message: cerr.Error(),
-				})
-				rowOK = false
-			}
-		}
-		if rowOK {
-			validRows = append(validRows, r)
-		}
-	}
-	res.Rows = validRows
-
-	if dryRun || len(res.Errors) > 0 {
-		return res, 0, nil
-	}
-	imported := 0
-	for _, r := range res.Rows {
-		credID, cerr := f.resolveHostCredentialID(ctx, projectID, r.Credential)
-		if cerr != nil {
-			res.Errors = append(res.Errors, inventory.ImportRowError{
-				RowNumber: r.RowNumber, Field: "credential", Code: sdk.CodeAPIInvalidRequest, Message: cerr.Error(),
-			})
-			continue
-		}
-		h := &domain.Host{
-			ProjectID:    projectID,
-			Name:         r.Name,
-			Address:      r.Address,
-			SSHPort:      r.Port,
-			SSHUser:      r.User,
-			CredentialID: credID,
-			FaultZone:    r.Zone,
-			FaultRack:    r.Rack,
-			Labels:       r.Labels,
-			HostKeyFP:    r.HostKeyFP,
-			Arch:         "amd64",
-			PageSize:     4096,
-		}
-		if cerr := f.store.Hosts().Create(ctx, h); cerr != nil {
-			res.Errors = append(res.Errors, inventory.ImportRowError{
-				RowNumber: r.RowNumber, Field: "name", Code: sdk.CodeAPIInvalidRequest, Message: cerr.Error(),
-			})
-			continue
-		}
-		imported++
-	}
-	f.recordAudit(ctx, actor, projectID, "host.import", "project", projectID, "success", "", map[string]any{"format": format, "imported": imported, "errors": len(res.Errors)})
-	return res, imported, nil
+	res, imported, updated, err := f.ImportHostsWithOptions(ctx, actor, projectID, HostImportOptions{
+		Format: format,
+		Raw:    raw,
+		DryRun: dryRun,
+	})
+	return res, imported + updated, err
 }
 
 func (f *Facade) DeleteHost(ctx context.Context, actor domain.Actor, projectID, hostID string) error {

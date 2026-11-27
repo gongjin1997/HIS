@@ -2,7 +2,7 @@
 import { onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Save, CheckCircle2, Play, Trash2 } from 'lucide-vue-next'
+import { Save, CheckCircle2, Play, Trash2, Upload, Download } from 'lucide-vue-next'
 import { apiRequest } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -163,6 +163,38 @@ function loadStackIntoEditor(row: Record<string, unknown>) {
   }
 }
 
+function onImportStackYaml(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    const txt = String(reader.result || '')
+    specYaml.value = txt
+    const nameMatch = txt.match(/^\s*name:\s*([a-zA-Z0-9._-]+)/m)
+    if (nameMatch?.[1]) stackName.value = nameMatch[1]
+    else stackName.value = file.name.replace(/\.(ya?ml)$/i, '')
+    activePreset.value = ''
+    ElMessage.success(`已导入应用栈文件 ${file.name}`)
+    void validateAndRender()
+  }
+  reader.readAsText(file)
+  input.value = ''
+}
+
+function exportStackYaml() {
+  const blob = new Blob([specYaml.value], { type: 'application/yaml;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${stackName.value || 'kinstall-stack'}.yaml`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+  ElMessage.success(`已导出 ${stackName.value || 'kinstall-stack'}.yaml`)
+}
+
 async function loadStacks() {
   if (!ws.currentProjectId) return
   loading.value = true
@@ -278,7 +310,16 @@ onMounted(loadStacks)
       <div class="ki-card">
         <div class="ki-card__title">
           <span>声明式 Stack YAML</span>
-          <el-input v-model="stackName" size="small" class="ki-mono stack-name-input" />
+          <div class="ki-flex-row">
+            <label class="file-upload-btn">
+              <Upload :size="13" /> 导入 YAML
+              <input type="file" accept=".yaml,.yml" class="hidden-file" @change="onImportStackYaml" />
+            </label>
+            <el-button size="small" @click="exportStackYaml">
+              <Download :size="13" class="btn-ico" /> 导出
+            </el-button>
+            <el-input v-model="stackName" size="small" class="ki-mono stack-name-input" />
+          </div>
         </div>
         <div class="ki-pill-tabs ki-mb-3">
           <button
@@ -374,5 +415,22 @@ onMounted(loadStacks)
 .ext-pill {
   background-color: var(--ki-status-ok-subtle);
   color: var(--ki-status-ok-text);
+}
+
+.file-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: var(--ki-radius-sm);
+  border: 1px solid var(--ki-border-control);
+  background-color: var(--ki-bg-surface);
+  color: var(--ki-text-primary);
+  font-size: var(--ki-fs-xs);
+  cursor: pointer;
+}
+
+.hidden-file {
+  display: none;
 }
 </style>

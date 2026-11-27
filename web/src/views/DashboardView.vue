@@ -116,9 +116,9 @@ const onboardingSteps = computed(() => [
   {
     num: '01',
     done: hosts.value.length > 0,
-    title: '纳管内网主机与基线',
-    desc: '通过网段扫描或批量导入注册节点，并执行 22-模块内核初始化。',
-    cta: '前往主机资产',
+    title: '纳管 CMDB 资产与基线',
+    desc: '下载模板批量导入主机、同步外部 CMDB 或扫描网段，构建业务拓扑并执行 22-模块初始化。',
+    cta: '前往 CMDB 资产中心',
     path: '/hosts',
   },
   {
