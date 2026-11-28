@@ -10,7 +10,7 @@ import (
 //go:embed sqlite/*.sql postgres/*.sql
 var rawFS embed.FS
 
-// ForDialect returns the embedded migration sub-filesystem for the given SQL dialect.
+// ForDialect returns the embedded Goose SQL migration filesystem for the selected DB dialect.
 func ForDialect(d db.Dialect) (fs.FS, error) {
 	if d == db.DialectPostgres {
 		return fs.Sub(rawFS, "postgres")

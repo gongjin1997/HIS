@@ -1,55 +1,57 @@
-import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
-import { useAuthStore } from '@/stores/auth'
+import { createRouter, createWebHistory } from 'vue-router'
+import { useScopeStore } from '@/stores/scope'
+import KsShell from '@/components/ks/KsShell.vue'
 
-const routes: RouteRecordRaw[] = [
-  {
-    path: '/login',
-    name: 'login',
-    component: () => import('@/views/LoginView.vue'),
-    meta: { public: true, title: '登录' },
-  },
-  {
-    path: '/',
-    component: () => import('@/components/AppShell.vue'),
-    redirect: '/dashboard',
-    children: [
-      { path: 'dashboard', name: 'dashboard', component: () => import('@/views/DashboardView.vue'), meta: { title: '资产与运维全景' } },
-      { path: 'cmdb/models', name: 'cmdb-models', component: () => import('@/views/CmdbModelsView.vue'), meta: { title: '元模型与关系' } },
-      { path: 'cmdb/topology', name: 'cmdb-topology', component: () => import('@/views/CmdbTopologyView.vue'), meta: { title: '双拓扑与模板' } },
-      { path: 'cmdb/resources', name: 'cmdb-resources', component: () => import('@/views/CmdbResourcesView.vue'), meta: { title: '统一资产台账' } },
-      { path: 'cmdb/dcim', name: 'cmdb-dcim', component: () => import('@/views/CmdbDcimView.vue'), meta: { title: '机柜与 IPAM' } },
-      { path: 'config', name: 'config', component: () => import('@/views/ConfigCenterView.vue'), meta: { title: '多环境配置中心' } },
-      { path: 'plugins', name: 'plugins', component: () => import('@/views/PluginsView.vue'), meta: { title: '声明式插件库' } },
-      { path: 'delivery', name: 'delivery', component: () => import('@/views/DeliveryView.vue'), meta: { title: '编排与发布流水线' } },
-      { path: 'ops', name: 'ops', component: () => import('@/views/OpsHubView.vue'), meta: { title: '执行舰队与制品' } },
-      { path: 'governance', name: 'governance', component: () => import('@/views/GovernanceView.vue'), meta: { title: '权限审计与设置' } },
-    ],
-  },
-  { path: '/:pathMatch(.*)*', redirect: '/dashboard' },
-]
-
-export const router = createRouter({
+const router = createRouter({
   history: createWebHistory(),
-  routes,
+  routes: [
+    {
+      path: '/login',
+      name: 'login',
+      component: () => import('@/views/LoginView.vue'),
+      meta: { public: true },
+    },
+    {
+      path: '/',
+      component: KsShell,
+      redirect: '/platform/overview',
+      children: [
+        // Tier 1: Platform Scope (平台管理)
+        { path: 'platform/overview', name: 'platform-overview', component: () => import('@/views/PlatformOverviewView.vue') },
+        { path: 'platform/tenants', name: 'platform-tenants', component: () => import('@/views/PlatformTenantsView.vue') },
+        { path: 'platform/access', name: 'platform-access', component: () => import('@/views/PlatformAccessView.vue') },
+        { path: 'platform/nodes', name: 'platform-nodes', component: () => import('@/views/PlatformNodesView.vue') },
+        { path: 'platform/gateway', name: 'platform-gateway', component: () => import('@/views/PlatformGatewayView.vue') },
+        { path: 'platform/audit', name: 'platform-audit', component: () => import('@/views/PlatformAuditView.vue') },
+
+        // Tier 2: Workspace Scope (企业空间)
+        { path: 'workspace/overview', name: 'workspace-overview', component: () => import('@/views/WorkspaceOverviewView.vue') },
+        { path: 'workspace/apps', name: 'workspace-apps', component: () => import('@/views/WorkspaceAppsView.vue') },
+        { path: 'workspace/projects', name: 'workspace-projects', component: () => import('@/views/WorkspaceProjectsView.vue') },
+
+        // Tier 3: Project / App Scope (项目工作台)
+        { path: 'project/overview', name: 'project-overview', component: () => import('@/views/ProjectOverviewView.vue') },
+        { path: 'project/assets', name: 'project-assets', component: () => import('@/views/ProjectAssetsView.vue') },
+        { path: 'project/configs', name: 'project-configs', component: () => import('@/views/ProjectConfigsView.vue') },
+        { path: 'project/jobs', name: 'project-jobs', component: () => import('@/views/ProjectJobsView.vue') },
+      ],
+    },
+    { path: '/:pathMatch(.*)*', redirect: '/platform/overview' },
+  ],
 })
 
-export default router
-
 router.beforeEach(async (to) => {
-  const auth = useAuthStore()
-  if (to.meta.public) {
-    if (auth.token && !auth.initialized) {
-      await auth.fetchMe()
-    }
-    if (auth.user) return '/dashboard'
-    return true
+  const scope = useScopeStore()
+  if (!scope.initialized) {
+    await scope.refreshMe()
   }
-  if (!auth.token) {
-    return { path: '/login', query: { redirect: to.fullPath } }
+  if (!to.meta.public && !scope.isAuthenticated) {
+    return { name: 'login', query: { redirect: to.fullPath } }
   }
-  if (!auth.initialized) {
-    const ok = await auth.fetchMe()
-    if (!ok) return { path: '/login', query: { redirect: to.fullPath } }
+  if (to.name === 'login' && scope.isAuthenticated) {
+    return { path: '/platform/overview' }
   }
   return true
 })
+
+export default router

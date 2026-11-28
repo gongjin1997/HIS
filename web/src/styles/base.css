@@ -127,7 +127,7 @@ a:hover {
 /* 4-column structured Key-Value Grid for drawers & detail panels */
 .kv-grid {
   display: grid;
-  grid-template-columns: 112px 1fr 112px 1fr;
+  grid-template-columns: 98px minmax(0, 1fr) 98px minmax(0, 1fr);
   border: 1px solid var(--ki-border-subtle);
   border-radius: var(--ki-radius-sm);
   overflow: hidden;
@@ -138,7 +138,7 @@ a:hover {
   border-bottom: 1px solid var(--ki-border-subtle);
   font-size: var(--ki-fs-sm);
   min-height: 36px;
-  word-break: break-all;
+  overflow-wrap: anywhere;
   color: var(--ki-text-primary);
 }
 
@@ -633,9 +633,9 @@ a:hover {
   html,
   body {
     /* stylelint-disable-next-line -- DESIGN.md whitelisted print-mode light override */
-    background-color: var(--ki-p-white);
+    background-color: var(--ki-bg-surface);
     /* stylelint-disable-next-line -- DESIGN.md whitelisted print-mode light override */
-    color: var(--ki-p-gray-900);
+    color: var(--ki-text-primary);
   }
 
   .ki-shell-topbar,

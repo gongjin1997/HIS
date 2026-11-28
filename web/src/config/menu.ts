@@ -1,68 +1,92 @@
-import type { Component } from 'vue'
-import {
-  Blocks,
-  GitFork,
-  HardDrive,
-  LayoutDashboard,
-  Network,
-  Rocket,
-  Server,
-  ShieldCheck,
-  SlidersHorizontal,
-  Terminal,
-} from 'lucide-vue-next'
+import type { ConsoleTier } from '@/stores/scope'
 
-export interface MenuItem {
-  key: string
+export interface KsNavItem {
   path: string
-  title: string
-  icon: Component
+  label: string
+  icon: string
+  badge?: string
+  perm?: string
 }
 
-export interface MenuGroup {
+export interface KsNavGroup {
   title: string
-  items: MenuItem[]
+  items: KsNavItem[]
 }
 
-export const MENU_GROUPS: MenuGroup[] = [
-  {
-    title: '全景总览',
-    items: [
-      { key: 'dashboard', path: '/dashboard', title: '资产与运维全景', icon: LayoutDashboard },
-    ],
+export const TIER_META: Record<
+  ConsoleTier,
+  { title: string; subtitle: string; defaultPath: string; icon: string }
+> = {
+  platform: {
+    title: '平台管理',
+    subtitle: '多租户底座、零信任节点、动态网关与审计链',
+    defaultPath: '/platform/overview',
+    icon: 'LayoutGrid',
   },
-  {
-    title: 'CMDB 资产中枢',
-    items: [
-      { key: 'cmdb-models', path: '/cmdb/models', title: '元模型与关系', icon: Network },
-      { key: 'cmdb-topology', path: '/cmdb/topology', title: '双拓扑与模板', icon: GitFork },
-      { key: 'cmdb-resources', path: '/cmdb/resources', title: '统一资产台账', icon: Server },
-      { key: 'cmdb-dcim', path: '/cmdb/dcim', title: '机柜与 IPAM', icon: HardDrive },
-    ],
+  workspace: {
+    title: '企业空间',
+    subtitle: '应用中心、双轨 AppKey 与多项目治理',
+    defaultPath: '/workspace/overview',
+    icon: 'Building2',
   },
-  {
-    title: '配置与声明式交付',
-    items: [
-      { key: 'config', path: '/config', title: '多环境配置中心', icon: SlidersHorizontal },
-      { key: 'plugins', path: '/plugins', title: '声明式插件库', icon: Blocks },
-      { key: 'delivery', path: '/delivery', title: '编排与发布流水线', icon: Rocket },
-    ],
+  project: {
+    title: '项目工作台',
+    subtitle: 'CMDB 双拓扑、KMS 配置环境与 DAG 发布编排',
+    defaultPath: '/project/overview',
+    icon: 'Layers',
   },
-  {
-    title: '执行面与安全治理',
-    items: [
-      { key: 'ops', path: '/ops', title: '执行舰队与制品', icon: Terminal },
-      { key: 'governance', path: '/governance', title: '权限审计与设置', icon: ShieldCheck },
-    ],
-  },
-]
+}
 
-export const ALL_MENU_ITEMS: MenuItem[] = MENU_GROUPS.flatMap((g) => g.items)
-
-export const GROUP_OF_PATH: Record<string, string> = Object.fromEntries(
-  MENU_GROUPS.flatMap((g) => g.items.map((item) => [item.path, g.title]))
-)
-
-export const TITLE_OF_PATH: Record<string, string> = Object.fromEntries(
-  ALL_MENU_ITEMS.map((item) => [item.path, item.title])
-)
+export const TIER_MENUS: Record<ConsoleTier, KsNavGroup[]> = {
+  platform: [
+    {
+      title: '平台概览',
+      items: [{ path: '/platform/overview', label: '平台运行总览', icon: 'Gauge' }],
+    },
+    {
+      title: '多租户与访问控制',
+      items: [
+        { path: '/platform/tenants', label: '企业空间 / 租户', icon: 'Building2' },
+        { path: '/platform/access', label: '账号、角色与策略', icon: 'ShieldCheck' },
+      ],
+    },
+    {
+      title: '基础设施底座',
+      items: [
+        { path: '/platform/nodes', label: '零信任节点池', icon: 'Server' },
+        { path: '/platform/gateway', label: '动态网关与制品', icon: 'Network' },
+      ],
+    },
+    {
+      title: '合规与可观测',
+      items: [{ path: '/platform/audit', label: '防篡改审计链', icon: 'FileCheck2' }],
+    },
+  ],
+  workspace: [
+    {
+      title: '空间总览',
+      items: [{ path: '/workspace/overview', label: '企业空间概览', icon: 'Compass' }],
+    },
+    {
+      title: '应用与项目',
+      items: [
+        { path: '/workspace/apps', label: '应用中心与 AppKey', icon: 'Boxes' },
+        { path: '/workspace/projects', label: '项目治理与授权', icon: 'FolderKanban' },
+      ],
+    },
+  ],
+  project: [
+    {
+      title: '工作台概览',
+      items: [{ path: '/project/overview', label: '项目应用概览', icon: 'Activity' }],
+    },
+    {
+      title: 'LiveOps 核心底座',
+      items: [
+        { path: '/project/assets', label: 'CMDB 资产与双拓扑', icon: 'GitFork' },
+        { path: '/project/configs', label: '配置中心与环境合集', icon: 'KeyRound' },
+        { path: '/project/jobs', label: 'DAG 部署与 SSE 流', icon: 'Workflow' },
+      ],
+    },
+  ],
+}

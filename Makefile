@@ -1,34 +1,31 @@
-MODULE := github.com/kinstall/kinstall
-LDFLAGS := -s -w
+.PHONY: all build web lint test run-api run-worker clean
 
-.PHONY: all lint test web-build build build-cross clean
+SHELL := /usr/bin/env bash
+export PATH := $(HOME)/go/bin:/usr/local/go/bin:$(PATH)
 
-all: web-build lint test build
+all: web lint test build
+
+web:
+	cd web && npm run contrast-check && npm run lint:css && npm test && npm run build
 
 lint:
-	go vet ./...
-	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run ./...; \
-	elif [ -x "$$(go env GOPATH)/bin/golangci-lint" ]; then \
-		"$$(go env GOPATH)/bin/golangci-lint" run ./...; \
-	else \
-		echo "golangci-lint not found"; exit 1; \
-	fi
+	golangci-lint run ./...
 
 test:
-	go test -race -count=1 ./...
-
-web-build:
-	cd web && npm run lint:css && npm run contrast-check && npm test && npm run build
+	go test -race -v -count=1 ./...
 
 build:
 	mkdir -p bin
-	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/kinstall ./cmd/kinstall
+	CGO_ENABLED=0 go build -trimpath -o bin/liveops-api ./cmd/liveops-api
+	CGO_ENABLED=0 go build -trimpath -o bin/liveops-worker ./cmd/liveops-worker
+	CGO_ENABLED=0 go build -trimpath -o bin/liveops-node ./cmd/liveops-node
+	CGO_ENABLED=0 go build -trimpath -o bin/liveopsctl ./cmd/liveopsctl
 
-build-cross:
-	mkdir -p bin
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/kinstall-linux-amd64 ./cmd/kinstall
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/kinstall-linux-arm64 ./cmd/kinstall
+run-api:
+	./bin/liveops-api --listen 0.0.0.0:8080
+
+run-worker:
+	./bin/liveops-worker --probe-listen 127.0.0.1:18085
 
 clean:
-	rm -rf bin dist
+	rm -rf bin/ web/dist/

@@ -23,35 +23,64 @@ linters:
             - "**/pkg/platform/**/*.go"
           deny:
             - pkg: "github.com/kinstall/kinstall/internal"
-              desc: "系统底座 pkg/platform 严禁反向依赖业务层 internal/*"
-        server-no-raw-drivers:
+              desc: "公共底座 pkg/platform 严禁反向依赖业务层 internal/*"
+        domain-zero-io:
           files:
-            - "**/internal/server/**/*.go"
+            - "**/internal/domain/**/*.go"
+          deny:
+            - pkg: "database/sql"
+              desc: "领域层零 I/O（LiveOps 工程边界规范）"
+            - pkg: "net/http"
+              desc: "领域层零 I/O"
+            - pkg: "os/exec"
+              desc: "领域层零 I/O"
+            - pkg: "github.com/kinstall/kinstall/internal/adapter"
+              desc: "领域层不得依赖适配器"
+            - pkg: "github.com/kinstall/kinstall/internal/transport"
+              desc: "领域层不得依赖传输层"
+        usecase-no-transport:
+          files:
+            - "**/internal/usecase/**/*.go"
+          deny:
+            - pkg: "net/http"
+              desc: "用例层不得依赖 HTTP 传输协议"
+            - pkg: "github.com/kinstall/kinstall/internal/transport"
+              desc: "用例层不得反向依赖传输层"
+        transport-no-drivers:
+          files:
+            - "**/internal/transport/**/*.go"
           deny:
             - pkg: "modernc.org/sqlite"
-              desc: "接入层严禁直连数据库驱动"
+              desc: "传输层严禁直连数据库驱动"
             - pkg: "github.com/jackc/pgx/v5"
-              desc: "接入层严禁直连数据库驱动"
-            - pkg: "github.com/uptrace/bun"
-              desc: "接入层严禁直连 ORM"
-        db-only-bun:
+              desc: "传输层严禁直连数据库驱动"
+        block-os-exec-controlplane:
           files:
-            - "**/internal/**/*.go"
+            - "**/internal/transport/**/*.go"
+            - "**/internal/usecase/**/*.go"
+            - "**/internal/adapter/store/**/*.go"
+            - "**/pkg/platform/**/*.go"
           deny:
-            - pkg: "github.com/uptrace/bun"
-              desc: "数据库访问统一通过 pkg/platform/db 底座"
-        no-forbidden-deps:
+            - pkg: "os/exec"
+              desc: "控制面严禁直接调用宿主机命令行（LiveOps LR 红线）"
+        security-denylist:
           files:
             - "$all"
           deny:
+            - pkg: "crypto/md5"
+              desc: "禁止使用弱哈希 MD5，请改用 crypto/sha256"
+            - pkg: "crypto/sha1"
+              desc: "禁止使用弱哈希 SHA-1，请改用 crypto/sha256"
+            - pkg: "crypto/des"
+              desc: "禁止使用 DES/3DES，请改用 pkg/platform/crypto"
+            - pkg: "math/rand"
+              desc: "安全随机与令牌严禁使用 math/rand，请使用 crypto/rand"
             - pkg: "github.com/mattn/go-sqlite3"
-              desc: "需要 CGO，违反 CGO_ENABLED=0 静态单二进制铁律"
+              desc: "禁止 CGO SQLite，保持 CGO_ENABLED=0"
             - pkg: "gorm.io/gorm"
-              desc: "禁止引入 gorm"
+              desc: "禁止使用 GORM"
             - pkg: "github.com/tjfoc/gmsm"
-              desc: "已停维，统一使用 github.com/emmansun/gmsm"
-            - pkg: "plugin"
-              desc: "Go plugin 不可移植，使用声明式 YAML 插件包"
+              desc: "已停维，请使用 github.com/emmansun/gmsm"
     gosec:
       excludes:
         - G104

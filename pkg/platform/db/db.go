@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -17,7 +18,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Dialect represents the active SQL database engine.
 type Dialect string
 
 const (
@@ -25,32 +25,36 @@ const (
 	DialectPostgres Dialect = "postgres"
 )
 
-// Config controls database startup.
-type Config struct {
-	Driver string // "sqlite" or "postgres"
-	DSN    string // file path (or ":memory:") for sqlite; postgres URL for postgres
+// Scope represents the mandatory LiveOps multi-tenant isolation key (tenant_id, app_id).
+type Scope struct {
+	TenantID string
+	AppID    string
 }
 
-// Store wraps dual-dialect SQLite (split writer/reader WAL pools) or PostgreSQL pgx/v5 pools.
+type Config struct {
+	Driver string // "sqlite" | "postgres"
+	DSN    string
+}
+
+// Store provides dual-dialect SQLite WAL (1-writer / 4-reader split) & PostgreSQL 16 (RLS + advisory locks).
 type Store struct {
 	dialect Dialect
 	writer  *sql.DB
 	reader  *sql.DB
 }
 
-// Open initializes the database pools according to cfg.
 func Open(ctx context.Context, cfg Config) (*Store, error) {
-	driver := strings.ToLower(strings.TrimSpace(cfg.Driver))
-	if driver == "" {
-		driver = string(DialectSQLite)
+	drv := strings.ToLower(strings.TrimSpace(cfg.Driver))
+	if drv == "" {
+		drv = string(DialectSQLite)
 	}
-	switch Dialect(driver) {
+	switch Dialect(drv) {
 	case DialectSQLite:
 		return openSQLite(ctx, cfg.DSN)
 	case DialectPostgres:
 		return openPostgres(ctx, cfg.DSN)
 	default:
-		return nil, fmt.Errorf("unsupported database driver %q", cfg.Driver)
+		return nil, fmt.Errorf("unsupported db driver %q", cfg.Driver)
 	}
 }
 
@@ -61,8 +65,7 @@ func openSQLite(ctx context.Context, dsn string) (*Store, error) {
 	isMem := dsn == ":memory:" || strings.Contains(dsn, "mode=memory")
 	var writerDSN, readerDSN string
 	if isMem {
-		// Shared-cache in-memory SQLite lets writer and reader share one isolated test DB.
-		writerDSN = "file:kinstall_mem?mode=memory&cache=shared&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+		writerDSN = "file::memory:?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
 		readerDSN = writerDSN
 	} else {
 		if err := os.MkdirAll(filepath.Dir(dsn), 0o750); err != nil {
@@ -79,17 +82,14 @@ func openSQLite(ctx context.Context, dsn string) (*Store, error) {
 	}
 	writer.SetMaxOpenConns(1)
 	writer.SetMaxIdleConns(1)
-	writer.SetConnMaxLifetime(0)
-
 	if err := writer.PingContext(ctx); err != nil {
 		_ = writer.Close()
 		return nil, fmt.Errorf("ping sqlite writer: %w", err)
 	}
 	if !isMem {
-		// Ensure WAL file is initialized before opening read-only pool.
 		if _, err := writer.ExecContext(ctx, `PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;`); err != nil {
 			_ = writer.Close()
-			return nil, fmt.Errorf("init sqlite pragmas: %w", err)
+			return nil, err
 		}
 	}
 
@@ -102,20 +102,14 @@ func openSQLite(ctx context.Context, dsn string) (*Store, error) {
 		}
 		r.SetMaxOpenConns(4)
 		r.SetMaxIdleConns(4)
-		r.SetConnMaxLifetime(0)
 		if err := r.PingContext(ctx); err != nil {
 			_ = r.Close()
 			_ = writer.Close()
-			return nil, fmt.Errorf("ping sqlite reader: %w", err)
+			return nil, err
 		}
 		reader = r
 	}
-
-	return &Store{
-		dialect: DialectSQLite,
-		writer:  writer,
-		reader:  reader,
-	}, nil
+	return &Store{dialect: DialectSQLite, writer: writer, reader: reader}, nil
 }
 
 func openPostgres(ctx context.Context, dsn string) (*Store, error) {
@@ -126,30 +120,22 @@ func openPostgres(ctx context.Context, dsn string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
-	pool.SetMaxOpenConns(25)
-	pool.SetMaxIdleConns(5)
+	pool.SetMaxOpenConns(24)
+	pool.SetMaxIdleConns(6)
 	pool.SetConnMaxLifetime(30 * time.Minute)
 	if err := pool.PingContext(ctx); err != nil {
 		_ = pool.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
-	return &Store{
-		dialect: DialectPostgres,
-		writer:  pool,
-		reader:  pool,
-	}, nil
+	return &Store{dialect: DialectPostgres, writer: pool, reader: pool}, nil
 }
 
-// Migrate runs forward Goose SQL migrations embedded in migrationsFS.
+func (s *Store) Dialect() Dialect { return s.dialect }
+
 func (s *Store) Migrate(ctx context.Context, migrationsFS fs.FS) error {
-	var gd goose.Dialect
-	switch s.dialect {
-	case DialectSQLite:
-		gd = goose.DialectSQLite3
-	case DialectPostgres:
+	gd := goose.DialectSQLite3
+	if s.dialect == DialectPostgres {
 		gd = goose.DialectPostgres
-	default:
-		return fmt.Errorf("unsupported migration dialect %q", s.dialect)
 	}
 	provider, err := goose.NewProvider(gd, s.writer, migrationsFS)
 	if err != nil {
@@ -161,12 +147,6 @@ func (s *Store) Migrate(ctx context.Context, migrationsFS fs.FS) error {
 	return nil
 }
 
-// Dialect returns the active SQL dialect.
-func (s *Store) Dialect() Dialect {
-	return s.dialect
-}
-
-// Rebind translates '?' parameter placeholders to '$1, $2, ...' on PostgreSQL.
 func (s *Store) Rebind(query string) string {
 	if s.dialect != DialectPostgres {
 		return query
@@ -193,55 +173,91 @@ func (s *Store) Rebind(query string) string {
 	return b.String()
 }
 
-// Exec runs a write statement on the writer pool.
-func (s *Store) Exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	return s.writer.ExecContext(ctx, s.Rebind(query), args...)
-}
-
-// Query runs a read statement on the reader pool.
-func (s *Store) Query(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	return s.reader.QueryContext(ctx, s.Rebind(query), args...)
-}
-
-// QueryRow runs a single-row read statement on the reader pool.
-func (s *Store) QueryRow(ctx context.Context, query string, args ...any) *sql.Row {
-	return s.reader.QueryRowContext(ctx, s.Rebind(query), args...)
-}
-
-// Tx wraps *sql.Tx with automatic dialect rebinding.
+// Tx wraps *sql.Tx with automatic dialect rebinding & Postgres RLS scope enforcement.
 type Tx struct {
 	store *Store
 	tx    *sql.Tx
+	scope Scope
 }
 
-// Exec executes a statement inside the transaction.
+func (t *Tx) Scope() Scope     { return t.scope }
+func (t *Tx) Dialect() Dialect { return t.store.dialect }
+
 func (t *Tx) Exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	return t.tx.ExecContext(ctx, t.store.Rebind(query), args...)
 }
 
-// Query runs a query inside the transaction.
 func (t *Tx) Query(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
 	return t.tx.QueryContext(ctx, t.store.Rebind(query), args...)
 }
 
-// QueryRow runs a single-row query inside the transaction.
 func (t *Tx) QueryRow(ctx context.Context, query string, args ...any) *sql.Row {
 	return t.tx.QueryRowContext(ctx, t.store.Rebind(query), args...)
 }
 
-// WithTx executes fn inside a writer transaction and rolls back automatically on error or panic.
+// TryAdvisoryLock acquires a non-blocking transaction-scoped advisory lock on PostgreSQL
+// (SQLite single-writer transactions are already serialized cleanly).
+func (t *Tx) TryAdvisoryLock(ctx context.Context, key string) (bool, error) {
+	if t.store.dialect != DialectPostgres {
+		return true, nil
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(key))
+	var ok bool
+	err := t.tx.QueryRowContext(ctx, "SELECT pg_try_advisory_xact_lock($1)", int64(h.Sum64())).Scan(&ok) // #nosec G115 -- deterministic hash key for PG advisory lock
+	return ok, err
+}
+
+// WithTx executes fn inside a writer transaction with automatic rollback on error or panic.
 func (s *Store) WithTx(ctx context.Context, fn func(ctx context.Context, tx *Tx) error) error {
-	rawTx, err := s.writer.BeginTx(ctx, nil)
+	return s.withTxOptions(ctx, Scope{}, nil, fn)
+}
+
+// WithScopeTx executes fn inside a tenant/app-scoped transaction, injecting SET LOCAL app.tenant_id / app.app_id on PostgreSQL.
+func (s *Store) WithScopeTx(ctx context.Context, scope Scope, fn func(ctx context.Context, tx *Tx) error) error {
+	if strings.TrimSpace(scope.TenantID) == "" {
+		return errors.New("tenant_id is required for scoped transaction")
+	}
+	return s.withTxOptions(ctx, scope, nil, fn)
+}
+
+// WithRepeatableReadTx executes fn inside a consistent snapshot read transaction (for LiveOps D19 job snapshot reads).
+func (s *Store) WithRepeatableReadTx(ctx context.Context, scope Scope, fn func(ctx context.Context, tx *Tx) error) error {
+	opts := &sql.TxOptions{ReadOnly: true}
+	if s.dialect == DialectPostgres {
+		opts.Isolation = sql.LevelRepeatableRead
+	}
+	return s.withTxOptions(ctx, scope, opts, fn)
+}
+
+func (s *Store) withTxOptions(ctx context.Context, scope Scope, opts *sql.TxOptions, fn func(ctx context.Context, tx *Tx) error) error {
+	pool := s.writer
+	if opts != nil && opts.ReadOnly {
+		pool = s.reader
+	}
+	rawTx, err := pool.BeginTx(ctx, opts)
 	if err != nil {
 		return err
 	}
-	wtx := &Tx{store: s, tx: rawTx}
+	wtx := &Tx{store: s, tx: rawTx, scope: scope}
 	defer func() {
 		if p := recover(); p != nil {
 			_ = rawTx.Rollback()
 			panic(p)
 		}
 	}()
+	if s.dialect == DialectPostgres && scope.TenantID != "" {
+		if _, err := rawTx.ExecContext(ctx, "SELECT set_config('app.tenant_id', $1, true)", scope.TenantID); err != nil {
+			_ = rawTx.Rollback()
+			return fmt.Errorf("inject rls tenant_id: %w", err)
+		}
+		if scope.AppID != "" {
+			if _, err := rawTx.ExecContext(ctx, "SELECT set_config('app.app_id', $1, true)", scope.AppID); err != nil {
+				_ = rawTx.Rollback()
+				return fmt.Errorf("inject rls app_id: %w", err)
+			}
+		}
+	}
 	if err := fn(ctx, wtx); err != nil {
 		_ = rawTx.Rollback()
 		return err
@@ -249,28 +265,39 @@ func (s *Store) WithTx(ctx context.Context, fn func(ctx context.Context, tx *Tx)
 	return rawTx.Commit()
 }
 
-// Ping verifies database connectivity.
-func (s *Store) Ping(ctx context.Context) error {
-	return s.writer.PingContext(ctx)
+func (s *Store) Exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return s.writer.ExecContext(ctx, s.Rebind(query), args...)
 }
 
-// Close closes both database pools cleanly.
+func (s *Store) Query(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return s.reader.QueryContext(ctx, s.Rebind(query), args...)
+}
+
+func (s *Store) QueryRow(ctx context.Context, query string, args ...any) *sql.Row {
+	return s.reader.QueryRowContext(ctx, s.Rebind(query), args...)
+}
+
+func (s *Store) Ping(ctx context.Context) error { return s.writer.PingContext(ctx) }
+
 func (s *Store) Close() error {
-	var err1, err2 error
+	var e1, e2 error
 	if s.reader != nil && s.reader != s.writer {
-		err1 = s.reader.Close()
+		e1 = s.reader.Close()
 	}
 	if s.writer != nil {
-		err2 = s.writer.Close()
+		e2 = s.writer.Close()
 	}
-	return errors.Join(err1, err2)
+	return errors.Join(e1, e2)
 }
 
-// SafeOrderBy maps user-requested sort keys through an explicit allow-list to eliminate SQL injection.
-func SafeOrderBy(requested string, allow map[string]string, fallback string) string {
-	key := strings.ToLower(strings.TrimSpace(requested))
-	if expr, ok := allow[key]; ok {
-		return expr
+// SafeOrderBy maps requested sort column through a strict allow-list to eliminate ORDER BY SQL injection.
+func SafeOrderBy(field, dir string, allow map[string]string, fallback string) string {
+	col, ok := allow[strings.ToLower(strings.TrimSpace(field))]
+	if !ok {
+		return fallback
 	}
-	return fallback
+	if strings.EqualFold(strings.TrimSpace(dir), "asc") {
+		return col + " ASC"
+	}
+	return col + " DESC"
 }

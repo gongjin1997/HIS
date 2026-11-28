@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useWorkspaceStore } from '@/stores/workspace'
+import { useScopeStore } from '@/stores/scope'
 
-const ws = useWorkspaceStore()
+const scope = useScopeStore()
 const { locale } = useI18n()
 
 watch(
-  () => ws.lang,
+  () => scope.lang,
   (v) => {
     locale.value = v
   },

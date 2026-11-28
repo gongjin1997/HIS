@@ -1,151 +1,193 @@
-export interface ErrorBody {
-  code?: string
-  message?: string
-  detail?: string
-  traceId?: string
-  title?: string
+// LiveOps Foundation v1 Typed HTTP & Strict SSE Client
+export interface ApiResponse<T> {
+  data: T
+  etag: string
+  status: number
+  replayed?: boolean
 }
 
-export class APIError extends Error {
+export class ApiError extends Error {
   status: number
   code: string
-  traceId: string
-  detail: string
-
-  constructor(status: number, body: ErrorBody) {
-    super(body.message || body.title || body.detail || `HTTP ${status}`)
+  details?: Record<string, unknown>
+  constructor(status: number, code: string, message: string, details?: Record<string, unknown>) {
+    super(message || code)
     this.status = status
-    this.code = body.code || 'API_ERROR'
-    this.traceId = body.traceId || ''
-    this.detail = body.detail || ''
+    this.code = code
+    this.details = details
   }
 }
 
-export interface SSELogLine {
-  seq: number
-  timestamp: string
-  stream: string
-  level: string
-  message: string
-  done?: boolean
-  status?: string
+export interface ScopeHeaders {
+  tenantId?: string
+  appId?: string
+  projectId?: string
 }
 
-function baseHeaders(extra?: Record<string, string>): Record<string, string> {
-  const token = localStorage.getItem('kinstall.token') || ''
-  const wsId = localStorage.getItem('kinstall.workspaceId') || ''
-  const headers: Record<string, string> = {
-    ...(extra || {}),
-  }
-  if (token) headers.Authorization = `Bearer ${token}`
-  if (wsId) headers['X-Workspace-Id'] = wsId
-  return headers
+let scopeProvider: () => ScopeHeaders = () => ({})
+let tokenProvider: () => string = () => localStorage.getItem('liveops.token') || ''
+let unauthorizedHandler: () => void = () => {}
+
+export function configureApiClient(opts: {
+  getScope?: () => ScopeHeaders
+  getToken?: () => string
+  onUnauthorized?: () => void
+}) {
+  if (opts.getScope) scopeProvider = opts.getScope
+  if (opts.getToken) tokenProvider = opts.getToken
+  if (opts.onUnauthorized) unauthorizedHandler = opts.onUnauthorized
+}
+
+export function newIdempotencyKey(prefix = 'ui'): string {
+  const rand = Math.random().toString(36).slice(2, 10)
+  return `${prefix}-${Date.now()}-${rand}`
 }
 
 export async function apiRequest<T>(
   method: string,
   path: string,
-  opts?: { body?: unknown; headers?: Record<string, string> }
-): Promise<{ data: T }> {
-  const headers = baseHeaders({ Accept: 'application/json', ...(opts?.headers || {}) })
-  if (opts?.body !== undefined) headers['Content-Type'] = 'application/json'
+  opts: {
+    body?: unknown
+    ifMatch?: string | number
+    idempotencyKey?: string
+    headers?: Record<string, string>
+    rawBody?: BodyInit
+  } = {}
+): Promise<ApiResponse<T>> {
+  const headers: Record<string, string> = { ...(opts.headers || {}) }
+  const tok = tokenProvider()
+  if (tok && !headers.Authorization) {
+    headers.Authorization = `Bearer ${tok}`
+  }
+  const sc = scopeProvider()
+  if (sc.tenantId && !headers['X-Tenant-Id']) headers['X-Tenant-Id'] = sc.tenantId
+  if (sc.appId && !headers['X-App-Id']) headers['X-App-Id'] = sc.appId
+  if (sc.projectId && !headers['X-Project-Id']) headers['X-Project-Id'] = sc.projectId
 
-  const resp = await fetch(path, {
+  if (opts.ifMatch !== undefined && opts.ifMatch !== '') {
+    const raw = String(opts.ifMatch).trim()
+    headers['If-Match'] = raw.startsWith('"') ? raw : `"${raw}"`
+  }
+  if (opts.idempotencyKey) {
+    headers['Idempotency-Key'] = opts.idempotencyKey
+  }
+
+  let body: BodyInit | undefined = opts.rawBody
+  if (opts.body !== undefined && !body) {
+    headers['Content-Type'] = 'application/json'
+    body = JSON.stringify(opts.body)
+  }
+
+  const res = await fetch(path, {
     method,
-    credentials: 'same-origin',
     headers,
-    body: opts?.body !== undefined ? JSON.stringify(opts.body) : undefined,
-  })
-
-  if (resp.status === 204) {
-    return { data: undefined as unknown as T }
-  }
-  const text = await resp.text()
-  let parsed: unknown = null
-  try {
-    parsed = text ? JSON.parse(text) : null
-  } catch {
-    parsed = { message: text }
-  }
-  if (!resp.ok) {
-    throw new APIError(resp.status, (parsed as ErrorBody) || { message: resp.statusText })
-  }
-  return { data: parsed as T }
-}
-
-export async function apiUpload<T>(path: string, formData: FormData): Promise<T> {
-  const resp = await fetch(path, {
-    method: 'POST',
+    body,
     credentials: 'same-origin',
-    headers: baseHeaders({ Accept: 'application/json' }),
-    body: formData,
   })
-  const text = await resp.text()
-  let parsed: unknown = null
-  try {
-    parsed = text ? JSON.parse(text) : null
-  } catch {
-    parsed = { message: text }
-  }
-  if (!resp.ok) {
-    throw new APIError(resp.status, (parsed as ErrorBody) || { message: resp.statusText })
-  }
-  return parsed as T
-}
 
-export async function apiDownload(path: string, defaultFilename: string): Promise<void> {
-  const resp = await fetch(path, {
-    method: 'GET',
-    credentials: 'same-origin',
-    headers: baseHeaders(),
-  })
-  if (!resp.ok) {
-    const text = await resp.text()
-    let parsed: ErrorBody = { message: resp.statusText, detail: text }
+  if (res.status === 401 && !path.includes('/auth/login')) {
+    unauthorizedHandler()
+  }
+
+  const etag = res.headers.get('ETag') || ''
+  const replayed = res.headers.get('X-Idempotency-Replayed') === 'true'
+  const text = await res.text()
+  let parsed: unknown = {}
+  if (text) {
     try {
-      parsed = JSON.parse(text) as ErrorBody
+      parsed = JSON.parse(text)
     } catch {
-      // keep raw text
+      parsed = { message: text }
     }
-    throw new APIError(resp.status, parsed)
   }
-  const blob = await resp.blob()
-  const cd = resp.headers.get('Content-Disposition') || ''
-  const m = cd.match(/filename="?([^";]+)"?/i)
-  const filename = m?.[1] || defaultFilename
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  URL.revokeObjectURL(url)
+
+  if (!res.ok) {
+    const errObj = parsed as { code?: string; message?: string; details?: Record<string, unknown> }
+    throw new ApiError(res.status, errObj.code || `HTTP_${res.status}`, errObj.message || res.statusText, errObj.details)
+  }
+
+  return { data: parsed as T, etag, status: res.status, replayed }
 }
 
-export function openSSEStream(
-  topic: string,
-  onLine: (line: SSELogLine) => void,
-  onEnd?: () => void
+export const api = {
+  get: <T>(path: string, headers?: Record<string, string>) => apiRequest<T>('GET', path, { headers }),
+  post: <T>(path: string, body?: unknown, opts?: { ifMatch?: string | number; idempotencyKey?: string }) =>
+    apiRequest<T>('POST', path, { body, ...opts }),
+  put: <T>(path: string, body?: unknown, opts?: { ifMatch?: string | number }) =>
+    apiRequest<T>('PUT', path, { body, ...opts }),
+  del: <T>(path: string, opts?: { ifMatch?: string | number }) => apiRequest<T>('DELETE', path, opts),
+}
+
+// Strict LiveOps U01-U09 SSE Timeline Streamer (always requires initial lastSeq from snapshot!)
+export function subscribeJobTimeline(
+  jobId: string,
+  lastSeq: number,
+  callbacks: {
+    onEvent: (seq: number, eventType: string, data: Record<string, unknown>) => void
+    onResetRequired?: () => void
+    onError?: (err: Error) => void
+  }
 ): () => void {
-  const token = localStorage.getItem('kinstall.token') || ''
-  const url = `/api/v1/stream/${encodeURIComponent(topic)}?token=${encodeURIComponent(token)}`
-  const es = new EventSource(url)
-  es.addEventListener('log', (ev) => {
-    try {
-      const parsed = JSON.parse((ev as MessageEvent).data) as SSELogLine
-      onLine(parsed)
-      if (parsed.done) {
-        es.close()
-        onEnd?.()
-      }
-    } catch {
-      // ignore malformed frame
-    }
-  })
-  es.onerror = () => {
-    es.close()
-    onEnd?.()
+  const ctrl = new AbortController()
+  const sc = scopeProvider()
+  const tok = tokenProvider()
+  const headers: Record<string, string> = {
+    Accept: 'text/event-stream',
+    'Last-Event-ID': String(Math.max(0, lastSeq)),
   }
-  return () => es.close()
+  if (tok) headers.Authorization = `Bearer ${tok}`
+  if (sc.tenantId) headers['X-Tenant-Id'] = sc.tenantId
+  if (sc.appId) headers['X-App-Id'] = sc.appId
+
+  ;(async () => {
+    try {
+      const res = await fetch(`/api/v1/deploy/jobs/${encodeURIComponent(jobId)}/events`, {
+        headers,
+        signal: ctrl.signal,
+        credentials: 'same-origin',
+      })
+      if (res.status === 410 || res.status === 409) {
+        callbacks.onResetRequired?.()
+        return
+      }
+      if (!res.ok || !res.body) {
+        callbacks.onError?.(new Error(`SSE HTTP ${res.status}`))
+        return
+      }
+      const reader = res.body.getReader()
+      const dec = new TextDecoder()
+      let buf = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += dec.decode(value, { stream: true })
+        const frames = buf.split('\n\n')
+        buf = frames.pop() || ''
+        for (const frame of frames) {
+          if (!frame.trim() || frame.trim().startsWith(':')) continue
+          let seq = 0
+          let evType = 'message'
+          let dataStr = ''
+          for (const line of frame.split('\n')) {
+            if (line.startsWith('id:')) seq = Number(line.slice(3).trim()) || 0
+            else if (line.startsWith('event:')) evType = line.slice(6).trim()
+            else if (line.startsWith('data:')) dataStr += line.slice(5).trim()
+          }
+          if (dataStr) {
+            try {
+              callbacks.onEvent(seq, evType, JSON.parse(dataStr))
+            } catch {
+              // ignore non-JSON frames
+            }
+          }
+        }
+      }
+    } catch (e) {
+      if (!ctrl.signal.aborted) {
+        callbacks.onError?.(e instanceof Error ? e : new Error(String(e)))
+      }
+    }
+  })()
+
+  return () => ctrl.abort()
 }

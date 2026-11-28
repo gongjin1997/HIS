@@ -11,121 +11,86 @@ import (
 	"time"
 )
 
-// ValidateIP checks whether ip is safe to dial or probe.
-// Cloud metadata (169.254.0.0/16), link-local, multicast, and unspecified addresses are ALWAYS blocked.
+var alwaysBlockedPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("169.254.0.0/16"), // Cloud metadata (AWS/Huawei/GCP)
+	netip.MustParsePrefix("fe80::/10"),      // IPv6 link-local
+}
+
+var privatePrefixes = []netip.Prefix{
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("::1/128"),
+	netip.MustParsePrefix("fc00::/7"),
+}
+
+// ValidateIP checks whether ip is safe to dial. Cloud metadata & link-local are ALWAYS blocked.
 func ValidateIP(ip net.IP, allowPrivate bool) error {
 	if ip == nil {
-		return errors.New("empty IP address")
+		return errors.New("empty IP")
 	}
 	addr, ok := netip.AddrFromSlice(ip)
 	if !ok {
-		return errors.New("invalid IP address")
+		return errors.New("invalid IP")
 	}
 	addr = addr.Unmap()
-
-	if addr.IsUnspecified() || addr.IsMulticast() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() {
-		return fmt.Errorf("blocked link-local/metadata/multicast IP %s", addr.String())
+	if addr.IsUnspecified() || addr.IsMulticast() {
+		return fmt.Errorf("ssrf blocked: unspecified/multicast ip %s", addr)
 	}
-	if !allowPrivate && (addr.IsPrivate() || addr.IsLoopback()) {
-		return fmt.Errorf("blocked private/loopback IP %s", addr.String())
+	for _, p := range alwaysBlockedPrefixes {
+		if p.Contains(addr) {
+			return fmt.Errorf("ssrf blocked: restricted metadata/link-local ip %s", addr)
+		}
+	}
+	if !allowPrivate {
+		for _, p := range privatePrefixes {
+			if p.Contains(addr) {
+				return fmt.Errorf("ssrf blocked: restricted private/loopback ip %s", addr)
+			}
+		}
 	}
 	return nil
 }
 
-// ExpandCIDR validates a CIDR string and expands up to maxHosts safe probe targets.
-// Loopback/private enterprise LAN CIDRs are permitted, while cloud metadata & link-local ranges are always blocked.
-func ExpandCIDR(cidr string, maxHosts int) ([]string, error) {
-	if maxHosts <= 0 {
-		maxHosts = 1024
-	}
-	prefix, err := netip.ParsePrefix(strings.TrimSpace(cidr))
-	if err != nil {
-		return nil, fmt.Errorf("invalid CIDR %q: %w", cidr, err)
-	}
-	prefix = prefix.Masked()
-	if !prefix.Addr().Is4() {
-		return nil, errors.New("only IPv4 CIDR ranges are supported for batch scanning")
-	}
-	bits := prefix.Bits()
-	if bits < 16 {
-		return nil, fmt.Errorf("CIDR prefix /%d is too broad (minimum allowed is /16)", bits)
-	}
-	hostCount := 1 << (32 - bits)
-	if hostCount > maxHosts+2 {
-		return nil, fmt.Errorf("CIDR contains %d addresses, exceeding limit %d", hostCount, maxHosts)
-	}
-
-	out := make([]string, 0, min(hostCount, maxHosts))
-	curr := prefix.Addr()
-	for prefix.Contains(curr) {
-		ip := net.IP(curr.AsSlice())
-		if err := ValidateIP(ip, true); err != nil {
-			return nil, fmt.Errorf("CIDR intersects forbidden address %s: %w", curr.String(), err)
-		}
-		out = append(out, curr.String())
-		next := curr.Next()
-		if !next.IsValid() || next == curr {
-			break
-		}
-		curr = next
-	}
-	// Strip network and broadcast addresses for prefixes smaller than /31.
-	if bits <= 30 && len(out) > 2 {
-		out = out[1 : len(out)-1]
-	}
-	if len(out) > maxHosts {
-		out = out[:maxHosts]
-	}
-	return out, nil
-}
-
-// NewSafeHTTPClient returns an HTTP client whose DialContext validates every resolved IP
-// immediately prior to TCP connection, neutralizing DNS rebinding & cloud-metadata SSRF.
-func NewSafeHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
-	if timeout <= 0 {
-		timeout = 10 * time.Second
-	}
-	dialer := &net.Dialer{
-		Timeout:   min(timeout, 5*time.Second),
-		KeepAlive: 30 * time.Second,
-	}
-	transport := &http.Transport{
-		Proxy: nil, // Never trust ambient HTTP_PROXY to bypass SSRF checks.
+// NewSafeTransport constructs an anti-SSRF & anti-DNS-Rebinding HTTP transport (LiveOps 04.2 Spec).
+func NewSafeTransport(allowedHostSuffixes []string, allowPrivate bool) *http.Transport {
+	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
+	return &http.Transport{
+		Proxy: nil,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
-				return nil, fmt.Errorf("invalid dial address %q: %w", addr, err)
+				return nil, err
+			}
+			if len(allowedHostSuffixes) > 0 && !matchHostSuffix(host, allowedHostSuffixes) {
+				return nil, fmt.Errorf("ssrf blocked: host %q not in allowlist", host)
 			}
 			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 			if err != nil || len(ips) == 0 {
-				return nil, fmt.Errorf("dns lookup failed for %q: %w", host, err)
+				return nil, errors.New("dns resolution failed")
 			}
-			var lastErr error
 			for _, ipAddr := range ips {
 				if err := ValidateIP(ipAddr.IP, allowPrivate); err != nil {
 					return nil, err
 				}
-				conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ipAddr.IP.String(), port))
-				if err == nil {
-					return conn, nil
-				}
-				lastErr = err
 			}
-			return nil, lastErr
+			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
 		},
-		MaxIdleConns:          32,
-		IdleConnTimeout:       60 * time.Second,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+		MaxIdleConns:        64,
+		IdleConnTimeout:     60 * time.Second,
+		TLSHandshakeTimeout: 5 * time.Second,
 	}
-	return &http.Client{
-		Transport: transport,
-		Timeout:   timeout,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return errors.New("stopped after 5 redirects")
-			}
-			return nil
-		},
+}
+
+func matchHostSuffix(host string, suffixes []string) bool {
+	h := strings.ToLower(strings.TrimSuffix(host, "."))
+	for _, s := range suffixes {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if h == s || strings.HasSuffix(h, "."+s) {
+			return true
+		}
 	}
+	return false
 }

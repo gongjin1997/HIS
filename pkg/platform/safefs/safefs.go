@@ -10,133 +10,114 @@ import (
 	"strings"
 )
 
-// ExtractLimits guards tar extraction against ZipSlip and ZipBomb attacks.
 type ExtractLimits struct {
 	MaxFiles      int
-	MaxFileBytes  int64
 	MaxTotalBytes int64
+	MaxFileBytes  int64
 }
 
-// DefaultLimits returns conservative archive extraction bounds.
 func DefaultLimits() ExtractLimits {
-	return ExtractLimits{
-		MaxFiles:      4096,
-		MaxFileBytes:  256 << 20, // 256 MiB
-		MaxTotalBytes: 1 << 30,   // 1 GiB
-	}
+	return ExtractLimits{MaxFiles: 4096, MaxTotalBytes: 1 << 30, MaxFileBytes: 256 << 20}
 }
 
-// SafeJoin joins relPath under baseDir while rejecting null bytes, absolute escapes, and ".." traversal.
+// SafeJoin prevents null-byte and directory traversal outside baseDir.
 func SafeJoin(baseDir, relPath string) (string, error) {
-	if strings.ContainsRune(relPath, '\x00') {
-		return "", errors.New("path contains null byte")
+	if strings.ContainsRune(relPath, 0) {
+		return "", errors.New("null byte in path")
 	}
 	absBase, err := filepath.Abs(filepath.Clean(baseDir))
 	if err != nil {
-		return "", fmt.Errorf("resolve base dir: %w", err)
+		return "", err
 	}
-	cleanRel := filepath.Clean("/" + strings.ReplaceAll(relPath, "\\", "/"))
-	cleanRel = strings.TrimPrefix(cleanRel, "/")
-	joined := filepath.Join(absBase, cleanRel)
-
-	rel, err := filepath.Rel(absBase, joined)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q escapes base directory", relPath)
+	target := filepath.Clean(filepath.Join(absBase, relPath))
+	if target != absBase && !strings.HasPrefix(target, absBase+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path traversal blocked: %q", relPath)
 	}
-	return joined, nil
+	return target, nil
 }
 
-// SafeExtractTar extracts regular files & directories from a tar stream into destDir.
-// Rejects symlinks, hardlinks, device nodes, ZipSlip paths, and ZipBomb sizes.
-func SafeExtractTar(r io.Reader, destDir string, limits ExtractLimits) ([]string, error) {
-	if limits.MaxFiles <= 0 {
-		limits = DefaultLimits()
+// SafeExtractTar blocks ZipSlip, ZipBomb, symlinks, and hardlinks during archive extraction.
+func SafeExtractTar(r io.Reader, destDir string, lim ExtractLimits) ([]string, error) {
+	if lim.MaxFiles <= 0 {
+		lim = DefaultLimits()
 	}
 	if err := os.MkdirAll(destDir, 0o750); err != nil {
 		return nil, err
 	}
 	tr := tar.NewReader(r)
 	var (
-		extracted  []string
-		fileCount  int
 		totalBytes int64
+		files      int
+		extracted  []string
 	)
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			break
+			return extracted, nil
 		}
 		if err != nil {
-			return nil, fmt.Errorf("read tar entry: %w", err)
+			return nil, err
 		}
-		fileCount++
-		if fileCount > limits.MaxFiles {
-			return nil, fmt.Errorf("tar archive exceeds max file count %d", limits.MaxFiles)
+		files++
+		if files > lim.MaxFiles {
+			return nil, errors.New("tar extract exceeded max file count")
 		}
-		if strings.Contains(hdr.Name, "..") {
-			return nil, fmt.Errorf("zip-slip path rejected: %q", hdr.Name)
+		if hdr.Typeflag == tar.TypeSymlink || hdr.Typeflag == tar.TypeLink {
+			return nil, fmt.Errorf("symlink/hardlink forbidden in archive: %s", hdr.Name)
 		}
 		target, err := SafeJoin(destDir, hdr.Name)
 		if err != nil {
 			return nil, err
 		}
-		switch hdr.Typeflag {
-		case tar.TypeDir:
+		if hdr.Typeflag == tar.TypeDir {
 			if err := os.MkdirAll(target, 0o750); err != nil {
 				return nil, err
 			}
-		case tar.TypeReg:
-			if hdr.Size < 0 || hdr.Size > limits.MaxFileBytes {
-				return nil, fmt.Errorf("file %q exceeds max size %d", hdr.Name, limits.MaxFileBytes)
-			}
-			if totalBytes+hdr.Size > limits.MaxTotalBytes {
-				return nil, fmt.Errorf("archive exceeds max total size %d", limits.MaxTotalBytes)
-			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
-				return nil, err
-			}
-			out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
-			if err != nil {
-				return nil, err
-			}
-			written, copyErr := io.Copy(out, io.LimitReader(tr, limits.MaxFileBytes+1))
-			closeErr := out.Close()
-			if copyErr != nil {
-				return nil, copyErr
-			}
-			if closeErr != nil {
-				return nil, closeErr
-			}
-			if written > limits.MaxFileBytes {
-				return nil, fmt.Errorf("file %q exceeded declared byte limit", hdr.Name)
-			}
-			totalBytes += written
-			if totalBytes > limits.MaxTotalBytes {
-				return nil, fmt.Errorf("archive exceeded total byte limit %d", limits.MaxTotalBytes)
-			}
-			extracted = append(extracted, target)
-		default:
-			return nil, fmt.Errorf("disallowed tar entry type %d for %q", hdr.Typeflag, hdr.Name)
+			continue
 		}
+		if hdr.Typeflag != tar.TypeReg {
+			return nil, fmt.Errorf("disallowed tar entry type %d: %s", hdr.Typeflag, hdr.Name)
+		}
+		if hdr.Size < 0 || hdr.Size > lim.MaxFileBytes {
+			return nil, fmt.Errorf("file %s exceeds single file limit", hdr.Name)
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+			return nil, err
+		}
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
+		if err != nil {
+			return nil, err
+		}
+		written, copyErr := io.Copy(out, io.LimitReader(tr, lim.MaxFileBytes+1))
+		closeErr := out.Close()
+		if copyErr != nil || closeErr != nil {
+			return nil, fmt.Errorf("extract write failed: %w", errors.Join(copyErr, closeErr))
+		}
+		if written > lim.MaxFileBytes {
+			return nil, errors.New("zipbomb detected: actual bytes exceeded limit")
+		}
+		totalBytes += written
+		if totalBytes > lim.MaxTotalBytes {
+			return nil, errors.New("tar extract exceeded total byte limit")
+		}
+		extracted = append(extracted, target)
 	}
-	return extracted, nil
 }
 
-// AtomicWriteFile writes data to a sibling temp file, fsyncs, sets mode, and atomically renames.
 func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".kinstall-tmp-*")
+	tmp, err := os.CreateTemp(dir, ".liveops-tmp-*")
 	if err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
+	tmpPath := tmp.Name()
 	cleanup := true
 	defer func() {
 		if cleanup {
-			_ = os.Remove(tmpName)
+			_ = os.Remove(tmpPath)
 		}
 	}()
 	if _, err := tmp.Write(data); err != nil {
@@ -154,7 +135,7 @@ func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := os.Rename(tmpPath, path); err != nil {
 		return err
 	}
 	cleanup = false
