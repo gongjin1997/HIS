@@ -3,136 +3,71 @@ import { ref, watch } from 'vue'
 import { apiRequest } from '@/api/client'
 import { useTheme } from '@/composables/useTheme'
 
-export interface ProjectItem {
+export interface WorkspaceItem {
   id: string
+  code: string
   name: string
   description: string
 }
 
+export type EnvCode = 'prod' | 'beta' | 'uat' | 'sit' | 'dev'
+
 export const useWorkspaceStore = defineStore('workspace', () => {
   const themeCtl = useTheme()
 
-  const projects = ref<ProjectItem[]>([])
-  const currentProjectId = ref<string>(localStorage.getItem('kinstall.projectId') || '')
-  const currentEnv = ref<'prod' | 'staging' | 'dev' | 'sandbox'>(
-    (localStorage.getItem('kinstall.env') as 'prod' | 'staging' | 'dev' | 'sandbox') || 'prod'
-  )
+  const workspaces = ref<WorkspaceItem[]>([])
+  const currentWorkspaceId = ref<string>(localStorage.getItem('kinstall.workspaceId') || '')
+  const currentEnv = ref<EnvCode>((localStorage.getItem('kinstall.env') as EnvCode) || 'prod')
   const density = ref<'comfortable' | 'compact'>(
-    ((localStorage.getItem('ki.density') || localStorage.getItem('kinstall.density')) as 'comfortable' | 'compact') || 'comfortable'
+    ((localStorage.getItem('ki.density') as 'comfortable' | 'compact') || 'comfortable')
   )
-  const lang = ref<'zh-CN' | 'en-US'>(
-    ((localStorage.getItem('ki.lang') || localStorage.getItem('kinstall.lang')) as 'zh-CN' | 'en-US') || 'zh-CN'
-  )
-  const pendingApprovalCount = ref<number>(0)
+  const lang = ref<'zh-CN' | 'en-US'>('zh-CN')
   const sidebarCollapsed = ref<boolean>(false)
-  const offlineStrict = ref<boolean>(true)
 
-  function applyDOMAttributes() {
+  function applyDOM() {
     if (typeof document === 'undefined') return
-    const html = document.documentElement
-    html.setAttribute('data-density', density.value)
-    html.setAttribute('lang', lang.value)
-    document.title =
-      currentEnv.value === 'prod'
-        ? '[PROD] kinstall — 基础设施交付控制台'
-        : 'kinstall — 基础设施交付控制台'
+    document.documentElement.setAttribute('data-density', density.value)
+    document.title = `[${currentEnv.value.toUpperCase()}] Kinstall — 统一 CMDB 与交付控制台`
   }
 
   watch(
-    [density, lang, currentEnv],
+    [density, currentEnv],
     () => {
       localStorage.setItem('ki.density', density.value)
-      localStorage.setItem('kinstall.density', density.value)
-      localStorage.setItem('ki.lang', lang.value)
-      localStorage.setItem('kinstall.lang', lang.value)
       localStorage.setItem('kinstall.env', currentEnv.value)
-      applyDOMAttributes()
+      applyDOM()
     },
     { immediate: true }
   )
 
-  watch(currentProjectId, (v) => {
-    if (v) localStorage.setItem('kinstall.projectId', v)
+  watch(currentWorkspaceId, (v) => {
+    if (v) localStorage.setItem('kinstall.workspaceId', v)
   })
 
-  async function loadProjects() {
-    const { data } = await apiRequest<{ items: ProjectItem[] }>('GET', '/api/v1/projects')
-    projects.value = data.items || []
-    if (projects.value.length === 0) {
-      const { data: created } = await apiRequest<ProjectItem>('POST', '/api/v1/projects', {
-        body: { name: 'core-ops', description: 'Default Enterprise Infrastructure Project' },
-        idempotent: true,
-      })
-      projects.value = [created]
+  async function loadWorkspaces() {
+    const { data } = await apiRequest<{ items: WorkspaceItem[] }>('GET', '/api/v1/workspaces')
+    workspaces.value = data.items || []
+    if (workspaces.value.length > 0 && !workspaces.value.some((w) => w.id === currentWorkspaceId.value)) {
+      currentWorkspaceId.value = workspaces.value[0].id
     }
-    if (!projects.value.some((p) => p.id === currentProjectId.value)) {
-      currentProjectId.value = projects.value[0].id
-    }
-  }
-
-  async function refreshApprovalBadge() {
-    if (!currentProjectId.value) return
-    try {
-      const { data } = await apiRequest<{ items: unknown[] }>(
-        'GET',
-        `/api/v1/projects/${currentProjectId.value}/approvals`
-      )
-      pendingApprovalCount.value = (data.items || []).length
-    } catch {
-      pendingApprovalCount.value = 0
-    }
-  }
-
-  async function refreshOfflineMode() {
-    if (!currentProjectId.value) return
-    try {
-      const { data } = await apiRequest<{ items: Array<{ offlineStrict?: boolean }> }>(
-        'GET',
-        `/api/v1/projects/${currentProjectId.value}/media-policies`
-      )
-      const list = data.items || []
-      if (list.length > 0 && typeof list[0].offlineStrict === 'boolean') {
-        offlineStrict.value = list[0].offlineStrict
-      }
-    } catch {
-      // keep previous value
-    }
-  }
-
-  function toggleTheme() {
-    themeCtl.toggleTheme()
-  }
-
-  function cycleTheme() {
-    themeCtl.cycleTheme()
   }
 
   function toggleDensity() {
     density.value = density.value === 'comfortable' ? 'compact' : 'comfortable'
   }
 
-  function toggleLang() {
-    lang.value = lang.value === 'zh-CN' ? 'en-US' : 'zh-CN'
-  }
-
   return {
-    projects,
-    currentProjectId,
+    workspaces,
+    currentWorkspaceId,
     currentEnv,
     theme: themeCtl.resolvedTheme,
     themePreference: themeCtl.preference,
     density,
     lang,
-    pendingApprovalCount,
     sidebarCollapsed,
-    offlineStrict,
-    loadProjects,
-    refreshApprovalBadge,
-    refreshOfflineMode,
-    toggleTheme,
-    cycleTheme,
+    loadWorkspaces,
+    toggleTheme: themeCtl.toggleTheme,
     setTheme: themeCtl.setTheme,
     toggleDensity,
-    toggleLang,
   }
 })

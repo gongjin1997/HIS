@@ -1,5 +1,0 @@
-user default off
-user kinstall-admin on >{{ .AdminPass }} ~* &* +@all
-user repl on >{{ .ReplPass }} +psync +replconf +ping
-user exporter on >{{ .ExporterPass }} -@all +info +ping +client|list +slowlog|get +config|get
-user app on >{{ .AppPass }} ~app:* +@read +@write -flushall -flushdb -config -debug -shutdown

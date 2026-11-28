@@ -2,836 +2,311 @@ package server
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"path"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-
-	"github.com/kinstall/kinstall/api"
-	"github.com/kinstall/kinstall/internal/app"
-	"github.com/kinstall/kinstall/internal/authz"
-	"github.com/kinstall/kinstall/internal/domain"
-	"github.com/kinstall/kinstall/internal/i18n"
-	"github.com/kinstall/kinstall/internal/obs"
-	"github.com/kinstall/kinstall/internal/version"
-	sdk "github.com/kinstall/kinstall/pkg/sdk/v1alpha1"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/kinstall/kinstall/internal/catalog"
+	"github.com/kinstall/kinstall/internal/cmdb"
+	"github.com/kinstall/kinstall/internal/config"
+	"github.com/kinstall/kinstall/internal/delivery"
+	"github.com/kinstall/kinstall/internal/execplane"
+	"github.com/kinstall/kinstall/internal/iam"
+	"github.com/kinstall/kinstall/pkg/platform/auth"
+	"github.com/kinstall/kinstall/pkg/platform/eventbus"
+	"github.com/kinstall/kinstall/pkg/platform/httpx"
 	"github.com/kinstall/kinstall/web"
+	"golang.org/x/net/websocket"
 )
 
-// Server exposes the Chi v5 REST API, SSE stream, OpenAPI spec, Prometheus /metrics, and go:embed Web UI.
-// Strictly obeys ARCHITECTURE §4.3: accesses business logic ONLY through *app.Facade and *authz.Service!
+type Config struct {
+	Version     string
+	DefaultWSID string
+	Logger      *slog.Logger
+	AuthMgr     *auth.Manager
+	Broker      *eventbus.LogBroker
+	IAM         *iam.Service
+	CMDB        *cmdb.Service
+	ConfigSvc   *config.Service
+	Catalog     *catalog.Service
+	Exec        *execplane.Service
+	Delivery    *delivery.Service
+	PingDB      func(ctx context.Context) error
+}
+
 type Server struct {
-	shutdownCtx context.Context
-	app         *app.Facade
-	authSvc     *authz.Service
-	i18n        *i18n.Catalog
-	metrics     *obs.Metrics
+	version     string
+	defaultWSID string
 	logger      *slog.Logger
-	devBypass   bool
+	authMgr     *auth.Manager
+	broker      *eventbus.LogBroker
+	iam         *iam.Service
+	cmdb        *cmdb.Service
+	cfg         *config.Service
+	catalog     *catalog.Service
+	exec        *execplane.Service
+	delivery    *delivery.Service
+	pingDB      func(ctx context.Context) error
+	router      chi.Router
 }
 
-// Options configures optional server flags.
-type Options struct {
-	DevBypassAuth bool
-	Metrics       *obs.Metrics
-}
-
-// NewRouter constructs the complete HTTP handler tree (G1 §2-§3, WEB_DESIGN §4.3).
-func NewRouter(shutdownCtx context.Context, facade *app.Facade, authSvc *authz.Service, cat *i18n.Catalog, logger *slog.Logger, opts Options) http.Handler {
-	if shutdownCtx == nil {
-		shutdownCtx = context.Background()
-	}
-	if logger == nil {
-		logger = slog.Default()
-	}
-	m := opts.Metrics
-	if m == nil {
-		m = obs.NewMetrics()
-	}
+func New(cfg Config) *Server {
 	s := &Server{
-		shutdownCtx: shutdownCtx,
-		app:         facade,
-		authSvc:     authSvc,
-		i18n:        cat,
-		metrics:     m,
-		logger:      logger,
-		devBypass:   opts.DevBypassAuth,
+		version:     cfg.Version,
+		defaultWSID: cfg.DefaultWSID,
+		logger:      cfg.Logger,
+		authMgr:     cfg.AuthMgr,
+		broker:      cfg.Broker,
+		iam:         cfg.IAM,
+		cmdb:        cfg.CMDB,
+		cfg:         cfg.ConfigSvc,
+		catalog:     cfg.Catalog,
+		exec:        cfg.Exec,
+		delivery:    cfg.Delivery,
+		pingDB:      cfg.PingDB,
 	}
+	s.router = s.buildRouter()
+	return s
+}
 
+func (s *Server) Handler() http.Handler {
+	return s.router
+}
+
+func (s *Server) buildRouter() chi.Router {
 	r := chi.NewRouter()
-	r.Use(traceIDMiddleware)
+	r.Use(middleware.Recoverer)
+	r.Use(httpx.TraceMiddleware)
+	r.Use(httpx.SecurityHeaders)
 
-	// Probes & Observability
-	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "version": version.Get()})
-	})
-	r.Get("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		if s.app.IsDraining() {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "draining"})
-			return
+	// Health probe (public)
+	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		dbOK := s.pingDB == nil || s.pingDB(r.Context()) == nil
+		status := http.StatusOK
+		if !dbOK {
+			status = http.StatusServiceUnavailable
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
-	})
-	r.Handle("/metrics", promhttp.HandlerFor(m.Registry, promhttp.HandlerOpts{}))
-
-	// Public API endpoints
-	r.Get("/api/v1/openapi.yaml", func(w http.ResponseWriter, _ *http.Request) {
-		raw, err := api.SpecFS.ReadFile("openapi.yaml")
-		if err != nil {
-			http.NotFound(w, nil)
-			return
-		}
-		w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(raw)
-	})
-	r.Post("/api/v1/auth/login", s.handleLoginLocal)
-	r.Get("/api/v1/auth/oidc/config", s.handleOIDCConfig)
-	r.Get("/api/v1/auth/oidc/login", s.handleOIDCLogin)
-	r.Get("/api/v1/auth/oidc/callback", s.handleOIDCCallback)
-	r.Post("/api/v1/auth/logout", s.handleLogout)
-
-	// Outbound Zero-Trust Edge Agent Protocol (authenticated by one-time enroll token / agent bearer token)
-	r.Post("/api/v1/agent/enroll", s.handleAgentEnroll)
-	r.Post("/api/v1/agent/heartbeat", s.handleAgentHeartbeat)
-	r.Get("/api/v1/agent/tasks/poll", s.handleAgentPollTasks)
-	r.Post("/api/v1/agent/tasks/{taskId}/result", s.handleAgentTaskResult)
-
-	// Authenticated Control Plane REST + SSE API
-	r.Route("/api/v1", func(ar chi.Router) {
-		ar.Use(authMiddleware(authSvc, cat, s.devBypass))
-		ar.Use(idempotencyMiddleware(facade.Idempotency(), cat))
-
-		ar.Get("/me", func(w http.ResponseWriter, r *http.Request) {
-			writeJSON(w, http.StatusOK, ActorFromContext(r.Context()))
-		})
-		ar.Get("/plugins", func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(w, http.StatusOK, map[string]any{"items": s.app.ListPlugins()})
-		})
-		ar.Get("/plugins/{product}", s.handleGetPlugin)
-		ar.Get("/hostinit/profiles", func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(w, http.StatusOK, map[string]any{"profiles": s.app.ListHostInitProfiles(), "modules": s.app.ListHostInitModules()})
-		})
-
-		// Auth users & tokens
-		ar.Get("/users", s.handleListUsers)
-		ar.Post("/users", s.handleCreateUser)
-		ar.Get("/auth/tokens", s.handleListAPITokens)
-		ar.Post("/auth/tokens", s.handleCreateAPIToken)
-		ar.Delete("/auth/tokens/{tokenId}", s.handleRevokeAPIToken)
-
-		// Projects
-		ar.Get("/projects", s.handleListProjects)
-		ar.Post("/projects", s.handleCreateProject)
-		ar.Delete("/projects/{projectId}", s.handleDeleteProject)
-
-		// Global audit verification
-		ar.Post("/audit:verify", s.handleVerifyAudit)
-
-		ar.Route("/projects/{projectId}", func(pr chi.Router) {
-			// Credentials & Secrets Rewrap (T-M1-02)
-			pr.Get("/credentials", s.handleListCredentials)
-			pr.Post("/credentials", s.handleCreateCredential)
-			pr.Delete("/credentials/{credId}", s.handleDeleteCredential)
-			pr.Post("/secrets:rewrap", s.handleRewrapSecrets)
-
-			// Hosts, CMDB Asset Center, Bulk Import/Export, Baseline Check, HostInit & External CMDB Sync
-			pr.Get("/hosts", s.handleListHosts)
-			pr.Post("/hosts", s.handleCreateHost)
-			pr.Get("/hosts:template", s.handleDownloadHostTemplate)
-			pr.Get("/hosts:export", s.handleExportHosts)
-			pr.Post("/hosts:import", s.handleImportHosts)
-			pr.Post("/hosts:discover", s.handleDiscoverHosts)
-			pr.Post("/hosts:batch", s.handleBatchHosts)
-			pr.Put("/hosts/{hostId}", s.handleUpdateHost)
-			pr.Delete("/hosts/{hostId}", s.handleDeleteHost)
-			pr.Get("/hosts/{hostId}/impact", s.handleHostImpact)
-			pr.Post("/hosts/{hostId}:probe", s.handleProbeHost)
-			pr.Post("/hosts/{hostId}:check", s.handleCheckHostBaseline)
-			pr.Post("/hosts/{hostId}:init", s.handleInitHost)
-			pr.Get("/hosts/{hostId}/terminal", s.handleHostTerminalWS)
-			pr.Post("/cmdb:sync", s.handleCMDBSync)
-			pr.Get("/cmdb/overview", s.handleCMDBOverview)
-			pr.Get("/cmdb/groups", s.handleListDynamicGroups)
-			pr.Post("/cmdb/groups", s.handleCreateDynamicGroup)
-			pr.Put("/cmdb/groups/{groupId}", s.handleUpdateDynamicGroup)
-			pr.Delete("/cmdb/groups/{groupId}", s.handleDeleteDynamicGroup)
-			pr.Post("/cmdb/groups:preview", s.handlePreviewDynamicGroup)
-			pr.Get("/cmdb/sync-sources", s.handleListCMDBSyncSources)
-			pr.Post("/cmdb/sync-sources", s.handleCreateCMDBSyncSource)
-			pr.Delete("/cmdb/sync-sources/{sourceId}", s.handleDeleteCMDBSyncSource)
-			pr.Post("/cmdb/sync-sources/{sourceId}:run", s.handleRunCMDBSyncSource)
-
-			// Enterprise Dynamic Meta-Model CMDB, Dual Topology, Service Templates, Excelize .xlsx & DCIM/IPAM
-			pr.Get("/cmdb/stats", s.handleCMDBOverviewStats)
-			pr.Get("/cmdb/meta", s.handleGetMetaModels)
-			pr.Post("/cmdb/meta/groups", s.handleCreateModelGroup)
-			pr.Post("/cmdb/meta/models", s.handleCreateModel)
-			pr.Put("/cmdb/meta/models/{modelCode}/position", s.handleUpdateModelPosition)
-			pr.Delete("/cmdb/meta/models/{modelCode}", s.handleDeleteModel)
-			pr.Post("/cmdb/meta/models/{modelCode}/attributes", s.handleUpsertModelAttribute)
-			pr.Delete("/cmdb/meta/attributes/{attrId}", s.handleDeleteModelAttribute)
-			pr.Post("/cmdb/meta/relations", s.handleCreateModelRelation)
-			pr.Delete("/cmdb/meta/relations/{relId}", s.handleDeleteModelRelation)
-			pr.Get("/cmdb/cis", s.handleListCIInstances)
-			pr.Post("/cmdb/cis", s.handleCreateCIInstance)
-			pr.Put("/cmdb/cis/{ciId}", s.handleUpdateCIInstance)
-			pr.Delete("/cmdb/cis/{ciId}", s.handleDeleteCIInstance)
-			pr.Get("/cmdb/cis/{ciId}/graph", s.handleGetCILineageGraph)
-			pr.Get("/cmdb/ci-history", s.handleListCIHistory)
-			pr.Post("/cmdb/ci-relations", s.handleCreateCIRelation)
-			pr.Delete("/cmdb/ci-relations/{relId}", s.handleDeleteCIRelation)
-			pr.Get("/cmdb/models/{modelCode}/template.xlsx", s.handleExportModelTemplateXLSX)
-			pr.Get("/cmdb/models/{modelCode}/export.xlsx", s.handleExportInstancesXLSX)
-			pr.Post("/cmdb/models/{modelCode}/import.xlsx", s.handleImportInstancesXLSX)
-			pr.Get("/cmdb/topology", s.handleListTopologyTree)
-			pr.Post("/cmdb/topology/nodes", s.handleCreateTopologyNode)
-			pr.Delete("/cmdb/topology/nodes/{nodeId}", s.handleDeleteTopologyNode)
-			pr.Get("/cmdb/topology/nodes/{nodeId}/hosts", s.handleListTopologyNodeHosts)
-			pr.Post("/cmdb/topology/nodes/{nodeId}/hosts", s.handleBindTopologyHost)
-			pr.Post("/cmdb/topology/nodes/{nodeId}/template", s.handleApplyServiceTemplate)
-			pr.Get("/cmdb/service-templates", s.handleListServiceTemplates)
-			pr.Post("/cmdb/service-templates", s.handleCreateServiceTemplate)
-			pr.Delete("/cmdb/service-templates/{tplId}", s.handleDeleteServiceTemplate)
-			pr.Get("/cmdb/collectors", s.handleListWhitelistCollectors)
-			pr.Post("/cmdb/sync-hosts", s.handleSyncHostsToCMDB)
-
-			// DCIM 42U Rack Elevation & IPAM Subnets (NetBox-inspired)
-			pr.Get("/dcim/racks", s.handleListRacks)
-			pr.Post("/dcim/racks", s.handleCreateRack)
-			pr.Delete("/dcim/racks/{rackId}", s.handleDeleteRack)
-			pr.Post("/dcim/racks/{rackId}/units", s.handleMountRackUnit)
-			pr.Delete("/dcim/units/{unitId}", s.handleUnmountRackUnit)
-			pr.Get("/ipam/prefixes", s.handleListIPAMPrefixes)
-			pr.Post("/ipam/prefixes", s.handleCreateIPAMPrefix)
-			pr.Delete("/ipam/prefixes/{prefixId}", s.handleDeleteIPAMPrefix)
-			pr.Get("/ipam/prefixes/{prefixId}/addresses", s.handleListIPAddresses)
-			pr.Post("/ipam/prefixes/{prefixId}/allocate", s.handleAllocateIP)
-			pr.Delete("/ipam/addresses/{ipId}", s.handleReleaseIP)
-
-			// Multi-Environment Versioned Config & Secrets Center (LiveOps 03.4 / 03.5)
-			pr.Get("/config/namespaces", s.handleListConfigNamespaces)
-			pr.Post("/config/namespaces", s.handleCreateConfigNamespace)
-			pr.Delete("/config/namespaces/{nsId}", s.handleDeleteConfigNamespace)
-			pr.Get("/config/namespaces/{nsId}/items", s.handleListConfigItems)
-			pr.Put("/config/namespaces/{nsId}/items", s.handleUpsertConfigItem)
-			pr.Delete("/config/namespaces/{nsId}/items/{key}", s.handleDeleteConfigItem)
-			pr.Post("/config/namespaces/{nsId}/items/{key}/reveal", s.handleRevealConfigSecret)
-			pr.Get("/config/namespaces/{nsId}/diff", s.handleDiffConfigNamespace)
-			pr.Post("/config/namespaces/{nsId}/publish", s.handlePublishConfigRelease)
-			pr.Get("/config/namespaces/{nsId}/releases", s.handleListConfigReleases)
-			pr.Post("/config/namespaces/{nsId}/rollback", s.handleRollbackConfigRelease)
-			pr.Post("/config/namespaces/{nsId}/clone", s.handleCloneConfigNamespace)
-			pr.Post("/config/params:preview", s.handlePreviewMergedParams)
-
-			// Declarative Extensible Plugin Packages & Batch/M1/M2/M3 Delivery Pipelines
-			pr.Get("/plugins/declarative", s.handleListDeclarativePlugins)
-			pr.Post("/plugins/declarative", s.handleUpsertDeclarativePlugin)
-			pr.Delete("/plugins/declarative/{pluginId}", s.handleDeleteDeclarativePlugin)
-			pr.Get("/delivery/releases", s.handleListDeliveryReleases)
-			pr.Post("/delivery/releases", s.handleCreateDeliveryRelease)
-			pr.Post("/delivery/releases/{releaseId}:start", s.handleStartOrResumeDeliveryRelease)
-			pr.Post("/delivery/releases/{releaseId}:resume", s.handleStartOrResumeDeliveryRelease)
-			pr.Post("/delivery/releases/{releaseId}:rollback", s.handleRollbackDeliveryRelease)
-			pr.Post("/delivery/releases/{releaseId}:cancel", s.handleCancelDeliveryRelease)
-
-			// Zero-Trust Edge Agent Fleet & CIDR-Guarded TCP Probing
-			pr.Post("/fleet/enroll-tokens", s.handleIssueAgentEnrollToken)
-			pr.Get("/fleet/agents", s.handleListFleetAgents)
-			pr.Post("/fleet/agents/{agentId}:revoke", s.handleRevokeFleetAgent)
-			pr.Post("/fleet/probes/tcp", s.handleFleetTCPProbes)
-
-			// Media Policies & Offline Artifact Supply Chain Catalog (ADR-077 + Native Go OCI)
-			pr.Get("/media-policies", s.handleListMediaPolicies)
-			pr.Post("/media-policies", s.handleCreateMediaPolicy)
-			pr.Put("/media-policies/{policyId}", s.handleUpdateMediaPolicy)
-			pr.Post("/media-policies/{policyId}:test", s.handleTestMediaPolicy)
-			pr.Get("/artifacts", s.handleListArtifacts)
-			pr.Post("/artifacts/upload", s.handleUploadArtifact)
-			pr.Post("/artifacts/prefetch", s.handlePrefetchArtifact)
-			pr.Delete("/artifacts", s.handleDeleteArtifact)
-			pr.Get("/artifacts/bom", s.handleExportArtifactBOM)
-			pr.Post("/artifacts/push-image", s.handlePushImageArtifact)
-			pr.Get("/artifacts/oci/inspect", s.handleInspectOCIArtifact)
-			pr.Post("/artifacts/oci/push", s.handlePushOCIArtifactNative)
-
-			// Instances + 2-phase Plan / Apply / Detail / Update / Delete / Live Runtime Control
-			pr.Get("/instances", s.handleListInstances)
-			pr.Post("/instances", s.handleCreateInstance)
-			pr.Get("/instances/{instanceId}", s.handleGetInstanceDetail)
-			pr.Put("/instances/{instanceId}", s.handleUpdateInstance)
-			pr.Delete("/instances/{instanceId}", s.handleDeleteInstance)
-			pr.Post("/instances/{instanceId}:plan", s.handlePlanInstance)
-			pr.Post("/instances/{instanceId}:apply", s.handleApplyInstance)
-			pr.Post("/instances/{instanceId}:probe", s.handleProbeInstance)
-			pr.Post("/instances/{instanceId}:control", s.handleControlInstance)
-			pr.Get("/instances/{instanceId}/logs", s.handleInstanceLogs)
-
-			// LiveOps-style Guarded Batch Job Execution Center
-			pr.Get("/jobs/templates", s.handleListJobTemplates)
-			pr.Post("/jobs:run", s.handleRunBatchJob)
-
-			// Stacks (Live Validate / Create / Update / Delete / Apply / Reverse Uninstall)
-			pr.Get("/stacks", s.handleListStacks)
-			pr.Post("/stacks", s.handleCreateStack)
-			pr.Put("/stacks/{stackId}", s.handleUpdateStack)
-			pr.Delete("/stacks/{stackId}", s.handleDeleteStack)
-			pr.Post("/stacks:validate", s.handleValidateStack)
-			pr.Post("/stacks/{stackId}:apply", s.handleApplyStack)
-			pr.Post("/stacks/{stackId}:uninstall", s.handleUninstallStack)
-
-			// Operations, SSE, Reports & Four-Eyes Approvals
-			pr.Get("/operations", s.handleListOperations)
-			pr.Get("/operations/{opId}", s.handleGetOperation)
-			pr.Get("/operations/{opId}/report", s.handleOperationReport)
-			pr.Get("/operations/{opId}/events", func(w http.ResponseWriter, r *http.Request) {
-				s.handleOperationEventsSSE(w, r, chi.URLParam(r, "opId"))
-			})
-			pr.Post("/operations/{opId}:approve", func(w http.ResponseWriter, r *http.Request) {
-				s.handleDecideApproval(w, r, true)
-			})
-			pr.Post("/operations/{opId}:reject", func(w http.ResponseWriter, r *http.Request) {
-				s.handleDecideApproval(w, r, false)
-			})
-			pr.Post("/operations/{opId}:resume", s.handleResumeOperation)
-			pr.Post("/operations/{opId}:cancel", s.handleCancelOperation)
-			pr.Get("/approvals", s.handleListApprovals)
-
-			// Multi-Cluster Kubeconfigs
-			pr.Get("/clusters/{instanceId}/kubeconfigs", s.handleListKubeconfigs)
-			pr.Post("/clusters/{instanceId}/kubeconfigs", s.handleIssueKubeconfig)
-			pr.Delete("/clusters/kubeconfigs/{kcId}", s.handleRevokeKubeconfig)
-
-			// Notification Channels & Storm-Folding Test (G2 §3)
-			pr.Get("/notification-channels", s.handleListNotificationChannels)
-			pr.Post("/notification-channels", s.handleCreateNotificationChannel)
-			pr.Delete("/notification-channels/{channelId}", s.handleDeleteNotificationChannel)
-			pr.Post("/notification-channels:test", s.handleTestNotificationChannels)
-
-			// GitOps Export/Diff, Support Bundle & Compliance Evidence Download
-			pr.Get("/gitops/export", s.handleGitOpsExport)
-			pr.Post("/gitops:diff", s.handleGitOpsDiff)
-			pr.Post("/support-bundle", s.handleSupportBundle)
-			pr.Get("/audit", s.handleListAuditLogs)
-			pr.Post("/compliance:report", s.handleComplianceReport)
-			pr.Get("/compliance:download", s.handleComplianceDownload)
+		httpx.WriteJSON(w, status, map[string]any{
+			"status":  "ok",
+			"db":      dbOK,
+			"version": s.version,
+			"time":    time.Now().UTC().Format(time.RFC3339),
 		})
 	})
 
-	// Embedded Offline Vue 3 SPA (WEB_DESIGN §4.3 B: History fallback + immutable /assets + strict CSP)
-	mountEmbeddedUI(r, web.DistFS())
+	// Public auth & outbound zero-trust agent protocol routes
+	r.Route("/api/v1", func(api chi.Router) {
+		api.Post("/auth/login", s.handleLogin)
+
+		// Outbound Go Agent protocol (authenticated via one-time enroll token or agent bearer token)
+		api.Post("/agent/enroll", s.handleAgentEnroll)
+		api.Post("/agent/heartbeat", s.handleAgentHeartbeat)
+		api.Get("/agent/tasks/poll", s.handleAgentPollTask)
+		api.Post("/agent/tasks/{taskId}/result", s.handleAgentTaskResult)
+
+		// Protected control-plane routes (Default-Deny RBAC)
+		api.Group(func(pr chi.Router) {
+			pr.Use(auth.Authenticate(s.authMgr, s.iam.LookupPAT))
+
+			// Session & Workspace
+			pr.Get("/me", s.handleMe)
+			pr.Get("/workspaces", s.handleListWorkspaces)
+			pr.With(auth.RequirePerm(auth.PermIAMWrite)).Post("/workspaces", s.handleCreateWorkspace)
+
+			// Dashboard Panorama
+			pr.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/overview", s.handleOverviewStats)
+
+			// Live SSE Log Stream
+			pr.With(auth.RequirePerm(auth.PermOpsRead)).Get("/stream/{topic}", s.handleStreamSSE)
+
+			// WebSocket Interactive SSH PTY on unified m_host CI
+			pr.With(auth.RequirePerm(auth.PermOpsExecute)).Get("/hosts/{id}/terminal", s.handleHostTerminalWS)
+
+			// IAM, Users, PATs, Credentials Vault & Tamper-Evident Audit Chain
+			pr.With(auth.RequirePerm(auth.PermIAMRead)).Get("/iam/users", s.handleListUsers)
+			pr.With(auth.RequirePerm(auth.PermIAMWrite)).Post("/iam/users", s.handleCreateUser)
+			pr.With(auth.RequirePerm(auth.PermIAMWrite)).Put("/iam/users/{id}", s.handleUpdateUserRole)
+			pr.With(auth.RequirePerm(auth.PermIAMRead)).Get("/iam/tokens", s.handleListAPITokens)
+			pr.With(auth.RequirePerm(auth.PermIAMWrite)).Post("/iam/tokens", s.handleCreateAPIToken)
+			pr.With(auth.RequirePerm(auth.PermIAMWrite)).Post("/iam/tokens/{id}/revoke", s.handleRevokeAPIToken)
+			pr.With(auth.RequirePerm(auth.PermIAMRead)).Get("/iam/credentials", s.handleListCredentials)
+			pr.With(auth.RequirePerm(auth.PermIAMWrite)).Post("/iam/credentials", s.handleCreateCredential)
+			pr.With(auth.RequirePerm(auth.PermIAMWrite)).Delete("/iam/credentials/{id}", s.handleDeleteCredential)
+			pr.With(auth.RequirePerm(auth.PermAuditRead)).Get("/audit/logs", s.handleListAuditLogs)
+			pr.With(auth.RequirePerm(auth.PermAuditVerify)).Post("/audit/verify", s.handleVerifyAuditChain)
+
+			// Unified Dynamic Meta-Model CMDB
+			pr.Route("/cmdb", func(c chi.Router) {
+				c.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/model-groups", s.handleListModelGroups)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Post("/model-groups", s.handleCreateModelGroup)
+				c.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/models", s.handleListModels)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Post("/models", s.handleCreateModel)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Delete("/models/{code}", s.handleDeleteModel)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Put("/models/positions", s.handleSaveModelPositions)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Post("/models/{code}/attrs", s.handleUpsertModelAttr)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Delete("/attrs/{attrId}", s.handleDeleteModelAttr)
+				c.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/model-relations", s.handleListModelRelations)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Post("/model-relations", s.handleCreateModelRelation)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Delete("/model-relations/{id}", s.handleDeleteModelRelation)
+
+				// Native Excelize (.xlsx) template / export / batch import
+				c.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/models/{code}/excel/template", s.handleExportTemplateXLSX)
+				c.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/models/{code}/excel/export", s.handleExportCIsXLSX)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Post("/models/{code}/excel/import", s.handleImportCIsXLSX)
+
+				// Unified CIs (Host = m_host CI + cmdb_host_endpoints)
+				c.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/cis", s.handleListCIs)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Post("/cis", s.handleCreateCI)
+				c.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/cis/{id}", s.handleGetCI)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Put("/cis/{id}", s.handleUpdateCI)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Delete("/cis/{id}", s.handleDeleteCI)
+				c.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/cis/{id}/history", s.handleCIHistory)
+				c.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/cis/{id}/lineage", s.handleCILineage)
+				c.With(auth.RequirePerm(auth.PermOpsExecute)).Post("/cis/{id}/collect", s.handleCollectHostFacts)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Post("/ci-relations", s.handleCreateCIRelation)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Delete("/ci-relations/{id}", s.handleDeleteCIRelation)
+
+				// Dual Topology Tree & Service Templates
+				c.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/topology", s.handleTopologyTree)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Post("/topology", s.handleCreateTopologyNode)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Delete("/topology/{id}", s.handleDeleteTopologyNode)
+				c.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/topology/{id}/cis", s.handleListTopoNodeCIs)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Post("/topology/{id}/bind", s.handleBindCIToTopo)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Delete("/topology/{id}/bind/{ciId}", s.handleUnbindCIFromTopo)
+				c.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/service-templates", s.handleListServiceTemplates)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Post("/service-templates", s.handleCreateServiceTemplate)
+
+				// Dynamic Groups
+				c.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/dynamic-groups", s.handleListDynamicGroups)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Post("/dynamic-groups", s.handleCreateDynamicGroup)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Delete("/dynamic-groups/{id}", s.handleDeleteDynamicGroup)
+				c.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/dynamic-groups/{id}/evaluate", s.handleEvaluateDynamicGroup)
+
+				// DCIM 42U Racks & IPAM CIDR
+				c.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/dcim/racks", s.handleListRacks)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Post("/dcim/racks", s.handleCreateRack)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Delete("/dcim/racks/{id}", s.handleDeleteRack)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Post("/dcim/racks/{id}/units", s.handleMountRackUnit)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Delete("/dcim/units/{unitId}", s.handleUnmountRackUnit)
+				c.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/ipam/prefixes", s.handleListPrefixes)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Post("/ipam/prefixes", s.handleCreatePrefix)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Delete("/ipam/prefixes/{id}", s.handleDeletePrefix)
+				c.With(auth.RequirePerm(auth.PermCMDBRead)).Get("/ipam/addresses", s.handleListAddresses)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Post("/ipam/prefixes/{id}/allocate", s.handleAllocateIP)
+				c.With(auth.RequirePerm(auth.PermCMDBWrite)).Delete("/ipam/addresses/{id}", s.handleReleaseIP)
+			})
+
+			// Multi-Env Config & KMS Secrets Center
+			pr.Route("/config", func(c chi.Router) {
+				c.With(auth.RequirePerm(auth.PermConfigRead)).Get("/namespaces", s.handleListNamespaces)
+				c.With(auth.RequirePerm(auth.PermConfigWrite)).Post("/namespaces", s.handleCreateNamespace)
+				c.With(auth.RequirePerm(auth.PermConfigWrite)).Delete("/namespaces/{id}", s.handleDeleteNamespace)
+				c.With(auth.RequirePerm(auth.PermConfigRead)).Get("/namespaces/{id}/items", s.handleListConfigItems)
+				c.With(auth.RequirePerm(auth.PermConfigWrite)).Post("/namespaces/{id}/items", s.handleUpsertConfigItem)
+				c.With(auth.RequirePerm(auth.PermConfigWrite)).Delete("/namespaces/{id}/items/{key}", s.handleDeleteConfigItem)
+				c.With(auth.RequirePerm(auth.PermConfigReveal)).Post("/namespaces/{id}/reveal", s.handleRevealConfigSecret)
+				c.With(auth.RequirePerm(auth.PermConfigRead)).Get("/namespaces/{id}/diff", s.handleDiffConfig)
+				c.With(auth.RequirePerm(auth.PermConfigWrite)).Post("/namespaces/{id}/publish", s.handlePublishConfig)
+				c.With(auth.RequirePerm(auth.PermConfigRead)).Get("/namespaces/{id}/releases", s.handleListConfigReleases)
+				c.With(auth.RequirePerm(auth.PermConfigWrite)).Post("/namespaces/{id}/rollback", s.handleRollbackConfig)
+				c.With(auth.RequirePerm(auth.PermConfigWrite)).Post("/namespaces/{id}/clone", s.handleCloneConfig)
+				c.With(auth.RequirePerm(auth.PermConfigRead)).Post("/preview-params", s.handlePreviewEffectiveParams)
+			})
+
+			// CAS Artifact Catalog & Pure-Go OCI Engine
+			pr.Route("/catalog", func(c chi.Router) {
+				c.With(auth.RequirePerm(auth.PermCatalogRead)).Get("/artifacts", s.handleListArtifacts)
+				c.With(auth.RequirePerm(auth.PermCatalogWrite)).Post("/artifacts", s.handleUploadArtifact)
+				c.With(auth.RequirePerm(auth.PermCatalogRead)).Get("/artifacts/{id}/download", s.handleDownloadArtifact)
+				c.With(auth.RequirePerm(auth.PermCatalogRead)).Post("/artifacts/{id}/verify", s.handleVerifyArtifact)
+				c.With(auth.RequirePerm(auth.PermCatalogWrite)).Post("/artifacts/{id}/oci-push", s.handlePushOCI)
+				c.With(auth.RequirePerm(auth.PermCatalogWrite)).Delete("/artifacts/{id}", s.handleDeleteArtifact)
+				c.With(auth.RequirePerm(auth.PermCatalogRead)).Get("/bom", s.handleExportBOM)
+			})
+
+			// Declarative YAML Plugins & Real DAG/Batch Delivery Engine
+			pr.Route("/delivery", func(c chi.Router) {
+				c.With(auth.RequirePerm(auth.PermDeliveryRead)).Get("/plugins", s.handleListPlugins)
+				c.With(auth.RequirePerm(auth.PermDeliveryWrite)).Post("/plugins", s.handleUpsertPlugin)
+				c.With(auth.RequirePerm(auth.PermDeliveryWrite)).Delete("/plugins/{code}", s.handleDeletePlugin)
+				c.With(auth.RequirePerm(auth.PermDeliveryRead)).Get("/releases", s.handleListReleases)
+				c.With(auth.RequirePerm(auth.PermDeliveryWrite)).Post("/releases", s.handleCreateRelease)
+				c.With(auth.RequirePerm(auth.PermDeliveryRead)).Get("/releases/{id}", s.handleGetRelease)
+				c.With(auth.RequirePerm(auth.PermDeliveryExecute)).Post("/releases/{id}/execute", s.handleExecuteRelease)
+				c.With(auth.RequirePerm(auth.PermDeliveryExecute)).Post("/releases/{id}/rollback", s.handleRollbackRelease)
+			})
+
+			// Operations Hub: Agent Fleet, Batch Jobs & CIDR TCP Prober
+			pr.Route("/ops", func(c chi.Router) {
+				c.With(auth.RequirePerm(auth.PermOpsRead)).Get("/agents", s.handleListAgents)
+				c.With(auth.RequirePerm(auth.PermOpsRead)).Get("/enroll-tokens", s.handleListEnrollTokens)
+				c.With(auth.RequirePerm(auth.PermOpsExecute)).Post("/enroll-tokens", s.handleCreateEnrollToken)
+				c.With(auth.RequirePerm(auth.PermOpsExecute)).Post("/agents/{id}/revoke", s.handleRevokeAgent)
+				c.With(auth.RequirePerm(auth.PermOpsExecute)).Post("/tcp-probe", s.handleTCPProbe)
+				c.With(auth.RequirePerm(auth.PermOpsRead)).Get("/job-templates", s.handleListJobTemplates)
+				c.With(auth.RequirePerm(auth.PermOpsRead)).Get("/jobs", s.handleListJobs)
+				c.With(auth.RequirePerm(auth.PermOpsExecute)).Post("/jobs", s.handleRunBatchJob)
+			})
+		})
+	})
+
+	// Embedded Vue 3 SPA static assets & client-side router fallback
+	if distFS := web.DistFS(); distFS != nil {
+		r.NotFound(spaHandler(distFS))
+	}
 	return r
 }
 
-func mountEmbeddedUI(r chi.Router, distFS fs.FS) {
-	if distFS == nil {
+func (s *Server) handleHostTerminalWS(w http.ResponseWriter, r *http.Request) {
+	ciID := chi.URLParam(r, "id")
+	_, target, err := s.exec.ResolveSSHTarget(r.Context(), s.wsID(r), ciID)
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "SSH_TARGET_ERROR", err.Error())
 		return
 	}
-	fileSrv := http.FileServer(http.FS(distFS))
-	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
-		if strings.HasPrefix(req.URL.Path, "/api/") {
-			http.NotFound(w, req)
-			return
-		}
-		// Strict CSP: zero external CDN, self-hosted fonts & scripts only, allow same-origin WebSocket PTY
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws: wss:")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
+	wsSrv := websocket.Server{
+		Handler: func(ws *websocket.Conn) {
+			execplane.ServeWebSocketPTY(ws, target)
+		},
+		Handshake: func(cfg *websocket.Config, req *http.Request) error {
+			return nil
+		},
+	}
+	wsSrv.ServeHTTP(w, r)
+}
 
-		clean := strings.TrimPrefix(path.Clean("/"+req.URL.Path), "/")
-		if clean == "" {
-			clean = "index.html"
+func spaHandler(distFS fs.FS) http.HandlerFunc {
+	fileServer := http.FileServer(http.FS(distFS))
+	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			httpx.WriteError(w, http.StatusNotFound, "NOT_FOUND", "API 端点不存在")
+			return
 		}
-		if fi, err := fs.Stat(distFS, clean); err == nil && !fi.IsDir() {
-			if strings.HasPrefix(clean, "assets/") {
-				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		clean := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if clean != "" {
+			if f, err := distFS.Open(clean); err == nil {
+				_ = f.Close()
+				if strings.HasPrefix(clean, "assets/") {
+					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+				}
+				fileServer.ServeHTTP(w, r)
+				return
 			}
-			fileSrv.ServeHTTP(w, req)
-			return
 		}
-		// HTML5 History SPA fallback to index.html
-		idx, err := fs.ReadFile(distFS, "index.html")
+		idx, err := distFS.Open("index.html")
 		if err != nil {
-			http.NotFound(w, req)
+			http.NotFound(w, r)
 			return
 		}
+		defer func() { _ = idx.Close() }()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(idx)
-	})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func (s *Server) handleLoginLocal(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
+		_, _ = io.Copy(w, idx)
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err))
-		return
-	}
-	tok, user, err := s.authSvc.LoginLocal(r.Context(), body.Username, body.Password, r.RemoteAddr, r.UserAgent())
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	// #nosec G124 -- Secure dynamically follows TLS/X-Forwarded-Proto so local HTTP dev and HTTPS prod both work
-	http.SetCookie(w, &http.Cookie{
-		Name:     "kinstall_session",
-		Value:    tok,
-		Path:     "/",
-		Secure:   r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   43200,
-	})
-	writeJSON(w, http.StatusOK, map[string]any{"token": tok, "user": user})
-}
-
-func (s *Server) handleCreateAPIToken(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Name      string   `json:"name"`
-		ProjectID *string  `json:"projectId"`
-		Scopes    []string `json:"scopes"`
-		TTLDays   int      `json:"ttlDays"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err))
-		return
-	}
-	ttl := time.Duration(body.TTLDays) * 24 * time.Hour
-	plain, meta, err := s.authSvc.CreateAPIToken(r.Context(), ActorFromContext(r.Context()).ID, body.ProjectID, body.Name, body.Scopes, ttl)
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]any{"token": plain, "meta": meta})
-}
-
-func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
-	items, err := s.app.ListProjects(r.Context(), ActorFromContext(r.Context()))
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
-}
-
-func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err))
-		return
-	}
-	p, err := s.app.CreateProject(r.Context(), ActorFromContext(r.Context()), body.Name, body.Description)
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, p)
-}
-
-func (s *Server) handleCreateCredential(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Name      string `json:"name"`
-		Kind      string `json:"kind"`
-		Plaintext string `json:"plaintext"`
-		Secret    string `json:"secret"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err))
-		return
-	}
-	rawSecret := body.Plaintext
-	if rawSecret == "" {
-		rawSecret = body.Secret
-	}
-	if strings.TrimSpace(body.Name) == "" || rawSecret == "" {
-		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, fmt.Errorf("credential name and plaintext/secret are required")))
-		return
-	}
-	c, err := s.app.CreateCredential(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), body.Name, body.Kind, []byte(rawSecret))
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, c)
-}
-
-func (s *Server) handleListHosts(w http.ResponseWriter, r *http.Request) {
-	items, err := s.app.ListHosts(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"))
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
-}
-
-func (s *Server) handleCreateHost(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		domain.Host
-		InlineCredential *app.InlineCredentialSpec `json:"inlineCredential,omitempty"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err))
-		return
-	}
-	h := body.Host
-	h.ProjectID = chi.URLParam(r, "projectId")
-	created, err := s.app.CreateHostWithInlineCred(r.Context(), ActorFromContext(r.Context()), &h, body.InlineCredential)
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	w.Header().Set("ETag", formatETag(created.Version))
-	writeJSON(w, http.StatusCreated, created)
-}
-
-func (s *Server) handleProbeHost(w http.ResponseWriter, r *http.Request) {
-	facts, err := s.app.ProbeHostFacts(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), chi.URLParam(r, "hostId"))
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, facts)
-}
-
-func (s *Server) handleListMediaPolicies(w http.ResponseWriter, r *http.Request) {
-	items, err := s.app.ListMediaPolicies(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"))
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
-}
-
-func (s *Server) handleCreateMediaPolicy(w http.ResponseWriter, r *http.Request) {
-	var mp domain.MediaPolicy
-	if err := json.NewDecoder(r.Body).Decode(&mp); err != nil {
-		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err))
-		return
-	}
-	pid := chi.URLParam(r, "projectId")
-	if mp.Scope == "" || mp.Scope == "project" {
-		mp.Scope = "project"
-		mp.ProjectID = &pid
-	}
-	created, err := s.app.CreateMediaPolicy(r.Context(), ActorFromContext(r.Context()), &mp)
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	w.Header().Set("ETag", formatETag(created.Version))
-	writeJSON(w, http.StatusCreated, created)
-}
-
-func (s *Server) handleUpdateMediaPolicy(w http.ResponseWriter, r *http.Request) {
-	pid := chi.URLParam(r, "projectId")
-	polID := chi.URLParam(r, "policyId")
-	existingList, err := s.app.ListMediaPolicies(r.Context(), ActorFromContext(r.Context()), pid)
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	var current *domain.MediaPolicy
-	for i := range existingList {
-		if existingList[i].ID == polID {
-			current = &existingList[i]
-			break
-		}
-	}
-	if current == nil {
-		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeDBNotFound, "DB", http.StatusNotFound, sdk.CodeDBNotFound, false, nil))
-		return
-	}
-	if err := checkIfMatch(r, current.Version); err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	var mp domain.MediaPolicy
-	if err := json.NewDecoder(r.Body).Decode(&mp); err != nil {
-		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err))
-		return
-	}
-	mp.ID = polID
-	mp.ProjectID = current.ProjectID
-	mp.Version = current.Version
-	updated, err := s.app.UpdateMediaPolicy(r.Context(), ActorFromContext(r.Context()), &mp)
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	w.Header().Set("ETag", formatETag(updated.Version))
-	writeJSON(w, http.StatusOK, updated)
-}
-
-func (s *Server) handleTestMediaPolicy(w http.ResponseWriter, r *http.Request) {
-	rep, err := s.app.TestMediaPolicy(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), chi.URLParam(r, "policyId"))
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, rep)
-}
-
-func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
-	items, err := s.app.ListInstances(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"))
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
-}
-
-func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
-	var inst domain.Instance
-	if err := json.NewDecoder(r.Body).Decode(&inst); err != nil {
-		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err))
-		return
-	}
-	inst.ProjectID = chi.URLParam(r, "projectId")
-	created, err := s.app.CreateInstance(r.Context(), ActorFromContext(r.Context()), &inst)
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	w.Header().Set("ETag", formatETag(created.Version))
-	writeJSON(w, http.StatusCreated, created)
-}
-
-func (s *Server) handlePlanInstance(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Action    string              `json:"action"`
-		HostRoles map[string][]string `json:"hostRoles"`
-		Params    map[string]any      `json:"params"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	plan, rep, err := s.app.PlanInstanceWithParams(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), chi.URLParam(r, "instanceId"), body.Action, body.HostRoles, body.Params, nil)
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"plan": plan, "validation": rep})
-}
-
-func (s *Server) handleApplyInstance(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		PlanID        string `json:"planId"`
-		Action        string `json:"action"`
-		ForceOverride bool   `json:"forceOverride"`
-		SkipVerify    bool   `json:"skipVerify"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err))
-		return
-	}
-	var idem *string
-	if k := strings.TrimSpace(r.Header.Get("Idempotency-Key")); k != "" {
-		idem = &k
-	}
-	op, err := s.app.ApplyInstance(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), chi.URLParam(r, "instanceId"), body.PlanID, body.Action, body.ForceOverride, body.SkipVerify, idem)
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	w.Header().Set("Location", "/api/v1/projects/"+op.ProjectID+"/operations/"+op.ID)
-	writeJSON(w, http.StatusAccepted, op)
-}
-
-func (s *Server) handleListStacks(w http.ResponseWriter, r *http.Request) {
-	items, err := s.app.ListStacks(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"))
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
-}
-
-func (s *Server) handleCreateStack(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Env      string `json:"env"`
-		Name     string `json:"name"`
-		SpecYAML string `json:"specYaml"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err))
-		return
-	}
-	st, dag, err := s.app.CreateStack(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), body.Env, body.Name, body.SpecYAML)
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]any{"stack": st, "dag": dag})
-}
-
-func (s *Server) handleListOperations(w http.ResponseWriter, r *http.Request) {
-	items, err := s.app.ListOperationsEnriched(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), 50)
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
-}
-
-func (s *Server) handleGetOperation(w http.ResponseWriter, r *http.Request) {
-	op, err := s.app.GetOperation(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "opId"))
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, op)
-}
-
-func (s *Server) handleDecideApproval(w http.ResponseWriter, r *http.Request, approve bool) {
-	var body struct {
-		Note string `json:"note"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	if err := s.app.DecideApproval(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), chi.URLParam(r, "opId"), approve, body.Note); err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"approved": approve})
-}
-
-func (s *Server) handleResumeOperation(w http.ResponseWriter, r *http.Request) {
-	if err := s.app.ResumeOperation(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "opId")); err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "resumed"})
-}
-
-func (s *Server) handleListApprovals(w http.ResponseWriter, r *http.Request) {
-	items, err := s.app.ListPendingApprovalsEnriched(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"))
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
-}
-
-func (s *Server) handleListKubeconfigs(w http.ResponseWriter, r *http.Request) {
-	items, err := s.app.ListClusterKubeconfigs(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), chi.URLParam(r, "instanceId"))
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
-}
-
-func (s *Server) handleIssueKubeconfig(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		K8sRole    string   `json:"k8sRole"`
-		Namespaces []string `json:"namespaces"`
-		TTLHours   int      `json:"ttlHours"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err))
-		return
-	}
-	issued, err := s.app.IssueClusterKubeconfig(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), chi.URLParam(r, "instanceId"), body.K8sRole, body.Namespaces, time.Duration(body.TTLHours)*time.Hour)
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, issued)
-}
-
-func (s *Server) handleRevokeKubeconfig(w http.ResponseWriter, r *http.Request) {
-	if err := s.app.RevokeClusterKubeconfig(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), chi.URLParam(r, "kcId")); err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) handleListAuditLogs(w http.ResponseWriter, r *http.Request) {
-	afterSeq, _ := strconv.ParseInt(r.URL.Query().Get("afterSeq"), 10, 64)
-	items, err := s.app.ListAuditLogs(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), afterSeq, 200)
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
-}
-
-func (s *Server) handleVerifyAudit(w http.ResponseWriter, r *http.Request) {
-	res, err := s.app.VerifyAuditChain(r.Context(), ActorFromContext(r.Context()))
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, res)
-}
-
-func (s *Server) handleComplianceReport(w http.ResponseWriter, r *http.Request) {
-	rep, _, digest, err := s.app.GenerateComplianceReport(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"))
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"report": rep, "evidenceTarGzSha256": digest})
-}
-
-func (s *Server) handleRewrapSecrets(w http.ResponseWriter, r *http.Request) {
-	n, err := s.app.RewrapAllCredentials(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"))
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"rewrapped": n})
-}
-
-func (s *Server) handleCMDBSync(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Hosts []domain.Host `json:"hosts"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeProblem(w, r, s.i18n, sdk.NewError(sdk.CodeAPIInvalidRequest, "API", http.StatusBadRequest, sdk.CodeAPIInvalidRequest, false, err))
-		return
-	}
-	created, updated, err := s.app.SyncExternalCMDBHosts(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "projectId"), body.Hosts)
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]int{"created": created, "updated": updated})
-}
-
-func (s *Server) handleOperationReport(w http.ResponseWriter, r *http.Request) {
-	format := r.URL.Query().Get("format")
-	raw, err := s.app.ExportOperationReport(r.Context(), ActorFromContext(r.Context()), chi.URLParam(r, "opId"), format)
-	if err != nil {
-		writeProblem(w, r, s.i18n, err)
-		return
-	}
-	if strings.EqualFold(format, "json") {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	} else {
-		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-	}
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.WriteHeader(http.StatusOK)
-	// #nosec G705 -- response is text/markdown or application/json with nosniff header
-	_, _ = w.Write(raw)
 }

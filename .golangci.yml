@@ -18,85 +18,40 @@ linters:
   settings:
     depguard:
       rules:
-        entry-only-app:
+        platform-pure:
           files:
-            - "**/internal/cli/**/*.go"
-            - "**/internal/server/**/*.go"
-          deny:
-            - pkg: "github.com/kinstall/kinstall/internal/engine"
-              desc: "接入层必须经 internal/app 调用（ARCHITECTURE §4.3）"
-            - pkg: "github.com/kinstall/kinstall/internal/planner"
-              desc: "接入层必须经 internal/app 调用"
-            - pkg: "github.com/kinstall/kinstall/internal/stack"
-              desc: "接入层必须经 internal/app 调用"
-            - pkg: "github.com/kinstall/kinstall/internal/store"
-              desc: "接入层禁止直访 Store"
-            - pkg: "github.com/kinstall/kinstall/internal/executor"
-              desc: "接入层禁止直调 Executor"
-            - pkg: "github.com/kinstall/kinstall/internal/events"
-              desc: "SSE 等事件流经 internal/app 暴露，禁止接入层直连总线"
-            - pkg: "github.com/kinstall/kinstall/plugins"
-              desc: "内置插件只在 cmd/kinstall 注册"
-        domain-no-io:
-          files:
-            - "**/internal/domain/**/*.go"
-          deny:
-            - pkg: "database/sql"
-              desc: "领域层零 I/O（D1 §1.1 铁律 2）"
-            - pkg: "net/http"
-              desc: "领域层零 I/O（D1 §1.1 铁律 2）"
-            - pkg: "golang.org/x/crypto/ssh"
-              desc: "领域层零 I/O（D1 §1.1 铁律 2）"
-            - pkg: "os/exec"
-              desc: "领域层零 I/O（D1 §1.1 铁律 2）"
-        plugins-only-sdk:
-          files:
-            - "**/plugins/**/*.go"
+            - "**/pkg/platform/**/*.go"
           deny:
             - pkg: "github.com/kinstall/kinstall/internal"
-              desc: "插件只能依赖 pkg/sdk（ADR-022）"
-            - pkg: "golang.org/x/crypto/ssh"
-              desc: "插件不得直接 SSH，使用 Task 库（ADR-003）"
-            - pkg: "os/exec"
-              desc: "插件不得执行本地命令"
-            - pkg: "database/sql"
-              desc: "插件不得访问数据库"
-            - pkg: "github.com/uptrace/bun"
-              desc: "插件不得访问数据库"
-        sdk-pure:
+              desc: "系统底座 pkg/platform 严禁反向依赖业务层 internal/*"
+        server-no-raw-drivers:
           files:
-            - "**/pkg/sdk/**/*.go"
-          allow:
-            - "$gostd"
-            - "sigs.k8s.io/yaml"
-            - "github.com/Masterminds/semver/v3"
-            - "github.com/kinstall/kinstall/pkg/sdk/v1alpha1"
-        internal-no-plugins:
+            - "**/internal/server/**/*.go"
+          deny:
+            - pkg: "modernc.org/sqlite"
+              desc: "接入层严禁直连数据库驱动"
+            - pkg: "github.com/jackc/pgx/v5"
+              desc: "接入层严禁直连数据库驱动"
+            - pkg: "github.com/uptrace/bun"
+              desc: "接入层严禁直连 ORM"
+        db-only-bun:
           files:
             - "**/internal/**/*.go"
           deny:
-            - pkg: "github.com/kinstall/kinstall/plugins"
-              desc: "内置插件只在 cmd/kinstall 注册"
-        store-only-bun:
-          files:
-            - "**/internal/**/*.go"
-            - "!**/internal/store/*.go"
-            - "!**/internal/store/**/*.go"
-          deny:
             - pkg: "github.com/uptrace/bun"
-              desc: "业务代码只经 Store Repository 访问数据库（R5）"
+              desc: "数据库访问统一通过 pkg/platform/db 底座"
         no-forbidden-deps:
           files:
             - "$all"
           deny:
             - pkg: "github.com/mattn/go-sqlite3"
-              desc: "需要 CGO，违反 CGO_ENABLED=0（ADR-034）"
+              desc: "需要 CGO，违反 CGO_ENABLED=0 静态单二进制铁律"
             - pkg: "gorm.io/gorm"
-              desc: "数据层不用 gorm（ADR-034）"
+              desc: "禁止引入 gorm"
             - pkg: "github.com/tjfoc/gmsm"
-              desc: "已停维，改用 github.com/emmansun/gmsm（ADR-061）"
+              desc: "已停维，统一使用 github.com/emmansun/gmsm"
             - pkg: "plugin"
-              desc: "Go plugin 包不可移植（R6）"
+              desc: "Go plugin 不可移植，使用声明式 YAML 插件包"
     gosec:
       excludes:
         - G104
@@ -112,16 +67,6 @@ linters:
           - gosec
           - bodyclose
           - sqlclosecheck
-      - path: "internal/server/gen/"
-        linters:
-          - errcheck
-          - gosec
-          - staticcheck
-      - path: "pkg/client/"
-        linters:
-          - errcheck
-          - gosec
-          - staticcheck
 
 formatters:
   enable:

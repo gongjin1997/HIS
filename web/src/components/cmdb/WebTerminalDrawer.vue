@@ -8,7 +8,6 @@ import KiStatusBadge from '@/components/ki/KiStatusBadge.vue'
 
 const props = defineProps<{
   modelValue: boolean
-  projectId: string
   hostId: string
   hostName: string
   hostAddress: string
@@ -64,7 +63,7 @@ function sendResize() {
 
 function connect() {
   cleanup()
-  if (!termWrap.value || !props.projectId || !props.hostId) return
+  if (!termWrap.value || !props.hostId) return
 
   connState.value = 'connecting'
   term = new Terminal({
@@ -72,21 +71,17 @@ function connect() {
     fontSize: 13,
     fontFamily: 'JetBrains Mono, Menlo, Consolas, monospace',
     scrollback: 5000,
-    theme: {
-      background: '#0F172A',
-      foreground: '#E2E8F0',
-      cursor: '#38BDF8',
-    },
   })
   fitAddon = new FitAddon()
   term.loadAddon(fitAddon)
   term.open(termWrap.value)
   fitAddon.fit()
 
-  term.writeln(`\x1b[36m[kinstall WebSSH]\x1b[0m 正在连接 ${props.hostName} (${props.hostAddress}) …`)
+  term.writeln(`\x1b[36m[Kinstall WebSSH]\x1b[0m 正在连接 ${props.hostName} (${props.hostAddress}) …`)
 
+  const token = localStorage.getItem('kinstall.token') || ''
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const url = `${proto}//${window.location.host}/api/v1/projects/${props.projectId}/hosts/${props.hostId}/terminal?cols=${term.cols}&rows=${term.rows}`
+  const url = `${proto}//${window.location.host}/api/v1/hosts/${encodeURIComponent(props.hostId)}/terminal?token=${encodeURIComponent(token)}`
   ws = new WebSocket(url)
 
   ws.onopen = () => {
@@ -99,7 +94,7 @@ function connect() {
   }
   ws.onerror = () => {
     connState.value = 'error'
-    term?.writeln('\r\n\x1b[31m[WebSSH] 连接发生错误，请检查主机 SSH 连通性与凭据配置。\x1b[0m')
+    term?.writeln('\r\n\x1b[31m[WebSSH] 连接发生错误，请检查目标主机 SSH 连通性与凭据绑定。\x1b[0m')
   }
   ws.onclose = () => {
     if (connState.value !== 'error') connState.value = 'closed'
@@ -107,7 +102,6 @@ function connect() {
   }
 
   term.onData((data) => sendInput(data))
-
   resizeObs = new ResizeObserver(() => sendResize())
   resizeObs.observe(termWrap.value)
 }
@@ -130,15 +124,15 @@ onBeforeUnmount(cleanup)
 <template>
   <el-drawer
     :model-value="modelValue"
-    size="78%"
+    size="74%"
     direction="rtl"
     destroy-on-close
     @update:model-value="emit('update:modelValue', $event)"
   >
     <template #header>
       <div class="term-hdr">
-        <div class="ki-flex-row">
-          <TerminalIcon :size="16" class="ki-text-brand" />
+        <div class="term-hdr__left">
+          <TerminalIcon :size="16" class="term-brand" />
           <strong>Web SSH 交互终端 · {{ hostName }}</strong>
           <span class="ki-mono ki-muted">{{ hostAddress }}</span>
           <KiStatusBadge
@@ -146,7 +140,7 @@ onBeforeUnmount(cleanup)
             :label="connState === 'open' ? '已连接' : connState === 'connecting' ? '连接中' : connState === 'error' ? '连接失败' : '已断开'"
           />
         </div>
-        <div class="ki-flex-row">
+        <div class="term-hdr__ops">
           <el-dropdown trigger="click" @command="(c: string) => sendInput(c)">
             <el-button size="small">快捷运维命令</el-button>
             <template #dropdown>
@@ -170,7 +164,7 @@ onBeforeUnmount(cleanup)
     <div class="term-body">
       <div ref="termWrap" class="term-canvas" />
       <div class="term-foot ki-muted">
-        所有交互会话的开启与关闭时间均自动记入 SHA-256 + 国密 SM3 防篡改审计链。支持 Ctrl+C、Tab 补全与窗口自适应缩放。
+        终端直连统一 CMDB 主机资产 (m_host)，凭据经 KMS 解密后仅驻留内存，所有会话记录纳入 SHA-256 防篡改审计链。
       </div>
     </div>
   </el-drawer>
@@ -181,6 +175,10 @@ onBeforeUnmount(cleanup)
   margin-right: 4px;
 }
 
+.term-brand {
+  color: var(--ki-brand);
+}
+
 .term-hdr {
   display: flex;
   align-items: center;
@@ -188,6 +186,13 @@ onBeforeUnmount(cleanup)
   gap: 12px;
   width: 100%;
   padding-right: 12px;
+}
+
+.term-hdr__left,
+.term-hdr__ops {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .term-body {

@@ -1,459 +1,440 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { Copy, Eye, GitCompare, History, Lock, Plus, RotateCcw, Send, Trash2 } from 'lucide-vue-next'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Copy, Eye, History, Lock, Plus, RotateCcw, Send, Trash2 } from 'lucide-vue-next'
 import { apiRequest } from '@/api/client'
-import { useWorkspaceStore } from '@/stores/workspace'
-import { useKiFormat } from '@/composables/useKiFormat'
 import PageHeader from '@/components/PageHeader.vue'
-import KiMonoText from '@/components/ki/KiMonoText.vue'
 
 interface Namespace {
   id: string
   env: string
+  appCode: string
   name: string
-  formatKind: string
+  format: string
   description: string
-  currentReleaseVer: number
+  activeVersion: number
   itemCount: number
 }
 
 interface ConfigItem {
   id: string
-  itemKey: string
-  itemType: string
+  key: string
   value: string
-  hasSecret: boolean
+  isSecret: boolean
+  valueType: string
   description: string
-  version: number
   updatedBy: string
   updatedAt: string
 }
 
-interface Release {
-  id: string
-  releaseVer: number
-  etag: string
-  comment: string
-  orcTicketNo: string
-  publishedBy: string
-  publishedAt: string
-  items: Array<{ key: string; type: string; valuePlain: string }>
-}
-
 interface DiffEntry {
   key: string
-  changeType: string
-  oldValue?: string
-  newValue?: string
+  change: string
+  isSecret: boolean
+  oldValue: string
+  newValue: string
 }
 
-const ws = useWorkspaceStore()
-const { formatRelTime } = useKiFormat()
+interface ReleaseRow {
+  id: string
+  version: number
+  etag: string
+  comment: string
+  itemCount: number
+  releasedBy: string
+  createdAt: string
+}
+
+const envs = ['prod', 'beta', 'uat', 'sit', 'dev']
+const activeEnv = ref('prod')
+const activeTab = ref<'items' | 'releases' | 'calc'>('items')
 const loading = ref(false)
-const envFilter = ref('prod')
+
 const namespaces = ref<Namespace[]>([])
-const selectedNsId = ref('')
+const selectedNSId = ref('')
 const items = ref<ConfigItem[]>([])
-const releases = ref<Release[]>([])
 const diffs = ref<DiffEntry[]>([])
-const activeTab = ref<'items' | 'diff' | 'releases'>('items')
+const releases = ref<ReleaseRow[]>([])
+const revealedMap = reactive<Record<string, string>>({})
 
-const nsDialog = reactive({ open: false, env: 'prod', name: '', formatKind: 'kv', description: '' })
-const itemDialog = reactive({ open: false, itemKey: '', itemType: 'string', value: '', description: '' })
-const pubDialog = reactive({ open: false, comment: '', orcTicketNo: '' })
-const cloneDialog = reactive({ open: false, targetEnv: 'uat', targetName: '' })
-const revealDialog = reactive({ open: false, key: '', reason: '变更核查', plaintext: '' })
+const showNSDialog = ref(false)
+const nsForm = reactive({ env: 'prod', appCode: 'his-core', name: 'application', description: '' })
 
-const currentNs = computed(() => namespaces.value.find((n) => n.id === selectedNsId.value) || namespaces.value[0] || null)
-const changedCount = computed(() => diffs.value.filter((d) => d.changeType !== 'unchanged').length)
+const showItemDialog = ref(false)
+const itemForm = reactive({ key: '', value: '', isSecret: false, description: '' })
+
+const showCloneDialog = ref(false)
+const cloneForm = reactive({ targetEnv: 'uat', targetApp: 'his-core', targetName: 'application' })
+
+const publishComment = ref('')
+
+// 3-Level Merge & K8s Spec Calculator
+const calcForm = reactive({
+  globalRaw: 'LOG_LEVEL=info\nDB_POOL=50\nJVM_GC=G1GC',
+  serviceRaw: 'DB_POOL=120\nPORT=8080',
+  specRaw: 'PORT=18080\nCANARY=true',
+  cpuCores: 2,
+  memGb: 4,
+  replicas: 2,
+})
+const calcResult = ref<{
+  trace: Array<{ key: string; value: string; source: string }>
+  k8sSpec: { requestCpuM: number; limitCpuM: number; requestMemMi: number; limitMemMi: number; jvmXms: string; jvmXmx: string; totalCpuCores: number; totalMemGb: number }
+} | null>(null)
+
+const selectedNS = computed(() => namespaces.value.find((n) => n.id === selectedNSId.value) || null)
 
 async function loadNamespaces() {
-  if (!ws.currentProjectId) return
   loading.value = true
   try {
-    const { data } = await apiRequest<{ items: Namespace[] }>(
-      'GET',
-      `/api/v1/projects/${ws.currentProjectId}/config/namespaces?env=${encodeURIComponent(envFilter.value)}`
-    )
+    const { data } = await apiRequest<{ items: Namespace[] }>('GET', `/api/v1/config/namespaces?env=${activeEnv.value}`)
     namespaces.value = data.items || []
-    if (!namespaces.value.some((n) => n.id === selectedNsId.value)) {
-      selectedNsId.value = namespaces.value[0]?.id || ''
+    if (!namespaces.value.some((n) => n.id === selectedNSId.value)) {
+      selectedNSId.value = namespaces.value[0]?.id || ''
     }
-    if (selectedNsId.value) {
-      await loadNsDetails(selectedNsId.value)
+    if (selectedNSId.value) {
+      await loadNSDetail(selectedNSId.value)
     } else {
       items.value = []
-      releases.value = []
       diffs.value = []
+      releases.value = []
     }
   } finally {
     loading.value = false
   }
 }
 
-async function loadNsDetails(nsId: string) {
-  if (!ws.currentProjectId || !nsId) return
-  const pid = ws.currentProjectId
-  const [iRes, dRes, rRes] = await Promise.all([
-    apiRequest<{ items: ConfigItem[] }>('GET', `/api/v1/projects/${pid}/config/namespaces/${encodeURIComponent(nsId)}/items`),
-    apiRequest<{ items: DiffEntry[] }>('GET', `/api/v1/projects/${pid}/config/namespaces/${encodeURIComponent(nsId)}/diff`),
-    apiRequest<{ items: Release[] }>('GET', `/api/v1/projects/${pid}/config/namespaces/${encodeURIComponent(nsId)}/releases`),
+async function loadNSDetail(nsId: string) {
+  selectedNSId.value = nsId
+  Object.keys(revealedMap).forEach((k) => delete revealedMap[k])
+  const [itRes, dfRes, rlRes] = await Promise.all([
+    apiRequest<{ items: ConfigItem[] }>('GET', `/api/v1/config/namespaces/${nsId}/items`),
+    apiRequest<{ items: DiffEntry[] }>('GET', `/api/v1/config/namespaces/${nsId}/diff`),
+    apiRequest<{ items: ReleaseRow[] }>('GET', `/api/v1/config/namespaces/${nsId}/releases`),
   ])
-  items.value = iRes.data.items || []
-  diffs.value = dRes.data.items || []
-  releases.value = rRes.data.items || []
+  items.value = itRes.data.items || []
+  diffs.value = dfRes.data.items || []
+  releases.value = rlRes.data.items || []
 }
 
 async function createNamespace() {
   try {
-    const { data } = await apiRequest<Namespace>('POST', `/api/v1/projects/${ws.currentProjectId}/config/namespaces`, { body: nsDialog })
-    ElMessage.success(`命名空间 ${data.env}/${data.name} 已创建`)
-    envFilter.value = data.env
-    selectedNsId.value = data.id
-    nsDialog.open = false
-    nsDialog.name = ''
+    nsForm.env = activeEnv.value
+    const { data } = await apiRequest<Namespace>('POST', '/api/v1/config/namespaces', { body: nsForm })
+    ElMessage.success('配置命名空间已创建')
+    showNSDialog.value = false
+    selectedNSId.value = data.id
     await loadNamespaces()
-  } catch (e) {
-    ElMessage.error(String(e))
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '创建失败')
   }
 }
 
-function openItemEdit(row?: ConfigItem) {
-  itemDialog.itemKey = row?.itemKey || ''
-  itemDialog.itemType = row?.itemType || 'string'
-  itemDialog.value = row?.value || ''
-  itemDialog.description = row?.description || ''
-  itemDialog.open = true
-}
-
 async function saveItem() {
-  if (!currentNs.value) return
+  if (!selectedNSId.value) return
   try {
-    await apiRequest('PUT', `/api/v1/projects/${ws.currentProjectId}/config/namespaces/${encodeURIComponent(currentNs.value.id)}/items`, {
-      body: itemDialog,
-    })
-    ElMessage.success('配置草稿已保存（密钥项已强制 KMS 信封加密）')
-    itemDialog.open = false
-    await loadNsDetails(currentNs.value.id)
-  } catch (e) {
-    ElMessage.error(String(e))
+    await apiRequest('POST', `/api/v1/config/namespaces/${selectedNSId.value}/items`, { body: itemForm })
+    ElMessage.success(itemForm.isSecret ? 'KMS 密钥已加密落库' : '配置项已保存')
+    showItemDialog.value = false
+    Object.assign(itemForm, { key: '', value: '', isSecret: false, description: '' })
+    await loadNamespaces()
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '保存失败')
   }
 }
 
 async function deleteItem(key: string) {
-  if (!currentNs.value) return
-  await apiRequest('DELETE', `/api/v1/projects/${ws.currentProjectId}/config/namespaces/${encodeURIComponent(currentNs.value.id)}/items/${encodeURIComponent(key)}`)
-  ElMessage.success(`已删除配置项 ${key}`)
-  await loadNsDetails(currentNs.value.id)
+  if (!selectedNSId.value) return
+  await apiRequest('DELETE', `/api/v1/config/namespaces/${selectedNSId.value}/items/${encodeURIComponent(key)}`)
+  ElMessage.success('配置项已删除')
+  await loadNamespaces()
 }
 
-function openReveal(key: string) {
-  revealDialog.key = key
-  revealDialog.reason = '生产发布核验'
-  revealDialog.plaintext = ''
-  revealDialog.open = true
-}
-
-async function doReveal() {
-  if (!currentNs.value) return
-  try {
-    const { data } = await apiRequest<{ value: string }>(
-      'POST',
-      `/api/v1/projects/${ws.currentProjectId}/config/namespaces/${encodeURIComponent(currentNs.value.id)}/items/${encodeURIComponent(revealDialog.key)}/reveal`,
-      { body: { reason: revealDialog.reason } }
-    )
-    revealDialog.plaintext = data.value
-    ElMessage.success('已解密明文并写入只追加防篡改审计链')
-  } catch (e) {
-    ElMessage.error(String(e))
-  }
+async function revealSecret(key: string) {
+  if (!selectedNSId.value) return
+  const { value: reason } = await ElMessageBox.prompt('显密操作将被强制写入 SHA-256 防篡改审计链，请填写事由：', `审计显密 · ${key}`, {
+    inputValue: '生产配置核对',
+    confirmButtonText: '确认解密查看',
+    cancelButtonText: '取消',
+  })
+  const { data } = await apiRequest<{ key: string; value: string }>('POST', `/api/v1/config/namespaces/${selectedNSId.value}/reveal`, {
+    body: { key, reason },
+  })
+  revealedMap[key] = data.value
+  ElMessage.warning('已解密显示明文并记录审计哈希链')
 }
 
 async function publishRelease() {
-  if (!currentNs.value) return
+  if (!selectedNSId.value) return
+  const { data } = await apiRequest<ReleaseRow>('POST', `/api/v1/config/namespaces/${selectedNSId.value}/publish`, {
+    body: { comment: publishComment.value || '控制台常规发布' },
+  })
+  ElMessage.success(`已发布不可变快照 v${data.version} (ETag: ${data.etag})`)
+  publishComment.value = ''
+  await loadNamespaces()
+}
+
+async function rollbackVersion(ver: number) {
+  if (!selectedNSId.value) return
+  await ElMessageBox.confirm(`确认将配置回滚至历史版本 v${ver}？（将生成新单调递增版本号）`, '版本回滚', { type: 'warning' })
+  const { data } = await apiRequest<ReleaseRow>('POST', `/api/v1/config/namespaces/${selectedNSId.value}/rollback`, {
+    body: { targetVersion: ver },
+  })
+  ElMessage.success(`回滚成功，已生成新基线版本 v${data.version}`)
+  await loadNamespaces()
+}
+
+async function cloneNamespace() {
+  if (!selectedNSId.value) return
   try {
-    const { data } = await apiRequest<Release>(
-      'POST',
-      `/api/v1/projects/${ws.currentProjectId}/config/namespaces/${encodeURIComponent(currentNs.value.id)}/publish`,
-      { body: pubDialog }
-    )
-    ElMessage.success(`已固化不可变版本快照 v${data.releaseVer} (ETag: ${data.etag.slice(0, 12)})`)
-    pubDialog.open = false
-    pubDialog.comment = ''
+    const { data } = await apiRequest<{ blankedSecrets: number }>('POST', `/api/v1/config/namespaces/${selectedNSId.value}/clone`, {
+      body: cloneForm,
+    })
+    ElMessage.success(`已安全克隆至 ${cloneForm.targetEnv}，自动置空 ${data.blankedSecrets} 个密钥项防泄露`)
+    showCloneDialog.value = false
+    activeEnv.value = cloneForm.targetEnv
     await loadNamespaces()
-  } catch (e) {
-    ElMessage.error(String(e))
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '克隆失败')
   }
 }
 
-async function rollbackTo(ver: number) {
-  if (!currentNs.value) return
-  try {
-    await ElMessageBox.confirm(`确认以历史快照 v${ver} 生成全新版本并回滚当前命名空间吗？`, '不可变快照回滚', { type: 'warning' })
-    const { data } = await apiRequest<Release>(
-      'POST',
-      `/api/v1/projects/${ws.currentProjectId}/config/namespaces/${encodeURIComponent(currentNs.value.id)}/rollback`,
-      { body: { targetVer: ver, comment: `rollback to v${ver}` } }
-    )
-    ElMessage.success(`已生成回滚新版本 v${data.releaseVer}`)
-    await loadNamespaces()
-  } catch (e) {
-    if (e !== 'cancel' && String(e) !== 'cancel') ElMessage.error(String(e))
+function parseKV(raw: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const line of raw.split('\n')) {
+    const idx = line.indexOf('=')
+    if (idx > 0) out[line.slice(0, idx).trim()] = line.slice(idx + 1).trim()
   }
+  return out
 }
 
-async function cloneNs() {
-  if (!currentNs.value) return
-  try {
-    const { data } = await apiRequest<Namespace>(
-      'POST',
-      `/api/v1/projects/${ws.currentProjectId}/config/namespaces/${encodeURIComponent(currentNs.value.id)}/clone`,
-      { body: cloneDialog }
-    )
-    ElMessage.success(`已克隆至 ${data.env}/${data.name}（所有密钥项已安全置空防跨环境泄露）`)
-    cloneDialog.open = false
-    envFilter.value = data.env
-    selectedNsId.value = data.id
-    await loadNamespaces()
-  } catch (e) {
-    ElMessage.error(String(e))
-  }
+async function runPreviewCalc() {
+  const { data } = await apiRequest<typeof calcResult.value>('POST', '/api/v1/config/preview-params', {
+    body: {
+      globalParams: parseKV(calcForm.globalRaw),
+      serviceParams: parseKV(calcForm.serviceRaw),
+      specParams: parseKV(calcForm.specRaw),
+      cpuCores: calcForm.cpuCores,
+      memGb: calcForm.memGb,
+      replicas: calcForm.replicas,
+    },
+  })
+  calcResult.value = data
 }
 
-watch(envFilter, loadNamespaces)
-watch(selectedNsId, (id) => {
-  if (id) void loadNsDetails(id)
+onMounted(async () => {
+  await loadNamespaces()
+  await runPreviewCalc()
 })
-watch(() => ws.currentProjectId, loadNamespaces)
-onMounted(loadNamespaces)
 </script>
 
 <template>
-  <div v-loading="loading">
+  <div class="cfg-page">
     <PageHeader
-      title="多环境版本化配置与密钥中心"
-      subtitle="对标 LiveOps 03.4：dev/sit/uat/beta/prod 五环境物理隔离、KMS 信封密钥脱敏与审计显密、草稿 Diff 与不可变快照一键回滚"
+      title="多环境配置与 KMS 密钥中心"
+      subtitle="五环境隔离 · AES-256/SM4 信封加密 · 审计显密与快照回滚"
       :refresh="loadNamespaces"
       :refreshing="loading"
     >
       <template #actions>
-        <el-button v-if="currentNs" @click="cloneDialog.targetName = currentNs.name; cloneDialog.open = true">
-          <Copy :size="14" class="btn-ico" /> 跨环境安全克隆
-        </el-button>
-        <el-button v-if="currentNs" type="primary" @click="pubDialog.open = true">
-          <Send :size="14" class="btn-ico" /> 发布不可变快照 ({{ changedCount }})
-        </el-button>
+        <el-button v-if="selectedNS" @click="showCloneDialog = true"><Copy :size="14" class="btn-ico" />安全跨环境克隆</el-button>
+        <el-button type="primary" @click="showNSDialog = true"><Plus :size="14" class="btn-ico" />新建配置集</el-button>
       </template>
     </PageHeader>
 
-    <div class="env-bar ki-mb-3">
-      <el-radio-group v-model="envFilter" size="small">
-        <el-radio-button value="prod">PROD 生产</el-radio-button>
-        <el-radio-button value="beta">BETA 灰度</el-radio-button>
-        <el-radio-button value="uat">UAT 预发</el-radio-button>
-        <el-radio-button value="sit">SIT 联调</el-radio-button>
-        <el-radio-button value="dev">DEV 开发</el-radio-button>
-      </el-radio-group>
-      <el-button size="small" @click="nsDialog.env = envFilter; nsDialog.open = true">
-        <Plus :size="13" class="btn-ico" /> 新建命名空间
-      </el-button>
+    <div class="ki-pill-tabs env-bar">
+      <button
+        v-for="e in envs"
+        :key="e"
+        type="button"
+        class="ki-pill-tab"
+        :class="{ 'ki-pill-tab--active': activeEnv === e }"
+        @click="activeEnv = e; loadNamespaces()"
+      >
+        {{ e.toUpperCase() }}
+      </button>
     </div>
 
     <div class="cfg-layout">
-      <div class="ki-card ns-rail">
-        <div class="rail-title">{{ envFilter.toUpperCase() }} 命名空间 ({{ namespaces.length }})</div>
-        <div
-          v-for="ns in namespaces"
-          :key="ns.id"
-          class="ns-item"
-          :class="{ 'ns-item--active': currentNs?.id === ns.id }"
-          @click="selectedNsId = ns.id"
-        >
-          <div class="ns-item__top">
-            <b class="ki-mono">{{ ns.name }}</b>
-            <span class="ki-mono ns-ver">v{{ ns.currentReleaseVer }}</span>
-          </div>
-          <div class="ki-muted ns-desc">{{ ns.description || ns.formatKind }}</div>
+      <aside class="ki-card">
+        <div class="ki-card__title">
+          <span>{{ activeEnv.toUpperCase() }} 命名空间</span>
+          <span class="sub">{{ namespaces.length }}</span>
         </div>
-        <div v-if="namespaces.length === 0" class="ki-muted empty-ns">该环境暂无命名空间</div>
-      </div>
+        <div v-if="namespaces.length === 0" class="ki-muted empty-ns">当前环境暂无配置集</div>
+        <button
+          v-for="n in namespaces"
+          :key="n.id"
+          type="button"
+          class="ns-btn"
+          :class="{ 'is-active': n.id === selectedNSId }"
+          @click="loadNSDetail(n.id)"
+        >
+          <div class="ns-top">
+            <b>{{ n.appCode }} / {{ n.name }}</b>
+            <span class="ki-mono ns-ver">v{{ n.activeVersion }}</span>
+          </div>
+          <span class="ki-muted ns-sub">{{ n.itemCount }} 项 · {{ n.description || 'KV 配置' }}</span>
+        </button>
+      </aside>
 
-      <div class="ki-card">
+      <main class="ki-card">
         <el-tabs v-model="activeTab">
-          <el-tab-pane :label="`配置项草稿 (${items.length})`" name="items">
-            <div class="tab-bar ki-mb-3">
-              <span class="ki-muted">敏感项落库强制加密，列表固定返回 <code>***MASKED***</code>，显密必须登记审计。</span>
-              <el-button v-if="currentNs" type="primary" size="small" @click="openItemEdit()">
-                <Plus :size="13" class="btn-ico" /> 新增配置 / 密钥项
+          <el-tab-pane label="KV 与 KMS 密钥项" name="items">
+            <div class="table-heading">
+              <div>
+                <strong>{{ selectedNS ? `${selectedNS.env.toUpperCase()} / ${selectedNS.appCode} / ${selectedNS.name}` : '未选择命名空间' }}</strong>
+                <el-tag v-if="selectedNS" size="small" class="tag-gap">基线 v{{ selectedNS.activeVersion }}</el-tag>
+              </div>
+              <el-button v-if="selectedNS" type="primary" size="small" @click="showItemDialog = true">
+                <Plus :size="13" class="btn-ico" />新增/更新配置项
               </el-button>
             </div>
+
             <el-table :data="items" size="small">
-              <el-table-column prop="itemKey" label="键名 (Key)" min-width="170">
+              <el-table-column prop="key" label="配置键 (Key)" width="175">
                 <template #default="{ row }">
-                  <div class="ki-flex-row">
-                    <Lock v-if="row.itemType === 'secret'" :size="12" class="sec-ico" />
-                    <b class="ki-mono">{{ row.itemKey }}</b>
+                  <code class="ki-mono">{{ row.key }}</code>
+                </template>
+              </el-table-column>
+              <el-table-column label="配置值 / KMS 密文" min-width="210">
+                <template #default="{ row }">
+                  <template v-if="row.isSecret">
+                    <el-tag size="small" type="warning"><Lock :size="11" class="btn-ico" />KMS</el-tag>
+                    <code class="ki-mono sec-val">{{ revealedMap[row.key] !== undefined ? revealedMap[row.key] : row.value }}</code>
+                  </template>
+                  <code v-else class="ki-mono">{{ row.value }}</code>
+                </template>
+              </el-table-column>
+              <el-table-column prop="description" label="说明" min-width="150" show-overflow-tooltip />
+              <el-table-column label="操作" width="130" align="right">
+                <template #default="{ row }">
+                  <div class="ki-row-actions">
+                    <el-button v-if="row.isSecret" link type="primary" size="small" @click="revealSecret(row.key)">
+                      <Eye :size="12" class="btn-ico" />显密
+                    </el-button>
+                    <el-button link type="danger" size="small" @click="deleteItem(row.key)"><Trash2 :size="12" /></el-button>
                   </div>
                 </template>
               </el-table-column>
-              <el-table-column prop="itemType" label="类型" width="84">
-                <template #default="{ row }"><span class="ki-badge ki-mono type-tag">{{ row.itemType }}</span></template>
-              </el-table-column>
-              <el-table-column prop="value" label="配置值（密钥自动脱敏）" min-width="200">
-                <template #default="{ row }"><span class="ki-mono">{{ row.value || '(待注入)' }}</span></template>
-              </el-table-column>
-              <el-table-column prop="description" label="说明" min-width="150" />
-              <el-table-column label="操作" width="160" align="right">
-                <template #default="{ row }">
-                  <el-button v-if="row.itemType === 'secret' && row.hasSecret" link type="warning" size="small" @click="openReveal(row.itemKey)">
-                    <Eye :size="12" class="btn-ico" /> 显密
-                  </el-button>
-                  <el-button link type="primary" size="small" @click="openItemEdit(row)">编辑</el-button>
-                  <el-button link type="danger" size="small" @click="deleteItem(row.itemKey)">
-                    <Trash2 :size="12" />
-                  </el-button>
-                </template>
-              </el-table-column>
             </el-table>
           </el-tab-pane>
 
-          <el-tab-pane :label="`草稿 vs 线上 Diff (${changedCount})`" name="diff">
-            <el-table :data="diffs" size="small">
-              <el-table-column prop="key" label="配置键" width="180">
-                <template #default="{ row }"><b class="ki-mono">{{ row.key }}</b></template>
-              </el-table-column>
-              <el-table-column prop="changeType" label="变更类型" width="100">
-                <template #default="{ row }">
-                  <span class="ki-badge ki-mono" :class="`diff-${row.changeType}`">
-                    <GitCompare :size="11" class="btn-ico" /> {{ row.changeType }}
-                  </span>
-                </template>
-              </el-table-column>
-              <el-table-column prop="oldValue" label="线上版本值" min-width="170">
-                <template #default="{ row }"><span class="ki-mono ki-muted">{{ row.oldValue || '—' }}</span></template>
-              </el-table-column>
-              <el-table-column prop="newValue" label="当前草稿值" min-width="170">
-                <template #default="{ row }"><span class="ki-mono">{{ row.newValue || '—' }}</span></template>
-              </el-table-column>
-            </el-table>
-          </el-tab-pane>
+          <el-tab-pane :label="`草稿 Diff (${diffs.length}) 与版本快照`" name="releases">
+            <div class="pub-bar">
+              <el-input v-model="publishComment" placeholder="填写本次快照发布说明…" style="flex: 1" />
+              <el-button type="primary" :disabled="!selectedNS" @click="publishRelease">
+                <Send :size="13" class="btn-ico" />发布不可变快照
+              </el-button>
+            </div>
 
-          <el-tab-pane :label="`不可变发布历史 (${releases.length})`" name="releases">
+            <div class="section-title">待发布草稿差异 ({{ diffs.length }})</div>
+            <el-table v-if="diffs.length > 0" :data="diffs" size="small">
+              <el-table-column prop="key" label="配置键" width="160" />
+              <el-table-column prop="change" label="变更类型" width="100" />
+              <el-table-column prop="oldValue" label="基线值" min-width="130" />
+              <el-table-column prop="newValue" label="草稿值" min-width="130" />
+            </el-table>
+            <div v-else class="ki-muted empty-ns">当前草稿与最新已发布基线完全一致。</div>
+
+            <div class="section-title"><History :size="14" /> 不可变历史快照 ({{ releases.length }})</div>
             <el-table :data="releases" size="small">
-              <el-table-column label="版本" width="84">
-                <template #default="{ row }"><b class="ki-mono">v{{ row.releaseVer }}</b></template>
+              <el-table-column label="版本" width="80">
+                <template #default="{ row }"><strong class="ki-mono">v{{ row.version }}</strong></template>
               </el-table-column>
-              <el-table-column label="规范化 ETag (SHA-256)" width="170">
-                <template #default="{ row }"><KiMonoText :value="row.etag" :head="10" :tail="6" /></template>
+              <el-table-column prop="etag" label="SHA-256 ETag" width="150">
+                <template #default="{ row }"><code class="ki-mono">{{ row.etag }}</code></template>
               </el-table-column>
-              <el-table-column prop="comment" label="发布说明" min-width="170" />
-              <el-table-column prop="orcTicketNo" label="变更单号" width="110" />
-              <el-table-column prop="publishedBy" label="发布人" width="96" />
-              <el-table-column label="时间" width="96">
-                <template #default="{ row }"><span class="ki-muted">{{ formatRelTime(row.publishedAt) }}</span></template>
-              </el-table-column>
-              <el-table-column label="操作" width="110" align="right">
+              <el-table-column prop="itemCount" label="项数" width="70" />
+              <el-table-column prop="comment" label="发布备注" min-width="160" />
+              <el-table-column prop="releasedBy" label="发布人" width="90" />
+              <el-table-column label="操作" width="90" align="right">
                 <template #default="{ row }">
-                  <el-button link type="primary" size="small" @click="rollbackTo(row.releaseVer)">
-                    <RotateCcw :size="12" class="btn-ico" /> 回滚至此版
+                  <el-button link type="primary" size="small" @click="rollbackVersion(row.version)">
+                    <RotateCcw :size="12" class="btn-ico" />回滚
                   </el-button>
                 </template>
               </el-table-column>
             </el-table>
+          </el-tab-pane>
+
+          <el-tab-pane label="三级参数合并与 K8s 规格计算" name="calc">
+            <div class="calc-grid">
+              <div>
+                <div class="section-title">Spec &gt; Service &gt; Global 三级合并</div>
+                <el-form label-position="top" size="small">
+                  <el-form-item label="Global 全局参数 (KEY=VAL)"><el-input v-model="calcForm.globalRaw" type="textarea" :rows="3" /></el-form-item>
+                  <el-form-item label="Service 组件参数 (覆盖 Global)"><el-input v-model="calcForm.serviceRaw" type="textarea" :rows="2" /></el-form-item>
+                  <el-form-item label="Spec 实例参数 (最高优先级)"><el-input v-model="calcForm.specRaw" type="textarea" :rows="2" /></el-form-item>
+                  <div class="three-col">
+                    <el-form-item label="单副本 CPU (核)"><el-input-number v-model="calcForm.cpuCores" :step="0.5" :min="0.5" style="width: 100%" /></el-form-item>
+                    <el-form-item label="单副本内存 (GB)"><el-input-number v-model="calcForm.memGb" :step="1" :min="0.5" style="width: 100%" /></el-form-item>
+                    <el-form-item label="副本数"><el-input-number v-model="calcForm.replicas" :min="1" :max="64" style="width: 100%" /></el-form-item>
+                  </div>
+                  <el-button type="primary" @click="runPreviewCalc">重新计算生效值与 K8s 规格</el-button>
+                </el-form>
+              </div>
+              <div v-if="calcResult">
+                <div class="section-title">K8s 毫核 / MiB 与 JVM 推荐规格</div>
+                <div class="kv-grid">
+                  <div class="k">CPU Request</div><div class="ki-mono">{{ calcResult.k8sSpec.requestCpuM }}m</div>
+                  <div class="k">CPU Limit</div><div class="ki-mono">{{ calcResult.k8sSpec.limitCpuM }}m</div>
+                  <div class="k">Mem Request</div><div class="ki-mono">{{ calcResult.k8sSpec.requestMemMi }}Mi</div>
+                  <div class="k">Mem Limit</div><div class="ki-mono">{{ calcResult.k8sSpec.limitMemMi }}Mi</div>
+                  <div class="k">JVM 推荐</div><div class="ki-mono">-Xms{{ calcResult.k8sSpec.jvmXms }} -Xmx{{ calcResult.k8sSpec.jvmXmx }}</div>
+                  <div class="k">集群总配额</div><div class="ki-mono">{{ calcResult.k8sSpec.totalCpuCores }}C / {{ calcResult.k8sSpec.totalMemGb }}GB</div>
+                </div>
+                <div class="section-title">最终生效参数与来源追踪</div>
+                <el-table :data="calcResult.trace" size="small">
+                  <el-table-column prop="key" label="Key" width="130" />
+                  <el-table-column prop="value" label="最终生效值" min-width="110" />
+                  <el-table-column prop="source" label="命中层级" width="90" />
+                </el-table>
+              </div>
+            </div>
           </el-tab-pane>
         </el-tabs>
-      </div>
+      </main>
     </div>
 
-    <el-dialog v-model="nsDialog.open" title="新建环境配置命名空间" width="460px">
+    <el-dialog v-model="showNSDialog" title="新建配置命名空间" width="440px">
       <el-form label-position="top">
-        <div class="ki-grid-2">
-          <el-form-item label="目标环境">
-            <el-select v-model="nsDialog.env" class="ki-w-full">
-              <el-option v-for="e in ['prod','beta','uat','sit','dev']" :key="e" :label="e.toUpperCase()" :value="e" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="格式类型">
-            <el-select v-model="nsDialog.formatKind" class="ki-w-full">
-              <el-option label="KV 键值对" value="kv" />
-              <el-option label="YAML 文档" value="yaml" />
-              <el-option label="Properties" value="properties" />
-            </el-select>
-          </el-form-item>
-        </div>
-        <el-form-item label="命名空间名称"><el-input v-model="nsDialog.name" placeholder="his-outpatient-config" /></el-form-item>
-        <el-form-item label="用途说明"><el-input v-model="nsDialog.description" /></el-form-item>
+        <el-form-item label="应用编码"><el-input v-model="nsForm.appCode" placeholder="his-billing" /></el-form-item>
+        <el-form-item label="配置集名称"><el-input v-model="nsForm.name" placeholder="application" /></el-form-item>
+        <el-form-item label="说明"><el-input v-model="nsForm.description" /></el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="nsDialog.open = false">取消</el-button>
+        <el-button @click="showNSDialog = false">取消</el-button>
         <el-button type="primary" @click="createNamespace">创建</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="itemDialog.open" title="编辑配置 / 加密密钥项" width="520px">
+    <el-dialog v-model="showItemDialog" title="新增/修改配置项" width="460px">
       <el-form label-position="top">
-        <div class="ki-grid-2">
-          <el-form-item label="键名 (Key) *"><el-input v-model="itemDialog.itemKey" placeholder="DB_PASSWORD" /></el-form-item>
-          <el-form-item label="值类型">
-            <el-select v-model="itemDialog.itemType" class="ki-w-full">
-              <el-option label="字符串 (string)" value="string" />
-              <el-option label="加密密钥 (secret · KMS 信封)" value="secret" />
-              <el-option label="JSON 文档 (json)" value="json" />
-              <el-option label="YAML 文档 (yaml)" value="yaml" />
-            </el-select>
-          </el-form-item>
-        </div>
-        <el-form-item label="配置值">
-          <el-input v-model="itemDialog.value" :type="itemDialog.itemType === 'secret' ? 'password' : 'textarea'" :rows="4" show-password />
-        </el-form-item>
-        <el-form-item label="备注说明"><el-input v-model="itemDialog.description" /></el-form-item>
+        <el-form-item label="配置键 (Key)"><el-input v-model="itemForm.key" placeholder="DB_PASSWORD" /></el-form-item>
+        <el-form-item label="配置值"><el-input v-model="itemForm.value" :type="itemForm.isSecret ? 'password' : 'text'" show-password /></el-form-item>
+        <el-form-item><el-checkbox v-model="itemForm.isSecret">启用 KMS 信封加密（列表脱敏 + 审计显密）</el-checkbox></el-form-item>
+        <el-form-item label="备注"><el-input v-model="itemForm.description" /></el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="itemDialog.open = false">取消</el-button>
-        <el-button type="primary" @click="saveItem">保存草稿</el-button>
+        <el-button @click="showItemDialog = false">取消</el-button>
+        <el-button type="primary" @click="saveItem">保存</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="pubDialog.open" title="发布不可变配置快照" width="460px">
-      <el-form label-position="top">
-        <el-form-item label="变更说明"><el-input v-model="pubDialog.comment" placeholder="例如：更新内网镜像仓库地址与连接池参数" /></el-form-item>
-        <el-form-item label="关联变更单号 (ORC Ticket)"><el-input v-model="pubDialog.orcTicketNo" placeholder="CHG-2026-001" /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="pubDialog.open = false">取消</el-button>
-        <el-button type="primary" @click="publishRelease"><History :size="13" class="btn-ico" /> 固化发布快照</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="cloneDialog.open" title="跨环境安全克隆命名空间" width="440px">
-      <p class="ki-muted clone-warn">安全红线：克隆至目标环境时，所有 <code>secret</code> 密钥项将自动置空，严禁将测试环境或生产密钥互相泄露。</p>
+    <el-dialog v-model="showCloneDialog" title="跨环境安全克隆（自动置空全部密钥）" width="440px">
       <el-form label-position="top">
         <el-form-item label="目标环境">
-          <el-select v-model="cloneDialog.targetEnv" class="ki-w-full">
-            <el-option v-for="e in ['prod','beta','uat','sit','dev']" :key="e" :label="e.toUpperCase()" :value="e" />
+          <el-select v-model="cloneForm.targetEnv" style="width: 100%">
+            <el-option v-for="e in envs" :key="e" :label="e.toUpperCase()" :value="e" />
           </el-select>
         </el-form-item>
-        <el-form-item label="目标命名空间名称"><el-input v-model="cloneDialog.targetName" /></el-form-item>
+        <el-form-item label="目标应用编码"><el-input v-model="cloneForm.targetApp" /></el-form-item>
+        <el-form-item label="目标配置集名称"><el-input v-model="cloneForm.targetName" /></el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="cloneDialog.open = false">取消</el-button>
-        <el-button type="primary" @click="cloneNs">确认安全克隆</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="revealDialog.open" :title="`审计级密钥显密 · ${revealDialog.key}`" width="460px">
-      <el-form label-position="top">
-        <el-form-item label="显密原因（将不可篡改记录至审计链）">
-          <el-input v-model="revealDialog.reason" />
-        </el-form-item>
-        <el-form-item v-if="revealDialog.plaintext" label="内存实时解密明文">
-          <el-input :model-value="revealDialog.plaintext" readonly class="ki-mono" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="revealDialog.open = false">关闭</el-button>
-        <el-button type="warning" @click="doReveal">登记审计并显密</el-button>
+        <el-button @click="showCloneDialog = false">取消</el-button>
+        <el-button type="primary" @click="cloneNamespace">确认安全克隆</el-button>
       </template>
     </el-dialog>
   </div>
@@ -465,110 +446,83 @@ onMounted(loadNamespaces)
 }
 
 .env-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
+  margin-bottom: var(--ki-space-3);
 }
 
 .cfg-layout {
   display: grid;
-  grid-template-columns: 268px 1fr;
-  gap: 16px;
+  grid-template-columns: 270px minmax(0, 1fr);
+  gap: var(--ki-space-4);
   align-items: start;
 }
 
-@media (width <= 1080px) {
-  .cfg-layout {
-    grid-template-columns: 1fr;
-  }
-}
-
-.rail-title {
-  font-size: var(--ki-fs-xs);
-  font-weight: 600;
-  color: var(--ki-text-muted);
-  margin-bottom: 10px;
-}
-
-.ns-item {
-  padding: 10px;
-  border-radius: var(--ki-radius-sm);
-  border: 1px solid var(--ki-border-subtle);
-  background-color: var(--ki-bg-subtle);
+.ns-btn {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
   margin-bottom: 8px;
+  border-radius: var(--ki-radius-md);
+  border: 1px solid var(--ki-border-default);
+  background-color: var(--ki-bg-subtle);
+  text-align: left;
   cursor: pointer;
+  font-family: var(--ki-font-sans);
 }
 
-.ns-item--active {
-  border-color: var(--ki-brand-primary);
-  background-color: var(--ki-brand-primary-bg);
+.ns-btn.is-active {
+  border-color: var(--ki-brand);
+  background-color: var(--ki-brand-subtle);
 }
 
-.ns-item__top {
+.ns-top {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  font-size: var(--ki-fs-xs);
+  color: var(--ki-text-primary);
+  font-size: var(--ki-fs-sm);
 }
 
 .ns-ver {
-  font-size: 11px;
-  color: var(--ki-brand-primary);
+  color: var(--ki-brand);
+  font-weight: var(--ki-fw-semibold);
 }
 
-.ns-desc {
-  font-size: 11px;
-  margin-top: 4px;
-}
-
+.ns-sub,
 .empty-ns {
-  padding: 16px 0;
-  text-align: center;
   font-size: var(--ki-fs-xs);
 }
 
-.tab-bar {
+.tag-gap {
+  margin-left: 8px;
+}
+
+.sec-val {
+  margin-left: 8px;
+}
+
+.pub-bar {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-  font-size: var(--ki-fs-xs);
+  gap: 8px;
+  margin-bottom: 12px;
 }
 
-.sec-ico {
-  color: var(--ki-status-warn);
+.calc-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--ki-space-4);
 }
 
-.type-tag {
-  background-color: var(--ki-bg-subtle);
-  color: var(--ki-text-secondary);
-  border: 1px solid var(--ki-border-subtle);
+.three-col {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
 }
 
-.diff-added {
-  color: var(--ki-status-ok);
-  background-color: var(--ki-bg-subtle);
-}
-
-.diff-modified {
-  color: var(--ki-status-warn);
-  background-color: var(--ki-bg-subtle);
-}
-
-.diff-removed {
-  color: var(--ki-status-danger);
-  background-color: var(--ki-bg-subtle);
-}
-
-.diff-unchanged {
-  color: var(--ki-text-muted);
-  background-color: var(--ki-bg-subtle);
-}
-
-.clone-warn {
-  margin: 0 0 12px;
-  font-size: var(--ki-fs-xs);
+@media (max-width: 960px) {
+  .cfg-layout,
+  .calc-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

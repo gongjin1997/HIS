@@ -1,80 +1,65 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { FolderTree, Layers, Link, Plus, Server, Trash2, Unlink } from 'lucide-vue-next'
+import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Link2, Plus, Trash2, Unlink } from 'lucide-vue-next'
 import { apiRequest } from '@/api/client'
-import { useWorkspaceStore } from '@/stores/workspace'
 import PageHeader from '@/components/PageHeader.vue'
+import KiStatusBadge from '@/components/ki/KiStatusBadge.vue'
 
 interface TopoNode {
   id: string
-  topoKind: 'business' | 'resource'
+  treeType: string
   parentId: string
-  modelCode: string
+  nodeType: string
   name: string
-  serviceTemplateId?: string
-  boundHostCount: number
-  children?: TopoNode[]
+  code: string
+  serviceTemplateId: string
+  ciCount: number
+  children: TopoNode[]
 }
 
-interface HostItem {
+interface CIItem {
   id: string
+  modelCode: string
   name: string
-  address: string
-  arch?: string
-  state?: string
-  osId?: string
+  uniqueKey: string
+  env: string
+  status: string
+  owner: string
+  host?: { ip: string; agentStatus: string; cpuCores: number; memMb: number }
 }
 
 interface ServiceTemplate {
   id: string
+  code: string
   name: string
   category: string
-  description: string
-  processes: Array<{ name: string; binary: string; user: string; bindPort: number; protocol: string }>
   ports: number[]
+  processes: string[]
+  description: string
 }
 
-const ws = useWorkspaceStore()
 const loading = ref(false)
-const topoKind = ref<'business' | 'resource'>('business')
-const tree = ref<TopoNode[]>([])
-const hosts = ref<HostItem[]>([])
-const templates = ref<ServiceTemplate[]>([])
+const treeType = ref<'business' | 'resource'>('business')
+const treeData = ref<TopoNode[]>([])
 const selectedNode = ref<TopoNode | null>(null)
-const boundHostIds = ref<string[]>([])
-const rightTab = ref<'hosts' | 'templates'>('hosts')
+const boundCIs = ref<CIItem[]>([])
+const allHosts = ref<CIItem[]>([])
+const templates = ref<ServiceTemplate[]>([])
 
-const nodeDialog = reactive({
-  open: false,
-  parentId: '',
-  parentName: '',
-  modelCode: 'm_module',
-  name: '',
-})
+const showNodeDialog = ref(false)
+const nodeForm = reactive({ parentId: '', nodeType: 'module', name: '', code: '', serviceTemplateId: '' })
 
-const bindHostId = ref('')
-const tplDialog = reactive({
-  open: false,
-  name: '',
-  category: '业务服务',
-  description: '',
-  procName: 'app-server',
-  binary: '/usr/local/bin/app',
-  user: 'app',
-  port: 8080,
-})
+const showBindDialog = ref(false)
+const bindCIId = ref('')
 
-const boundHosts = computed(() => hosts.value.filter((h) => boundHostIds.value.includes(h.id)))
-const availableHosts = computed(() => hosts.value.filter((h) => !boundHostIds.value.includes(h.id)))
-const appliedTemplate = computed(() =>
-  templates.value.find((t) => t.id === selectedNode.value?.serviceTemplateId) || null
-)
+const showTplDialog = ref(false)
+const tplForm = reactive({ code: '', name: '', category: 'application', portsRaw: '8080,9100', procsRaw: 'java', description: '' })
 
-function flattenFirst(nodes: TopoNode[]): TopoNode | null {
+function findFirstLeaf(nodes: TopoNode[]): TopoNode | null {
   for (const n of nodes) {
     if (n.children && n.children.length > 0) {
-      const leaf = flattenFirst(n.children)
+      const leaf = findFirstLeaf(n.children)
       if (leaf) return leaf
     }
     return n
@@ -82,340 +67,277 @@ function flattenFirst(nodes: TopoNode[]): TopoNode | null {
   return null
 }
 
-async function loadAll() {
-  if (!ws.currentProjectId) return
+async function loadTree() {
   loading.value = true
   try {
-    const pid = ws.currentProjectId
     const [tRes, hRes, tplRes] = await Promise.all([
-      apiRequest<{ items: TopoNode[] }>('GET', `/api/v1/projects/${pid}/cmdb/topology?kind=${topoKind.value}`),
-      apiRequest<{ items: HostItem[] }>('GET', `/api/v1/projects/${pid}/hosts`).catch(() => ({ data: { items: [] } })),
-      apiRequest<{ items: ServiceTemplate[] }>('GET', `/api/v1/projects/${pid}/cmdb/service-templates`),
+      apiRequest<{ items: TopoNode[] }>('GET', `/api/v1/cmdb/topology?treeType=${treeType.value}`),
+      apiRequest<{ items: CIItem[] }>('GET', '/api/v1/cmdb/cis?modelCode=m_host'),
+      apiRequest<{ items: ServiceTemplate[] }>('GET', '/api/v1/cmdb/service-templates'),
     ])
-    tree.value = tRes.data.items || []
-    hosts.value = hRes.data.items || []
+    treeData.value = tRes.data.items || []
+    allHosts.value = hRes.data.items || []
     templates.value = tplRes.data.items || []
-    if (!selectedNode.value && tree.value.length > 0) {
-      await selectNode(flattenFirst(tree.value) || tree.value[0])
-    } else if (selectedNode.value) {
-      await loadBoundHosts(selectedNode.value.id)
+    if (!selectedNode.value || selectedNode.value.treeType !== treeType.value) {
+      selectedNode.value = findFirstLeaf(treeData.value)
+    }
+    if (selectedNode.value) {
+      await loadBoundCIs(selectedNode.value.id)
+    } else {
+      boundCIs.value = []
     }
   } finally {
     loading.value = false
   }
 }
 
-async function selectNode(node: TopoNode) {
+async function loadBoundCIs(nodeId: string) {
+  const { data } = await apiRequest<{ items: CIItem[] }>('GET', `/api/v1/cmdb/topology/${nodeId}/cis`)
+  boundCIs.value = data.items || []
+}
+
+function onSelectNode(node: TopoNode) {
   selectedNode.value = node
-  await loadBoundHosts(node.id)
+  void loadBoundCIs(node.id)
 }
 
-async function loadBoundHosts(nodeId: string) {
-  if (!ws.currentProjectId || !nodeId) return
-  const { data } = await apiRequest<{ hostIds: string[] }>(
-    'GET',
-    `/api/v1/projects/${ws.currentProjectId}/cmdb/topology/nodes/${encodeURIComponent(nodeId)}/hosts`
-  )
-  boundHostIds.value = data.hostIds || []
+function openCreateChild() {
+  nodeForm.parentId = selectedNode.value?.id || ''
+  nodeForm.nodeType = treeType.value === 'business' ? 'module' : 'zone'
+  nodeForm.name = ''
+  nodeForm.code = ''
+  nodeForm.serviceTemplateId = ''
+  showNodeDialog.value = true
 }
 
-function openAddChild(parent?: TopoNode) {
-  nodeDialog.parentId = parent?.id || ''
-  nodeDialog.parentName = parent?.name || '根节点'
-  nodeDialog.name = ''
-  if (topoKind.value === 'business') {
-    nodeDialog.modelCode = !parent ? 'm_biz' : parent.modelCode === 'm_biz' ? 'm_set' : 'm_module'
-  } else {
-    nodeDialog.modelCode = !parent ? 'm_site' : 'm_rack'
-  }
-  nodeDialog.open = true
-}
-
-async function createTopoNode() {
-  if (!nodeDialog.name.trim()) {
-    ElMessage.warning('请输入拓扑节点名称')
-    return
-  }
+async function createNode() {
   try {
-    await apiRequest('POST', `/api/v1/projects/${ws.currentProjectId}/cmdb/topology/nodes`, {
-      body: {
-        topoKind: topoKind.value,
-        parentId: nodeDialog.parentId,
-        modelCode: nodeDialog.modelCode,
-        name: nodeDialog.name.trim(),
-      },
+    await apiRequest('POST', '/api/v1/cmdb/topology', {
+      body: { treeType: treeType.value, ...nodeForm },
     })
     ElMessage.success('拓扑节点已创建')
-    nodeDialog.open = false
-    await loadAll()
-  } catch (e) {
-    ElMessage.error(String(e))
+    showNodeDialog.value = false
+    await loadTree()
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '创建节点失败')
   }
 }
 
-async function removeTopoNode(node: TopoNode) {
-  try {
-    await ElMessageBox.confirm(`确认删除拓扑节点「${node.name}」及其子节点吗？（仅解除绑定，绝不删除主机资产）`, '删除节点', { type: 'warning' })
-    await apiRequest('DELETE', `/api/v1/projects/${ws.currentProjectId}/cmdb/topology/nodes/${encodeURIComponent(node.id)}`)
-    if (selectedNode.value?.id === node.id) selectedNode.value = null
-    ElMessage.success('拓扑节点已删除')
-    await loadAll()
-  } catch (e) {
-    if (e !== 'cancel' && String(e) !== 'cancel') ElMessage.error(String(e))
-  }
-}
-
-async function bindHost() {
-  if (!selectedNode.value || !bindHostId.value) return
-  try {
-    await apiRequest('POST', `/api/v1/projects/${ws.currentProjectId}/cmdb/topology/nodes/${encodeURIComponent(selectedNode.value.id)}/hosts`, {
-      body: { hostId: bindHostId.value, action: 'bind' },
-    })
-    ElMessage.success('已安全挂载主机至当前拓扑节点')
-    bindHostId.value = ''
-    await loadAll()
-  } catch (e) {
-    ElMessage.error(String(e))
-  }
-}
-
-async function unbindHost(hostId: string) {
+async function deleteSelectedNode() {
   if (!selectedNode.value) return
-  await apiRequest('POST', `/api/v1/projects/${ws.currentProjectId}/cmdb/topology/nodes/${encodeURIComponent(selectedNode.value.id)}/hosts`, {
-    body: { hostId, action: 'unbind' },
-  })
-  ElMessage.success('已解除主机与当前模块的关联（主机资产保持完整）')
-  await loadAll()
+  await ElMessageBox.confirm(`确认删除节点「${selectedNode.value.name}」？`, '删除拓扑节点', { type: 'warning' })
+  try {
+    await apiRequest('DELETE', `/api/v1/cmdb/topology/${selectedNode.value.id}`)
+    selectedNode.value = null
+    ElMessage.success('已删除节点')
+    await loadTree()
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '删除失败')
+  }
 }
 
-async function applyTemplateToSelected(tplId: string) {
-  if (!selectedNode.value) return
-  await apiRequest('POST', `/api/v1/projects/${ws.currentProjectId}/cmdb/topology/nodes/${encodeURIComponent(selectedNode.value.id)}/template`, {
-    body: { templateId: tplId },
+async function bindCI() {
+  if (!selectedNode.value || !bindCIId.value) return
+  await apiRequest('POST', `/api/v1/cmdb/topology/${selectedNode.value.id}/bind`, {
+    body: { ciId: bindCIId.value },
   })
-  selectedNode.value.serviceTemplateId = tplId
-  ElMessage.success('已绑定标准化服务模板')
+  ElMessage.success('资产已绑定到拓扑节点')
+  showBindDialog.value = false
+  bindCIId.value = ''
+  await loadTree()
+}
+
+async function unbindCI(ciId: string) {
+  if (!selectedNode.value) return
+  await apiRequest('DELETE', `/api/v1/cmdb/topology/${selectedNode.value.id}/bind/${ciId}`)
+  ElMessage.success('已安全解绑（资产本体保留在 CMDB 中）')
+  await loadTree()
 }
 
 async function createTemplate() {
-  if (!tplDialog.name.trim()) {
-    ElMessage.warning('请输入服务模板名称')
-    return
-  }
   try {
-    await apiRequest('POST', `/api/v1/projects/${ws.currentProjectId}/cmdb/service-templates`, {
+    const ports = tplForm.portsRaw.split(',').map((s) => Number(s.trim())).filter((n) => n > 0)
+    const processes = tplForm.procsRaw.split(',').map((s) => s.trim()).filter(Boolean)
+    await apiRequest('POST', '/api/v1/cmdb/service-templates', {
       body: {
-        name: tplDialog.name.trim(),
-        category: tplDialog.category,
-        description: tplDialog.description.trim(),
-        processes: [{ name: tplDialog.procName, binary: tplDialog.binary, user: tplDialog.user, bindPort: tplDialog.port, protocol: 'TCP' }],
-        ports: [tplDialog.port],
+        code: tplForm.code,
+        name: tplForm.name,
+        category: tplForm.category,
+        ports,
+        processes,
+        description: tplForm.description,
       },
     })
     ElMessage.success('服务模板已创建')
-    tplDialog.open = false
-    tplDialog.name = ''
-    await loadAll()
-  } catch (e) {
-    ElMessage.error(String(e))
+    showTplDialog.value = false
+    await loadTree()
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '创建服务模板失败')
   }
 }
 
-async function deleteTemplate(id: string) {
-  await apiRequest('DELETE', `/api/v1/projects/${ws.currentProjectId}/cmdb/service-templates/${encodeURIComponent(id)}`)
-  ElMessage.success('服务模板已删除')
-  await loadAll()
-}
-
-watch(topoKind, () => {
-  selectedNode.value = null
-  void loadAll()
-})
-watch(() => ws.currentProjectId, loadAll)
-onMounted(loadAll)
+onMounted(loadTree)
 </script>
 
 <template>
-  <div v-loading="loading">
+  <div class="topo-page">
     <PageHeader
-      title="业务与资源双拓扑"
-      subtitle="对标蓝鲸 bk-cmdb：业务→集群→模块主线拓扑 + 机房→区域→机柜资源树，支持主机多模块安全挂载与标准化服务模板"
-      :refresh="loadAll"
+      title="蓝鲸双拓扑树与服务模板"
+      subtitle="业务→集群→模块主线树 + 组织→区域→安全域资源树"
+      :refresh="loadTree"
       :refreshing="loading"
     >
       <template #actions>
-        <el-button @click="tplDialog.open = true">
-          <Layers :size="14" class="btn-ico" /> 新建服务模板
-        </el-button>
-        <el-button type="primary" @click="openAddChild()">
-          <Plus :size="14" class="btn-ico" /> 新建根拓扑节点
-        </el-button>
+        <el-radio-group v-model="treeType" @change="selectedNode = null; loadTree()">
+          <el-radio-button value="business">业务拓扑树</el-radio-button>
+          <el-radio-button value="resource">资源区域树</el-radio-button>
+        </el-radio-group>
+        <el-button type="primary" @click="openCreateChild"><Plus :size="14" class="btn-ico" />新增拓扑节点</el-button>
       </template>
     </PageHeader>
 
-    <div class="topo-layout">
-      <!-- 左侧双拓扑树 -->
-      <div class="ki-card topo-rail">
-        <el-radio-group v-model="topoKind" size="small" class="ki-mb-3 ki-w-full">
-          <el-radio-button value="business">业务主线树</el-radio-button>
-          <el-radio-button value="resource">资源区域树</el-radio-button>
-        </el-radio-group>
-
+    <div class="topo-grid">
+      <aside class="ki-card topo-tree-card">
+        <div class="ki-card__title">
+          <span>{{ treeType === 'business' ? '业务主线树' : '组织与安全域树' }}</span>
+          <el-button v-if="selectedNode" link type="danger" size="small" @click="deleteSelectedNode">
+            <Trash2 :size="13" />
+          </el-button>
+        </div>
         <el-tree
-          :data="tree"
+          :data="treeData"
           node-key="id"
           default-expand-all
           highlight-current
-          :expand-on-click-node="false"
-          @node-click="selectNode"
+          :props="{ label: 'name', children: 'children' }"
+          @node-click="onSelectNode"
         >
           <template #default="{ data }">
             <div class="tree-row">
-              <FolderTree :size="13" class="tree-ico" />
-              <span class="tree-label">{{ data.name }}</span>
-              <span class="ki-mono tree-cnt">{{ data.boundHostCount }}</span>
-              <el-button link size="small" type="primary" @click.stop="openAddChild(data)">+</el-button>
-              <el-button link size="small" type="danger" @click.stop="removeTopoNode(data)">×</el-button>
+              <span class="tree-type ki-mono">{{ data.nodeType }}</span>
+              <span class="tree-name">{{ data.name }}</span>
+              <span v-if="data.ciCount > 0" class="tree-badge ki-num">{{ data.ciCount }}</span>
             </div>
           </template>
         </el-tree>
-      </div>
+      </aside>
 
-      <!-- 右侧节点挂载主机 + 服务模板 -->
-      <div class="ki-card">
-        <el-tabs v-model="rightTab">
-          <el-tab-pane label="节点挂载主机与模板" name="hosts">
-            <div v-if="selectedNode" class="node-header ki-mb-3">
-              <div>
-                <div class="ki-flex-row">
-                  <b class="node-title">{{ selectedNode.name }}</b>
-                  <span class="ki-badge ki-mono node-code">{{ selectedNode.modelCode }}</span>
-                </div>
-                <p class="ki-muted node-sub">
-                  支持同一台主机同时挂载到多个业务模块；解绑仅删除关系表记录，绝不会误删主机资产。
-                </p>
-              </div>
-              <el-button size="small" @click="openAddChild(selectedNode)">
-                <Plus :size="13" class="btn-ico" /> 添加下级节点
+      <main class="topo-main">
+        <section class="ki-card">
+          <div class="table-heading">
+            <div>
+              <strong>{{ selectedNode ? selectedNode.name : '请选择左侧拓扑节点' }}</strong>
+              <span v-if="selectedNode" class="ki-mono ki-muted node-code">{{ selectedNode.code }}</span>
+            </div>
+            <div class="table-actions">
+              <el-button v-if="selectedNode" type="primary" size="small" @click="showBindDialog = true">
+                <Link2 :size="13" class="btn-ico" />绑定主机资产
               </el-button>
             </div>
+          </div>
 
-            <div v-if="selectedNode" class="tpl-bar ki-mb-3">
-              <span class="tpl-bar__lbl">绑定服务模板：</span>
-              <el-select
-                :model-value="selectedNode.serviceTemplateId || ''"
-                placeholder="选择标准化服务模板（进程/端口基线）"
-                clearable
-                size="small"
-                class="tpl-select"
-                @change="(v: string) => applyTemplateToSelected(v || '')"
-              >
-                <el-option v-for="t in templates" :key="t.id" :label="`${t.name} (${t.category})`" :value="t.id" />
-              </el-select>
-              <span v-if="appliedTemplate" class="ki-muted tpl-meta">
-                标准进程 {{ appliedTemplate.processes.length }} 个 · 端口 {{ appliedTemplate.ports.join(', ') }}
-              </span>
-            </div>
-
-            <div v-if="selectedNode" class="bind-bar ki-mb-3">
-              <el-select v-model="bindHostId" filterable placeholder="选择 CMDB 纳管主机挂载至此节点…" class="bind-select">
-                <el-option v-for="h in availableHosts" :key="h.id" :label="`${h.name} (${h.address})`" :value="h.id" />
-              </el-select>
-              <el-button type="primary" :disabled="!bindHostId" @click="bindHost">
-                <Link :size="14" class="btn-ico" /> 挂载主机
-              </el-button>
-            </div>
-
-            <el-table :data="boundHosts" size="small">
-              <el-table-column prop="name" label="主机名" min-width="140">
-                <template #default="{ row }">
-                  <div class="ki-flex-row"><Server :size="13" /> <b>{{ row.name }}</b></div>
-                </template>
-              </el-table-column>
-              <el-table-column prop="address" label="IP 地址" width="140">
-                <template #default="{ row }"><span class="ki-mono">{{ row.address }}</span></template>
-              </el-table-column>
-              <el-table-column prop="osId" label="OS / 架构" width="140">
-                <template #default="{ row }"><span class="ki-mono">{{ row.osId || 'linux' }} · {{ row.arch || 'amd64' }}</span></template>
-              </el-table-column>
-              <el-table-column label="操作" width="100" align="right">
-                <template #default="{ row }">
-                  <el-button link type="danger" size="small" @click="unbindHost(row.id)">
-                    <Unlink :size="12" class="btn-ico" /> 解绑
-                  </el-button>
-                </template>
-              </el-table-column>
-              <template #empty>
-                <span class="ki-muted">当前拓扑节点尚未挂载主机；先在「主机资产与采集」接入主机后即可在此一键挂载。</span>
+          <el-table :data="boundCIs" size="small" empty-text="当前拓扑节点尚未绑定主机资产，点击右上角即可多模块安全挂载">
+            <el-table-column prop="name" label="主机名称" min-width="140" />
+            <el-table-column label="管理 IP" width="130">
+              <template #default="{ row }"><code class="ki-mono">{{ row.host?.ip || row.uniqueKey }}</code></template>
+            </el-table-column>
+            <el-table-column prop="env" label="环境" width="80" />
+            <el-table-column label="Agent 状态" width="110">
+              <template #default="{ row }">
+                <KiStatusBadge
+                  :status="row.host?.agentStatus === 'ONLINE' ? 'ok' : 'cancelled'"
+                  :label="row.host?.agentStatus || 'SSH'"
+                />
               </template>
-            </el-table>
-          </el-tab-pane>
+            </el-table-column>
+            <el-table-column prop="owner" label="负责人" width="110" />
+            <el-table-column label="操作" width="90" align="right">
+              <template #default="{ row }">
+                <el-button link type="danger" size="small" @click="unbindCI(row.id)">
+                  <Unlink :size="12" class="btn-ico" />解绑
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </section>
 
-          <el-tab-pane :label="`服务模板库 (${templates.length})`" name="templates">
-            <el-table :data="templates" size="small">
-              <el-table-column prop="name" label="模板名称" min-width="180" />
-              <el-table-column prop="category" label="分层分类" width="100" />
-              <el-table-column label="定义进程与监听端口" min-width="220">
-                <template #default="{ row }">
-                  <div v-for="p in row.processes" :key="p.name" class="ki-mono proc-line">
-                    {{ p.name }} ({{ p.binary }}) :{{ p.bindPort }}/{{ p.protocol }} [{{ p.user }}]
-                  </div>
-                </template>
-              </el-table-column>
-              <el-table-column prop="description" label="说明" min-width="160" />
-              <el-table-column label="操作" width="76" align="right">
-                <template #default="{ row }">
-                  <el-button link type="danger" size="small" @click="deleteTemplate(row.id)">
-                    <Trash2 :size="12" />
-                  </el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-          </el-tab-pane>
-        </el-tabs>
-      </div>
+        <section class="ki-card">
+          <div class="table-heading">
+            <div class="section-title">标准化服务模板 ({{ templates.length }})</div>
+            <el-button size="small" @click="showTplDialog = true"><Plus :size="13" class="btn-ico" />新建服务模板</el-button>
+          </div>
+          <el-table :data="templates" size="small">
+            <el-table-column prop="name" label="模板名称" min-width="160" />
+            <el-table-column prop="code" label="编码" width="130">
+              <template #default="{ row }"><code class="ki-mono">{{ row.code }}</code></template>
+            </el-table-column>
+            <el-table-column label="标准端口" width="130">
+              <template #default="{ row }"><code class="ki-mono">{{ (row.ports || []).join(', ') }}</code></template>
+            </el-table-column>
+            <el-table-column label="标准进程" min-width="180">
+              <template #default="{ row }">{{ (row.processes || []).join(' / ') }}</template>
+            </el-table-column>
+          </el-table>
+        </section>
+      </main>
     </div>
 
-    <el-dialog v-model="nodeDialog.open" :title="`新增拓扑节点（上级：${nodeDialog.parentName}）`" width="440px">
+    <el-dialog v-model="showNodeDialog" title="新增拓扑节点" width="440px">
       <el-form label-position="top">
-        <el-form-item label="层级模型">
-          <el-select v-model="nodeDialog.modelCode" class="ki-w-full">
-            <el-option v-if="topoKind === 'business'" label="业务系统 (m_biz)" value="m_biz" />
-            <el-option v-if="topoKind === 'business'" label="集群环境 (m_set)" value="m_set" />
-            <el-option v-if="topoKind === 'business'" label="服务模块 (m_module)" value="m_module" />
-            <el-option v-if="topoKind === 'resource'" label="机房站点 (m_site)" value="m_site" />
-            <el-option v-if="topoKind === 'resource'" label="机柜/安全域 (m_rack)" value="m_rack" />
+        <el-form-item label="节点层级类型">
+          <el-select v-model="nodeForm.nodeType" style="width: 100%">
+            <el-option v-if="treeType === 'business'" label="业务 (biz)" value="biz" />
+            <el-option v-if="treeType === 'business'" label="集群 (set)" value="set" />
+            <el-option v-if="treeType === 'business'" label="模块 (module)" value="module" />
+            <el-option v-if="treeType === 'resource'" label="组织 (org)" value="org" />
+            <el-option v-if="treeType === 'resource'" label="区域 (region)" value="region" />
+            <el-option v-if="treeType === 'resource'" label="安全域 (zone)" value="zone" />
           </el-select>
         </el-form-item>
         <el-form-item label="节点名称">
-          <el-input v-model="nodeDialog.name" placeholder="例如：HIS 门诊核心 / 支付网关模块" />
+          <el-input v-model="nodeForm.name" placeholder="例如：急诊结算模块" />
+        </el-form-item>
+        <el-form-item label="节点编码">
+          <el-input v-model="nodeForm.code" placeholder="mod-billing" />
+        </el-form-item>
+        <el-form-item v-if="treeType === 'business'" label="关联服务模板 (可选)">
+          <el-select v-model="nodeForm.serviceTemplateId" clearable style="width: 100%">
+            <el-option v-for="t in templates" :key="t.id" :label="t.name" :value="t.id" />
+          </el-select>
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="nodeDialog.open = false">取消</el-button>
-        <el-button type="primary" @click="createTopoNode">确认创建</el-button>
+        <el-button @click="showNodeDialog = false">取消</el-button>
+        <el-button type="primary" @click="createNode">确定</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="tplDialog.open" title="新建蓝鲸式服务模板" width="480px">
+    <el-dialog v-model="showBindDialog" title="绑定主机资产到当前拓扑节点" width="440px">
+      <el-select v-model="bindCIId" filterable placeholder="选择统一 CMDB 主机资产 (m_host)" style="width: 100%">
+        <el-option
+          v-for="h in allHosts"
+          :key="h.id"
+          :label="`${h.name} (${h.host?.ip || h.uniqueKey})`"
+          :value="h.id"
+        />
+      </el-select>
+      <template #footer>
+        <el-button @click="showBindDialog = false">取消</el-button>
+        <el-button type="primary" :disabled="!bindCIId" @click="bindCI">确认绑定</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="showTplDialog" title="新建服务模板" width="460px">
       <el-form label-position="top">
-        <div class="ki-grid-2">
-          <el-form-item label="模板名称"><el-input v-model="tplDialog.name" placeholder="例如：Java 微服务模板" /></el-form-item>
-          <el-form-item label="服务分层"><el-input v-model="tplDialog.category" placeholder="接入层 / 应用层 / 数据层" /></el-form-item>
-        </div>
-        <div class="ki-grid-2">
-          <el-form-item label="进程名"><el-input v-model="tplDialog.procName" /></el-form-item>
-          <el-form-item label="默认端口"><el-input-number v-model="tplDialog.port" :min="1" :max="65535" class="ki-w-full" /></el-form-item>
-        </div>
-        <div class="ki-grid-2">
-          <el-form-item label="二进制路径"><el-input v-model="tplDialog.binary" /></el-form-item>
-          <el-form-item label="运行账号"><el-input v-model="tplDialog.user" /></el-form-item>
-        </div>
-        <el-form-item label="模板说明"><el-input v-model="tplDialog.description" /></el-form-item>
+        <el-form-item label="模板编码"><el-input v-model="tplForm.code" placeholder="tpl-nginx-edge" /></el-form-item>
+        <el-form-item label="模板名称"><el-input v-model="tplForm.name" placeholder="边缘接入 Nginx 模板" /></el-form-item>
+        <el-form-item label="开放端口 (逗号分隔)"><el-input v-model="tplForm.portsRaw" placeholder="80,443" /></el-form-item>
+        <el-form-item label="常驻进程 (逗号分隔)"><el-input v-model="tplForm.procsRaw" placeholder="nginx,node_exporter" /></el-form-item>
+        <el-form-item label="说明"><el-input v-model="tplForm.description" /></el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="tplDialog.open = false">取消</el-button>
-        <el-button type="primary" @click="createTemplate">创建模板</el-button>
+        <el-button @click="showTplDialog = false">取消</el-button>
+        <el-button type="primary" @click="createTemplate">保存</el-button>
       </template>
     </el-dialog>
   </div>
@@ -426,17 +348,21 @@ onMounted(loadAll)
   margin-right: 4px;
 }
 
-.topo-layout {
+.topo-grid {
   display: grid;
-  grid-template-columns: 310px 1fr;
-  gap: 16px;
+  grid-template-columns: 310px minmax(0, 1fr);
+  gap: var(--ki-space-4);
   align-items: start;
 }
 
-@media (width <= 1080px) {
-  .topo-layout {
-    grid-template-columns: 1fr;
-  }
+.topo-tree-card {
+  min-height: 460px;
+}
+
+.topo-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ki-space-4);
 }
 
 .tree-row {
@@ -444,78 +370,39 @@ onMounted(loadAll)
   align-items: center;
   gap: 6px;
   width: 100%;
-  font-size: var(--ki-fs-xs);
+  padding-right: 6px;
 }
 
-.tree-ico {
-  color: var(--ki-brand-primary);
-  flex-shrink: 0;
+.tree-type {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: var(--ki-radius-xs);
+  background-color: var(--ki-bg-subtle);
+  color: var(--ki-text-muted);
 }
 
-.tree-label {
+.tree-name {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.tree-cnt {
+.tree-badge {
   font-size: 11px;
-  color: var(--ki-text-muted);
-}
-
-.node-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.node-title {
-  font-size: var(--ki-fs-md);
+  padding: 0 6px;
+  border-radius: var(--ki-radius-pill);
+  background-color: var(--ki-brand-subtle);
+  color: var(--ki-brand);
 }
 
 .node-code {
-  background-color: var(--ki-bg-subtle);
-  color: var(--ki-text-secondary);
-  border: 1px solid var(--ki-border-subtle);
+  margin-left: 8px;
 }
 
-.node-sub {
-  margin: 4px 0 0;
-  font-size: var(--ki-fs-xs);
-}
-
-.tpl-bar,
-.bind-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.tpl-bar {
-  padding: 10px 12px;
-  border-radius: var(--ki-radius-sm);
-  background-color: var(--ki-bg-subtle);
-  border: 1px solid var(--ki-border-subtle);
-}
-
-.tpl-bar__lbl,
-.tpl-meta {
-  font-size: var(--ki-fs-xs);
-}
-
-.tpl-select {
-  width: 260px;
-}
-
-.bind-select {
-  width: 300px;
-}
-
-.proc-line {
-  font-size: 11px;
-  color: var(--ki-text-secondary);
+@media (max-width: 960px) {
+  .topo-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

@@ -1,334 +1,363 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
-import { PauseCircle, Play, Plus, RotateCcw, Sliders } from 'lucide-vue-next'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { apiRequest } from '@/api/client'
-import { useWorkspaceStore } from '@/stores/workspace'
-import { useKiFormat } from '@/composables/useKiFormat'
+import { Play, Plus, RotateCcw, Terminal, Trash2 } from 'lucide-vue-next'
+import { apiRequest, openSSEStream, type SSELogLine } from '@/api/client'
+import { detectDagCycle } from '@/utils/dag'
 import PageHeader from '@/components/PageHeader.vue'
 import KiStatusBadge from '@/components/ki/KiStatusBadge.vue'
 
-interface ReleaseItem {
-  id: string
-  batchNo: number
-  seqNo: number
-  serviceName: string
-  pluginName: string
-  targetMode: string
-  pauseAfter: boolean
-  stage: string
-  status: string
-  probeUrl?: string
-  probePort?: number
-  lastOutput?: string
+interface PluginItem {
+  code: string
+  name: string
+  category: string
 }
 
-interface DeliveryRelease {
+interface HostCI {
+  id: string
+  name: string
+  host?: { ip: string; agentStatus: string }
+}
+
+interface ReleaseItem {
+  id: string
+  nodeKey: string
+  pluginCode: string
+  serviceName: string
+  targetHostCiId: string
+  batchIndex: number
+  dependsOn: string[]
+  pauseAfter: boolean
+  dialUrl: string
+  status: string
+  syncedCiId: string
+  summary: string
+  k8sSpec: { limitCpuM: number; limitMemMi: number; jvmXmx: string }
+}
+
+interface Release {
   id: string
   name: string
   env: string
-  scheduleMode: string
+  mode: string
   status: string
-  currentBatch: number
   createdBy: string
   createdAt: string
+  plan?: { order: string[]; layers: string[][] }
   items: ReleaseItem[]
 }
 
-const ws = useWorkspaceStore()
-const { formatRelTime } = useKiFormat()
+const route = useRoute()
 const loading = ref(false)
-const releases = ref<DeliveryRelease[]>([])
-const namespaces = ref<Array<{ id: string; env: string; name: string }>>([])
-const activeTab = ref<'releases' | 'preview'>('releases')
+const plugins = ref<PluginItem[]>([])
+const hosts = ref<HostCI[]>([])
+const releases = ref<Release[]>([])
+const activeReleaseId = ref('')
+const sseLines = ref<SSELogLine[]>([])
+let closeSSE: (() => void) | null = null
 
-const createDialog = reactive({
-  open: false,
-  name: 'his-prod-batch-release',
-  env: 'prod',
-  scheduleMode: 'BATCH',
-  configNamespaceId: '',
-  items: [
-    { batchNo: 0, serviceName: 'canary-gateway', pluginName: 'openresty-edge-waf', targetMode: 'host-container', pauseAfter: true, probeUrl: 'http://127.0.0.1:8080/healthz', probePort: 0 },
-    { batchNo: 1, serviceName: 'his-core-api', pluginName: 'his-java-service', targetMode: 'host-container', pauseAfter: false, probeUrl: 'http://127.0.0.1:8080/healthz', probePort: 0 },
-  ],
-})
-
-const mergePreview = reactive({
-  globalJson: '{"IMAGE_REGISTRY":"harbor.internal/his","LOG_LEVEL":"info","PORT":8080}',
-  serviceJson: '{"PORT":8088,"SPRING_PROFILE":"prod"}',
-  serviceName: 'his-core-api',
-  paramPrefix: 'HIS_',
-  cpuApply: '500m',
-  cpuLimit: '2',
-  memApply: '1Gi',
-  memLimit: '4Gi',
-  replicas: 3,
-  result: null as null | { trace: Array<{ key: string; value: unknown; source: string }> },
-})
-
-const modeLabels: Record<string, string> = {
-  BATCH: 'BATCH 分批灰度 (支持人工暂停断点)',
-  M1: 'M1 串行仅预装 (DEPLOY → DONE)',
-  M2: 'M2 严格串行三阶段 (部署→启动→拨测)',
-  M3: 'M3 并发三阶段极速发布',
+interface DraftNode {
+  nodeKey: string
+  pluginCode: string
+  serviceName: string
+  targetHostCiId: string
+  batchIndex: number
+  dependsOn: string[]
+  pauseAfter: boolean
+  dialUrl: string
 }
 
+const form = reactive({
+  name: 'HIS 核心栈灰度发布单',
+  env: 'prod',
+  mode: 'DAG',
+  cpuCores: '2',
+  memGb: '4',
+  nodes: [
+    { nodeKey: 'pg-primary', pluginCode: 'postgresql', serviceName: 'his-pg-prod', targetHostCiId: '', batchIndex: 0, dependsOn: [], pauseAfter: true, dialUrl: '' },
+    { nodeKey: 'valkey-cache', pluginCode: 'valkey', serviceName: 'his-valkey-prod', targetHostCiId: '', batchIndex: 0, dependsOn: [], pauseAfter: false, dialUrl: '' },
+    { nodeKey: 'his-gateway', pluginCode: 'his-java-app', serviceName: 'his-gateway-prod', targetHostCiId: '', batchIndex: 1, dependsOn: ['pg-primary', 'valkey-cache'], pauseAfter: false, dialUrl: '' },
+  ] as DraftNode[],
+})
+
+const cycleCheck = computed(() =>
+  detectDagCycle(form.nodes.map((n) => ({ id: n.nodeKey, dependsOn: n.dependsOn })))
+)
+
+const activeRelease = computed(() => releases.value.find((r) => r.id === activeReleaseId.value) || null)
+
 async function loadAll() {
-  if (!ws.currentProjectId) return
   loading.value = true
   try {
-    const pid = ws.currentProjectId
-    const [rRes, nsRes] = await Promise.all([
-      apiRequest<{ items: DeliveryRelease[] }>('GET', `/api/v1/projects/${pid}/delivery/releases`),
-      apiRequest<{ items: Array<{ id: string; env: string; name: string }> }>('GET', `/api/v1/projects/${pid}/config/namespaces?env=all`),
+    const [pRes, hRes, rRes] = await Promise.all([
+      apiRequest<{ items: PluginItem[] }>('GET', '/api/v1/delivery/plugins'),
+      apiRequest<{ items: HostCI[] }>('GET', '/api/v1/cmdb/cis?modelCode=m_host'),
+      apiRequest<{ items: Release[] }>('GET', '/api/v1/delivery/releases'),
     ])
+    plugins.value = pRes.data.items || []
+    hosts.value = hRes.data.items || []
     releases.value = rRes.data.items || []
-    namespaces.value = nsRes.data.items || []
+    if (!activeReleaseId.value && releases.value.length > 0) {
+      activeReleaseId.value = releases.value[0].id
+    }
+    const qPlg = route.query.plugin as string
+    if (qPlg && plugins.value.some((p) => p.code === qPlg)) {
+      form.nodes = [
+        { nodeKey: `${qPlg}-01`, pluginCode: qPlg, serviceName: `${qPlg}-prod`, targetHostCiId: '', batchIndex: 0, dependsOn: [], pauseAfter: false, dialUrl: '' },
+      ]
+    }
   } finally {
     loading.value = false
   }
 }
 
-function addItemRow() {
-  createDialog.items.push({
-    batchNo: createDialog.items.length,
-    serviceName: `service-${createDialog.items.length + 1}`,
-    pluginName: 'his-java-service',
-    targetMode: 'host-container',
+function addDraftNode() {
+  const idx = form.nodes.length + 1
+  form.nodes.push({
+    nodeKey: `svc-${idx}`,
+    pluginCode: plugins.value[0]?.code || 'nginx',
+    serviceName: `service-${idx}`,
+    targetHostCiId: '',
+    batchIndex: idx - 1,
+    dependsOn: [],
     pauseAfter: false,
-    probeUrl: 'http://127.0.0.1:8080/healthz',
-    probePort: 0,
+    dialUrl: '',
   })
 }
 
-async function createRelease() {
+function removeDraftNode(idx: number) {
+  form.nodes.splice(idx, 1)
+}
+
+function attachLogs(relId: string) {
+  if (closeSSE) closeSSE()
+  sseLines.value = []
+  activeReleaseId.value = relId
+  closeSSE = openSSEStream(`release:${relId}`, (line) => {
+    sseLines.value.push(line)
+  })
+}
+
+async function createAndRun(autoStart: boolean) {
+  if (cycleCheck.value.hasCycle) {
+    ElMessage.error(`检测到 DAG 循环依赖: ${cycleCheck.value.cyclePath.join(' -> ')}`)
+    return
+  }
   try {
-    await apiRequest('POST', `/api/v1/projects/${ws.currentProjectId}/delivery/releases`, {
+    const { data } = await apiRequest<Release>('POST', '/api/v1/delivery/releases', {
       body: {
-        name: createDialog.name,
-        env: createDialog.env,
-        scheduleMode: createDialog.scheduleMode,
-        configNamespaceId: createDialog.configNamespaceId,
-        items: createDialog.items,
+        name: form.name,
+        env: form.env,
+        mode: form.mode,
+        globalParams: { CPU_CORES: form.cpuCores, MEM_GB: form.memGb },
+        items: form.nodes,
+        autoStart,
       },
     })
-    ElMessage.success('交付发布单已创建并冻结三级有效参数')
-    createDialog.open = false
+    ElMessage.success(autoStart ? `发布单已启动，当前状态: ${data.status}` : '发布编排计划已创建')
     await loadAll()
-  } catch (e) {
-    ElMessage.error(String(e))
+    attachLogs(data.id)
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '创建发布单失败')
   }
 }
 
-async function advanceRelease(rel: DeliveryRelease, action: 'start' | 'resume' | 'rollback') {
+async function executeOrResume(rel: Release) {
+  attachLogs(rel.id)
   try {
-    const { data } = await apiRequest<DeliveryRelease>(
-      'POST',
-      `/api/v1/projects/${ws.currentProjectId}/delivery/releases/${encodeURIComponent(rel.id)}:${action}`
-    )
-    ElMessage.success(`交付单「${data.name}」已推进至状态：${data.status}`)
+    const { data } = await apiRequest<Release>('POST', `/api/v1/delivery/releases/${rel.id}/execute`)
+    ElMessage.success(`执行完成，状态: ${data.status}`)
     await loadAll()
-  } catch (e) {
-    ElMessage.error(String(e))
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : '执行失败')
   }
 }
 
-async function runParamPreview() {
-  try {
-    const globalParams = JSON.parse(mergePreview.globalJson || '{}')
-    const serviceParams = JSON.parse(mergePreview.serviceJson || '{}')
-    const { data } = await apiRequest<{ trace: Array<{ key: string; value: unknown; source: string }> }>(
-      'POST',
-      `/api/v1/projects/${ws.currentProjectId}/config/params:preview`,
-      {
-        body: {
-          globalParams,
-          serviceParams,
-          specs: [{
-            serviceName: mergePreview.serviceName,
-            paramPrefix: mergePreview.paramPrefix,
-            cpuApply: mergePreview.cpuApply,
-            cpuLimit: mergePreview.cpuLimit,
-            memApply: mergePreview.memApply,
-            memLimit: mergePreview.memLimit,
-            replicas: mergePreview.replicas,
-          }],
-        },
-      }
-    )
-    mergePreview.result = data
-    ElMessage.success('三级参数合并与 K8s 毫核/MiB 规格校验通过')
-  } catch (e) {
-    ElMessage.error(String(e))
-  }
+async function rollbackRel(rel: Release) {
+  attachLogs(rel.id)
+  const { data } = await apiRequest<Release>('POST', `/api/v1/delivery/releases/${rel.id}/rollback`)
+  ElMessage.warning(`发布单已回滚: ${data.status}`)
+  await loadAll()
 }
 
-function statusBadge(st: string) {
-  if (st === 'SUCCEEDED' || st === 'DONE') return 'ok'
-  if (st === 'PAUSED') return 'warn'
-  if (st === 'FAILED') return 'failed'
-  if (st === 'RUNNING') return 'running'
-  return 'unprobed'
-}
-
-watch(() => ws.currentProjectId, loadAll)
 onMounted(loadAll)
+onBeforeUnmount(() => {
+  if (closeSSE) closeSSE()
+})
 </script>
 
 <template>
-  <div v-loading="loading">
+  <div class="deliv-page">
     <PageHeader
-      title="企业级分批交付与发布调度中心"
-      subtitle="三级参数冻结、BATCH/M1-M3 调度、人工暂停断点与 HTTP/TCP 拨测验收"
+      title="DAG 与分批灰度发布流水线"
+      subtitle="Kahn 拓扑排程 · 人工灰度暂停断点 · 真实执行与 CMDB 自动登记"
       :refresh="loadAll"
       :refreshing="loading"
     >
       <template #actions>
-        <el-button @click="activeTab = 'preview'">
-          <Sliders :size="14" class="btn-ico" /> 三级参数与规格计算器
-        </el-button>
-        <el-button type="primary" @click="createDialog.open = true">
-          <Plus :size="14" class="btn-ico" /> 创建分批交付单
+        <el-button @click="createAndRun(false)">仅生成编排单</el-button>
+        <el-button type="primary" :disabled="cycleCheck.hasCycle" @click="createAndRun(true)">
+          <Play :size="14" class="btn-ico" />创建并立即发布
         </el-button>
       </template>
     </PageHeader>
 
-    <div class="ki-card">
-      <el-tabs v-model="activeTab">
-        <el-tab-pane :label="`交付发布单 (${releases.length})`" name="releases">
-          <div v-if="releases.length === 0" class="empty-box ki-muted">
-            暂无交付单。点击右上角「创建分批交付单」体验 Batch 灰度暂停断点、真实 HTTP/TCP 拨测验收与一键回滚。
-          </div>
+    <section class="ki-card composer-card">
+      <div class="ki-card__title">
+        <span>编排计划设计器 (DAG / BATCH / M1 / M2 / M3)</span>
+        <el-button size="small" @click="addDraftNode"><Plus :size="13" class="btn-ico" />添加组件节点</el-button>
+      </div>
 
-          <div v-for="rel in releases" :key="rel.id" class="rel-card ki-mb-3">
-            <div class="rel-head">
-              <div class="ki-flex-row">
-                <b>{{ rel.name }}</b>
-                <span class="ki-badge ki-mono mode-tag">{{ rel.scheduleMode }}</span>
-                <span class="ki-badge ki-mono mode-tag">{{ rel.env.toUpperCase() }}</span>
-                <KiStatusBadge :status="statusBadge(rel.status)" :label="rel.status" />
-              </div>
-              <div class="ki-flex-row">
-                <span class="ki-muted rel-time">{{ rel.createdBy }} · {{ formatRelTime(rel.createdAt) }}</span>
-                <el-button v-if="rel.status === 'PENDING'" type="primary" size="small" @click="advanceRelease(rel, 'start')">
-                  <Play :size="12" class="btn-ico" /> 启动交付
+      <el-alert
+        v-if="cycleCheck.hasCycle"
+        :title="`DAG 存在循环依赖，已阻断提交: ${cycleCheck.cyclePath.join(' → ')}`"
+        type="error"
+        show-icon
+        :closable="false"
+        class="cycle-alert"
+      />
+
+      <div class="meta-row">
+        <el-input v-model="form.name" placeholder="发布单名称" style="flex: 2" />
+        <el-select v-model="form.env" style="width: 110px">
+          <el-option v-for="e in ['prod', 'beta', 'uat', 'sit', 'dev']" :key="e" :label="e.toUpperCase()" :value="e" />
+        </el-select>
+        <el-select v-model="form.mode" style="width: 120px">
+          <el-option label="DAG 拓扑" value="DAG" />
+          <el-option label="BATCH 分批" value="BATCH" />
+          <el-option label="M1 灰度" value="M1" />
+          <el-option label="M2 双活" value="M2" />
+          <el-option label="M3 蓝绿" value="M3" />
+        </el-select>
+        <el-input v-model="form.cpuCores" placeholder="CPU核" style="width: 90px"><template #append>C</template></el-input>
+        <el-input v-model="form.memGb" placeholder="内存GB" style="width: 96px"><template #append>G</template></el-input>
+      </div>
+
+      <el-table :data="form.nodes" size="small">
+        <el-table-column label="节点 Key" width="130">
+          <template #default="{ row }"><el-input v-model="row.nodeKey" size="small" /></template>
+        </el-table-column>
+        <el-table-column label="YAML 插件" width="160">
+          <template #default="{ row }">
+            <el-select v-model="row.pluginCode" size="small" style="width: 100%">
+              <el-option v-for="p in plugins" :key="p.code" :label="p.name" :value="p.code" />
+            </el-select>
+          </template>
+        </el-table-column>
+        <el-table-column label="目标 CMDB 主机 (留空预演)" min-width="175">
+          <template #default="{ row }">
+            <el-select v-model="row.targetHostCiId" clearable placeholder="预演 / 选择主机" size="small" style="width: 100%">
+              <el-option v-for="h in hosts" :key="h.id" :label="`${h.name} (${h.host?.ip || ''})`" :value="h.id" />
+            </el-select>
+          </template>
+        </el-table-column>
+        <el-table-column label="上游依赖 (DAG)" min-width="165">
+          <template #default="{ row }">
+            <el-select v-model="row.dependsOn" multiple collapse-tags size="small" placeholder="无前置" style="width: 100%">
+              <el-option
+                v-for="other in form.nodes.filter((x) => x.nodeKey !== row.nodeKey)"
+                :key="other.nodeKey"
+                :label="other.nodeKey"
+                :value="other.nodeKey"
+              />
+            </el-select>
+          </template>
+        </el-table-column>
+        <el-table-column label="批次" width="76">
+          <template #default="{ row }"><el-input-number v-model="row.batchIndex" :min="0" :max="9" size="small" controls-position="right" style="width: 60px" /></template>
+        </el-table-column>
+        <el-table-column label="灰度暂停" width="82" align="center">
+          <template #default="{ row }"><el-checkbox v-model="row.pauseAfter" /></template>
+        </el-table-column>
+        <el-table-column label="HTTP 拨测 URL (可选)" min-width="160">
+          <template #default="{ row }"><el-input v-model="row.dialUrl" placeholder="http://127.0.0.1:8080/healthz" size="small" /></template>
+        </el-table-column>
+        <el-table-column width="54" align="center">
+          <template #default="{ $index }">
+            <el-button link type="danger" size="small" @click="removeDraftNode($index)"><Trash2 :size="13" /></el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </section>
+
+    <div class="rel-grid">
+      <section class="ki-card">
+        <div class="ki-card__title">
+          <span>发布单执行台账 ({{ releases.length }})</span>
+        </div>
+        <el-table :data="releases" size="small" highlight-current-row @row-click="(r: Release) => attachLogs(r.id)">
+          <el-table-column prop="name" label="发布单" min-width="150" show-overflow-tooltip />
+          <el-table-column prop="env" label="环境" width="66" />
+          <el-table-column prop="mode" label="模式" width="70" />
+          <el-table-column label="状态" width="115">
+            <template #default="{ row }">
+              <KiStatusBadge
+                :status="row.status === 'SUCCEEDED' ? 'ok' : row.status === 'FAILED' ? 'failed' : row.status === 'PAUSED' ? 'warn' : 'running'"
+                :label="row.status"
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="145" align="right">
+            <template #default="{ row }">
+              <div class="ki-row-actions">
+                <el-button
+                  v-if="row.status === 'DRAFT' || row.status === 'PAUSED'"
+                  link
+                  type="primary"
+                  size="small"
+                  @click.stop="executeOrResume(row)"
+                >
+                  {{ row.status === 'PAUSED' ? '继续发布' : '执行' }}
                 </el-button>
-                <el-button v-if="rel.status === 'PAUSED'" type="warning" size="small" @click="advanceRelease(rel, 'resume')">
-                  <PauseCircle :size="12" class="btn-ico" /> 审批通过 · 继续下一批
+                <el-button
+                  v-if="row.status === 'SUCCEEDED' || row.status === 'PAUSED' || row.status === 'FAILED'"
+                  link
+                  type="warning"
+                  size="small"
+                  @click.stop="rollbackRel(row)"
+                >
+                  <RotateCcw :size="12" class="btn-ico" />回滚
                 </el-button>
-                <el-button v-if="['SUCCEEDED','FAILED','PAUSED'].includes(rel.status)" size="small" @click="advanceRelease(rel, 'rollback')">
-                  <RotateCcw :size="12" class="btn-ico" /> 回滚
-                </el-button>
               </div>
-            </div>
+            </template>
+          </el-table-column>
+        </el-table>
 
-            <el-table :data="rel.items" size="small" class="ki-mt-2">
-              <el-table-column label="批次" width="76">
-                <template #default="{ row }"><span class="ki-mono">Batch {{ row.batchNo }}</span></template>
-              </el-table-column>
-              <el-table-column prop="serviceName" label="服务名" width="150" />
-              <el-table-column prop="pluginName" label="声明式/内置插件" width="150">
-                <template #default="{ row }"><span class="ki-mono">{{ row.pluginName || '—' }}</span></template>
-              </el-table-column>
-              <el-table-column label="当前阶段" width="124">
-                <template #default="{ row }"><span class="ki-badge ki-mono mode-tag">{{ row.stage }}</span></template>
-              </el-table-column>
-              <el-table-column label="状态" width="104">
-                <template #default="{ row }"><KiStatusBadge :status="statusBadge(row.status)" :label="row.status" /></template>
-              </el-table-column>
-              <el-table-column label="人工断点" width="84">
-                <template #default="{ row }"><span class="ki-muted">{{ row.pauseAfter ? '批后暂停' : '自动' }}</span></template>
-              </el-table-column>
-              <el-table-column label="执行与拨测回执" min-width="240">
-                <template #default="{ row }">
-                  <pre class="out-log ki-mono">{{ row.lastOutput || '等待调度' }}</pre>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-        </el-tab-pane>
-
-        <el-tab-pane label="三级参数合并与 K8s 规格预检器" name="preview">
-          <div class="ki-grid-2 ki-mb-3">
-            <el-form label-position="top">
-              <el-form-item label="Layer 1: 全局参数 (Global JSON)">
-                <el-input v-model="mergePreview.globalJson" type="textarea" :rows="3" class="ki-mono" />
-              </el-form-item>
-              <el-form-item label="Layer 2: 服务覆盖参数 (Service JSON)">
-                <el-input v-model="mergePreview.serviceJson" type="textarea" :rows="3" class="ki-mono" />
-              </el-form-item>
-            </el-form>
-            <el-form label-position="top">
-              <div class="ki-grid-2">
-                <el-form-item label="Layer 3: 规格前缀"><el-input v-model="mergePreview.paramPrefix" /></el-form-item>
-                <el-form-item label="副本数 (Replicas)"><el-input-number v-model="mergePreview.replicas" :min="1" class="ki-w-full" /></el-form-item>
-              </div>
-              <div class="ki-grid-2">
-                <el-form-item label="CPU Request / Limit">
-                  <div class="ki-flex-row"><el-input v-model="mergePreview.cpuApply" /><el-input v-model="mergePreview.cpuLimit" /></div>
-                </el-form-item>
-                <el-form-item label="Mem Request / Limit">
-                  <div class="ki-flex-row"><el-input v-model="mergePreview.memApply" /><el-input v-model="mergePreview.memLimit" /></div>
-                </el-form-item>
-              </div>
-              <el-button type="primary" @click="runParamPreview">执行唯一三级合并预检 (Spec &gt; Service &gt; Global)</el-button>
-            </el-form>
-          </div>
-
-          <el-table v-if="mergePreview.result" :data="mergePreview.result.trace" size="small">
-            <el-table-column prop="key" label="最终生效参数键" width="220">
-              <template #default="{ row }"><b class="ki-mono">{{ row.key }}</b></template>
+        <template v-if="activeRelease">
+          <div class="section-title">节点流水线明细 · {{ activeRelease.name }}</div>
+          <el-table :data="activeRelease.items" size="small">
+            <el-table-column prop="nodeKey" label="节点" width="110" />
+            <el-table-column prop="pluginCode" label="插件" width="110" />
+            <el-table-column label="K8s / JVM 规格" width="145">
+              <template #default="{ row }">
+                <code class="ki-mono">{{ row.k8sSpec?.limitCpuM }}m / {{ row.k8sSpec?.limitMemMi }}Mi</code>
+              </template>
             </el-table-column>
-            <el-table-column prop="value" label="合并后生效值" min-width="200">
-              <template #default="{ row }"><span class="ki-mono">{{ row.value }}</span></template>
+            <el-table-column label="状态" width="110">
+              <template #default="{ row }">
+                <KiStatusBadge :status="row.status === 'SUCCEEDED' ? 'ok' : row.status === 'FAILED' ? 'failed' : 'running'" :label="row.status" />
+              </template>
             </el-table-column>
-            <el-table-column prop="source" label="胜出层级" width="120">
-              <template #default="{ row }"><span class="ki-badge ki-mono mode-tag">{{ row.source }}</span></template>
-            </el-table-column>
+            <el-table-column prop="summary" label="执行与 CMDB 同步结果" min-width="180" show-overflow-tooltip />
           </el-table>
-        </el-tab-pane>
-      </el-tabs>
+        </template>
+      </section>
+
+      <section class="ki-card sse-card">
+        <div class="ki-card__title">
+          <span class="sse-title"><Terminal :size="15" /> 实时发布 SSE 日志终端</span>
+          <span class="sub">{{ activeRelease ? activeRelease.id : '点击左侧发布单查看日志' }}</span>
+        </div>
+        <div class="sse-console ki-mono">
+          <div v-if="sseLines.length === 0" class="sse-empty">等待发布流水线事件流输出…</div>
+          <div v-for="l in sseLines" :key="l.seq" class="sse-line" :class="`sse-line--${l.level}`">
+            <span class="sse-seq">#{{ l.seq }}</span>
+            <span>{{ l.message }}</span>
+          </div>
+        </div>
+      </section>
     </div>
-
-    <el-dialog v-model="createDialog.open" title="创建企业级分批交付发布单" width="760px">
-      <el-form label-position="top">
-        <div class="ki-grid-3">
-          <el-form-item label="交付单名称"><el-input v-model="createDialog.name" /></el-form-item>
-          <el-form-item label="目标环境">
-            <el-select v-model="createDialog.env" class="ki-w-full">
-              <el-option v-for="e in ['prod','beta','uat','sit','dev']" :key="e" :label="e.toUpperCase()" :value="e" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="调度模式">
-            <el-select v-model="createDialog.scheduleMode" class="ki-w-full">
-              <el-option v-for="(lbl, k) in modeLabels" :key="k" :label="lbl" :value="k" />
-            </el-select>
-          </el-form-item>
-        </div>
-        <el-form-item label="绑定配置中心命名空间（冻结全局参数）">
-          <el-select v-model="createDialog.configNamespaceId" clearable class="ki-w-full" placeholder="可选：选择配置中心命名空间">
-            <el-option v-for="ns in namespaces" :key="ns.id" :label="`${ns.env.toUpperCase()} / ${ns.name}`" :value="ns.id" />
-          </el-select>
-        </el-form-item>
-
-        <div class="ki-flex-row ki-mb-2" style="justify-content: space-between;">
-          <b>服务批次编排与拨测探针</b>
-          <el-button size="small" @click="addItemRow">+ 添加批次服务</el-button>
-        </div>
-        <div v-for="(it, idx) in createDialog.items" :key="idx" class="item-row">
-          <el-input-number v-model="it.batchNo" :min="0" :max="20" size="small" style="width: 82px" />
-          <el-input v-model="it.serviceName" size="small" placeholder="服务名" style="width: 140px" />
-          <el-input v-model="it.pluginName" size="small" placeholder="插件名" style="width: 140px" />
-          <el-input v-model="it.probeUrl" size="small" placeholder="HTTP 拨测 URL" style="flex: 1" />
-          <el-checkbox v-model="it.pauseAfter">批后暂停</el-checkbox>
-        </div>
-      </el-form>
-      <template #footer>
-        <el-button @click="createDialog.open = false">取消</el-button>
-        <el-button type="primary" @click="createRelease">预检并创建交付单</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -337,49 +366,76 @@ onMounted(loadAll)
   margin-right: 4px;
 }
 
-.empty-box {
-  padding: 28px;
-  text-align: center;
-  font-size: var(--ki-fs-xs);
+.composer-card {
+  margin-bottom: var(--ki-space-4);
 }
 
-.rel-card {
-  padding: 14px;
-  border-radius: var(--ki-radius-md);
-  border: 1px solid var(--ki-border-subtle);
-  background-color: var(--ki-bg-subtle);
+.cycle-alert {
+  margin-bottom: 12px;
 }
 
-.rel-head {
+.meta-row {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
   flex-wrap: wrap;
-}
-
-.rel-time {
-  font-size: var(--ki-fs-xs);
-}
-
-.mode-tag {
-  background-color: var(--ki-bg-surface);
-  color: var(--ki-text-secondary);
-  border: 1px solid var(--ki-border-subtle);
-}
-
-.out-log {
-  margin: 0;
-  font-size: 11px;
-  white-space: pre-wrap;
-  line-height: 1.4;
-  color: var(--ki-text-secondary);
-}
-
-.item-row {
-  display: flex;
-  align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
+}
+
+.rel-grid {
+  display: grid;
+  grid-template-columns: 1.25fr 1fr;
+  gap: var(--ki-space-4);
+  align-items: start;
+}
+
+.sse-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sse-console {
+  height: 360px;
+  overflow-y: auto;
+  padding: 12px;
+  border-radius: var(--ki-radius-md);
+  background-color: var(--ki-bg-terminal);
+  color: var(--ki-text-terminal);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.sse-empty {
+  color: var(--ki-text-muted);
+}
+
+.sse-line {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+
+.sse-seq {
+  color: var(--ki-text-muted);
+  flex: none;
+}
+
+.sse-line--error {
+  color: var(--ki-status-danger);
+}
+
+.sse-line--warn {
+  color: var(--ki-status-warn);
+}
+
+.sse-line--ok {
+  color: var(--ki-status-ok);
+}
+
+@media (max-width: 1080px) {
+  .rel-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

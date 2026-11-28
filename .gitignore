@@ -10,10 +10,11 @@
 *.out
 coverage.out
 
-# Archives (original input bundle kept local)
+# Archives & local reference bundles
 *.zip
 *.tar.gz
 *.tgz
+his-liveops/
 
 # Python cache
 __pycache__/

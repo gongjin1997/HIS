@@ -2,7 +2,6 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  Bell,
   ChevronDown,
   FolderKanban,
   Keyboard,
@@ -17,7 +16,7 @@ import {
   Sun,
 } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
-import { useWorkspaceStore } from '@/stores/workspace'
+import { useWorkspaceStore, type EnvCode } from '@/stores/workspace'
 import { useShortcuts } from '@/composables/useShortcuts'
 import { ALL_MENU_ITEMS, GROUP_OF_PATH, MENU_GROUPS, TITLE_OF_PATH } from '@/config/menu'
 import KiBrandLogo from '@/components/ki/KiBrandLogo.vue'
@@ -31,17 +30,19 @@ const ws = useWorkspaceStore()
 const showCmdK = ref(false)
 const showHelp = ref(false)
 
-const currentGroup = computed(() => GROUP_OF_PATH[route.path] || '交付总览')
-const currentTitle = computed(() => TITLE_OF_PATH[route.path] || (route.meta.title as string) || '总览驾驶舱')
-const currentProjectName = computed(
-  () => ws.projects.find((p) => p.id === ws.currentProjectId)?.name || '默认项目'
+const currentGroup = computed(() => GROUP_OF_PATH[route.path] || '全景总览')
+const currentTitle = computed(() => TITLE_OF_PATH[route.path] || (route.meta.title as string) || '资产与运维全景')
+const currentWorkspaceName = computed(
+  () => ws.workspaces.find((w) => w.id === ws.currentWorkspaceId)?.name || '核心运维空间'
 )
 const userInitial = computed(() => (auth.user?.displayName || auth.user?.username || 'A').slice(0, 1).toUpperCase())
-const envLabelMap: Record<string, string> = {
+
+const envLabelMap: Record<EnvCode, string> = {
   prod: 'PROD 生产',
-  staging: 'STAGING 预发',
-  dev: 'DEV 开发',
-  sandbox: 'SANDBOX 沙箱',
+  beta: 'BETA 灰度',
+  uat: 'UAT 验收',
+  sit: 'SIT 集成',
+  dev: 'DEV 研发',
 }
 
 const commandItems = computed<CommandItem[]>(() =>
@@ -70,18 +71,16 @@ function onCommandSelect(item: CommandItem) {
   if (item.path) void router.push(item.path)
 }
 
-function onProjectSelect(id: string) {
-  ws.currentProjectId = id
-  void ws.refreshApprovalBadge()
-  void ws.refreshOfflineMode()
+function onWorkspaceSelect(id: string) {
+  ws.currentWorkspaceId = id
 }
 
-function onEnvSelect(env: 'prod' | 'staging' | 'dev' | 'sandbox') {
+function onEnvSelect(env: EnvCode) {
   ws.currentEnv = env
 }
 
 function onUserCommand(cmd: string) {
-  if (cmd === 'settings') void router.push('/settings')
+  if (cmd === 'governance') void router.push('/governance')
   else if (cmd === 'density') ws.toggleDensity()
   else if (cmd === 'shortcuts') showHelp.value = true
   else if (cmd === 'logout') {
@@ -90,15 +89,13 @@ function onUserCommand(cmd: string) {
   }
 }
 
-onMounted(async () => {
-  await ws.loadProjects()
-  await Promise.all([ws.refreshApprovalBadge(), ws.refreshOfflineMode()])
+onMounted(() => {
+  void ws.loadWorkspaces()
 })
 </script>
 
 <template>
   <el-container class="ki-layout" :class="{ 'is-collapsed': ws.sidebarCollapsed }">
-    <!-- 左侧浅色分组导航栏 -->
     <el-aside
       class="ki-sider ki-shell-sidebar"
       :width="ws.sidebarCollapsed ? 'var(--ki-sidebar-collapsed-w)' : 'var(--ki-sidebar-w)'"
@@ -107,7 +104,7 @@ onMounted(async () => {
         <KiBrandLogo :size="30" variant="badge" />
         <div v-show="!ws.sidebarCollapsed" class="ki-brand">
           <b>kinstall</b>
-          <span>基础设施交付控制台</span>
+          <span>CMDB 与声明式交付中枢</span>
         </div>
       </div>
 
@@ -131,12 +128,6 @@ onMounted(async () => {
               >
                 <component :is="item.icon" :size="17" class="ki-menu-icon" aria-hidden="true" />
                 <span v-show="!ws.sidebarCollapsed" class="ki-menu-label">{{ item.title }}</span>
-                <em
-                  v-if="item.badge === 'approvals' && ws.pendingApprovalCount > 0"
-                  class="ki-menu-badge ki-num"
-                >
-                  {{ ws.pendingApprovalCount > 99 ? '99+' : ws.pendingApprovalCount }}
-                </em>
               </router-link>
             </el-tooltip>
           </template>
@@ -157,7 +148,6 @@ onMounted(async () => {
       </div>
     </el-aside>
 
-    <!-- 右侧主工作区 -->
     <el-container direction="vertical" class="ki-main-wrap">
       <el-header class="ki-header ki-shell-topbar" height="auto">
         <div class="ki-toolbar">
@@ -178,72 +168,56 @@ onMounted(async () => {
             <el-breadcrumb separator="/">
               <el-breadcrumb-item>{{ currentGroup }}</el-breadcrumb-item>
               <el-breadcrumb-item>
-                <span class="ki-crumb-title" role="heading" aria-level="1">{{ currentTitle }}</span>
+                <span class="ki-crumb-title">{{ currentTitle }}</span>
               </el-breadcrumb-item>
             </el-breadcrumb>
           </div>
 
           <button type="button" class="ki-search-trigger" @click="showCmdK = true">
             <Search :size="14" class="ki-muted" aria-hidden="true" />
-            <span class="ki-search-placeholder">搜索模块、主机或组件…</span>
+            <span class="ki-search-placeholder">快速跳转资产、插件或发布…</span>
             <kbd class="ki-kbd ki-mono">/</kbd>
           </button>
 
           <div class="ki-toolbar-right">
-            <!-- 项目上下文 -->
-            <el-dropdown trigger="click" @command="onProjectSelect">
+            <el-dropdown trigger="click" @command="onWorkspaceSelect">
               <div class="ki-scope-pill">
                 <FolderKanban :size="13" aria-hidden="true" />
-                <span class="ki-scope-name">{{ currentProjectName }}</span>
+                <span class="ki-scope-name">{{ currentWorkspaceName }}</span>
                 <ChevronDown :size="12" aria-hidden="true" />
               </div>
               <template #dropdown>
                 <el-dropdown-menu>
-                  <div class="ki-dd-header">切换交付项目</div>
+                  <div class="ki-dd-header">切换运维空间</div>
                   <el-dropdown-item
-                    v-for="p in ws.projects"
-                    :key="p.id"
-                    :command="p.id"
-                    :class="{ 'is-selected': p.id === ws.currentProjectId }"
+                    v-for="w in ws.workspaces"
+                    :key="w.id"
+                    :command="w.id"
+                    :class="{ 'is-selected': w.id === ws.currentWorkspaceId }"
                   >
-                    {{ p.name }}
+                    {{ w.name }}
                   </el-dropdown-item>
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
 
-            <!-- 环境风险标签 -->
             <el-dropdown trigger="click" @command="onEnvSelect">
-              <div class="ki-env-pill" :class="`ki-env-pill--${ws.currentEnv}`">
+              <div class="ki-env-pill" :class="ws.currentEnv === 'prod' ? 'ki-env-pill--prod' : ws.currentEnv === 'dev' ? 'ki-env-pill--dev' : 'ki-env-pill--staging'">
                 <i class="ki-scope-dot" />
                 <span>{{ envLabelMap[ws.currentEnv] }}</span>
                 <ChevronDown :size="12" aria-hidden="true" />
               </div>
               <template #dropdown>
                 <el-dropdown-menu>
-                  <div class="ki-dd-header">默认交付环境上下文</div>
+                  <div class="ki-dd-header">五环境隔离上下文</div>
                   <el-dropdown-item command="prod">PROD 生产环境</el-dropdown-item>
-                  <el-dropdown-item command="staging">STAGING 预发环境</el-dropdown-item>
-                  <el-dropdown-item command="dev">DEV 开发环境</el-dropdown-item>
-                  <el-dropdown-item command="sandbox">SANDBOX 沙箱</el-dropdown-item>
+                  <el-dropdown-item command="beta">BETA 灰度环境</el-dropdown-item>
+                  <el-dropdown-item command="uat">UAT 验收环境</el-dropdown-item>
+                  <el-dropdown-item command="sit">SIT 集成环境</el-dropdown-item>
+                  <el-dropdown-item command="dev">DEV 研发环境</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
-
-            <el-tooltip
-              :content="ws.offlineStrict ? '当前项目已开启物理离线锁定（点击配置介质策略）' : '当前项目允许在线上游源（点击配置介质策略）'"
-              placement="bottom"
-            >
-              <button
-                type="button"
-                class="ki-live-pill"
-                :class="{ 'ki-live-pill--online': !ws.offlineStrict }"
-                @click="router.push('/artifacts/media-policies')"
-              >
-                <i class="ki-live-dot" :class="{ 'ki-dot-pulse': ws.offlineStrict }" />
-                {{ ws.offlineStrict ? '离线锁定' : '在线可用' }}
-              </button>
-            </el-tooltip>
 
             <span class="ki-toolbar-sep" aria-hidden="true" />
 
@@ -254,17 +228,11 @@ onMounted(async () => {
               </el-button>
             </el-tooltip>
 
-            <el-badge :value="ws.pendingApprovalCount" :hidden="ws.pendingApprovalCount === 0" :max="99" class="ki-bell">
-              <el-button text circle aria-label="查看待审批工单" @click="router.push('/operations/approvals')">
-                <Bell :size="16" />
-              </el-button>
-            </el-badge>
-
             <el-dropdown trigger="click" @command="onUserCommand">
-              <div class="ki-user-trigger" :aria-label="`用户菜单：${auth.user?.username || 'ops'}`">
+              <div class="ki-user-trigger" :aria-label="`用户菜单：${auth.user?.username || 'admin'}`">
                 <span class="ki-avatar">{{ userInitial }}</span>
                 <div class="ki-user-who">
-                  <b>{{ auth.user?.displayName || auth.user?.username || 'ops' }}</b>
+                  <b>{{ auth.user?.displayName || auth.user?.username || 'admin' }}</b>
                   <span>{{ auth.primaryRole }}</span>
                 </div>
                 <ChevronDown :size="13" class="ki-muted" aria-hidden="true" />
@@ -273,8 +241,8 @@ onMounted(async () => {
                 <el-dropdown-menu>
                   <div class="ki-user-card">
                     <b>{{ auth.user?.displayName || auth.user?.username || 'admin' }}</b>
-                    <span>账号：{{ auth.user?.username || 'admin' }} · 角色：{{ auth.primaryRole }}</span>
-                    <span>上下文：{{ currentProjectName }} / {{ ws.currentEnv.toUpperCase() }}</span>
+                    <span>账号：{{ auth.user?.username }} · 角色：{{ auth.primaryRole }}</span>
+                    <span>版本：Kinstall v{{ auth.version }}</span>
                   </div>
                   <el-dropdown-item command="density" divided>
                     <SlidersHorizontal :size="14" class="ki-dd-icon" />
@@ -283,8 +251,8 @@ onMounted(async () => {
                   <el-dropdown-item command="shortcuts">
                     <Keyboard :size="14" class="ki-dd-icon" /> 快捷键速查 (?)
                   </el-dropdown-item>
-                  <el-dropdown-item command="settings">
-                    <Settings :size="14" class="ki-dd-icon" /> 平台设置
+                  <el-dropdown-item command="governance">
+                    <Settings :size="14" class="ki-dd-icon" /> 权限审计与设置
                   </el-dropdown-item>
                   <el-dropdown-item command="logout" divided>
                     <LogOut :size="14" class="ki-dd-icon" /> 退出登录
@@ -300,7 +268,7 @@ onMounted(async () => {
         <div class="ki-content-inner">
           <router-view v-slot="{ Component }">
             <transition name="fade" mode="out-in">
-              <component :is="Component" :key="`${ws.currentProjectId}:${route.path}`" />
+              <component :is="Component" :key="`${ws.currentWorkspaceId}:${route.path}`" />
             </transition>
           </router-view>
         </div>
@@ -431,20 +399,6 @@ onMounted(async () => {
   text-overflow: ellipsis;
 }
 
-.ki-menu-badge {
-  min-width: 20px;
-  height: 18px;
-  padding: 0 6px;
-  border-radius: var(--ki-radius-pill);
-  background-color: var(--ki-status-danger);
-  color: var(--ki-text-on-solid);
-  font-size: 11px;
-  font-style: normal;
-  display: grid;
-  place-items: center;
-  font-weight: var(--ki-fw-semibold);
-}
-
 .ki-sider-foot {
   flex: none;
   padding: 8px 10px;
@@ -465,7 +419,6 @@ onMounted(async () => {
   font-family: var(--ki-font-sans);
   font-size: var(--ki-fs-sm);
   cursor: pointer;
-  transition: background-color var(--ki-dur-fast) var(--ki-ease), color var(--ki-dur-fast) var(--ki-ease);
 }
 
 .ki-collapse-btn:hover {
@@ -473,11 +426,7 @@ onMounted(async () => {
   color: var(--ki-text-primary);
 }
 
-.ki-layout.is-collapsed .ki-logo {
-  justify-content: center;
-  padding: 0;
-}
-
+.ki-layout.is-collapsed .ki-logo,
 .ki-layout.is-collapsed .ki-menu-item,
 .ki-layout.is-collapsed .ki-collapse-btn {
   justify-content: center;
@@ -527,7 +476,7 @@ onMounted(async () => {
   align-items: center;
   gap: 8px;
   height: 32px;
-  width: 224px;
+  width: 232px;
   padding: 0 10px;
   background-color: var(--ki-bg-subtle);
   border: 1px solid var(--ki-border-subtle);
@@ -536,7 +485,6 @@ onMounted(async () => {
   font-family: var(--ki-font-sans);
   font-size: var(--ki-fs-sm);
   cursor: pointer;
-  transition: border-color var(--ki-dur-fast) var(--ki-ease), background-color var(--ki-dur-fast) var(--ki-ease);
 }
 
 .ki-search-trigger:hover {
@@ -567,11 +515,6 @@ onMounted(async () => {
   gap: 8px;
 }
 
-.ki-refresh-host {
-  display: inline-flex;
-  align-items: center;
-}
-
 .ki-toolbar-sep {
   width: 1px;
   height: 18px;
@@ -598,11 +541,6 @@ onMounted(async () => {
   color: var(--ki-text-primary);
 }
 
-.ki-scope-pill:hover {
-  border-color: var(--ki-brand-border);
-  background-color: var(--ki-bg-hover);
-}
-
 .ki-scope-name {
   max-width: 120px;
   overflow: hidden;
@@ -624,67 +562,16 @@ onMounted(async () => {
   border: 1px solid var(--ki-status-danger-border);
 }
 
-.ki-env-pill--prod .ki-scope-dot {
-  box-shadow: var(--ki-dot-halo-prod);
-}
-
 .ki-env-pill--staging {
   color: var(--ki-env-staging-text);
   background-color: var(--ki-env-staging-bg);
   border: 1px solid var(--ki-status-warn-border);
 }
 
-.ki-env-pill--staging .ki-scope-dot {
-  box-shadow: var(--ki-dot-halo-staging);
-}
-
 .ki-env-pill--dev {
   color: var(--ki-env-dev-text);
   background-color: var(--ki-env-dev-bg);
   border: 1px solid var(--ki-status-ok-border);
-}
-
-.ki-env-pill--dev .ki-scope-dot {
-  box-shadow: var(--ki-dot-halo-dev);
-}
-
-.ki-env-pill--sandbox {
-  color: var(--ki-env-sandbox-text);
-  background-color: var(--ki-env-sandbox-bg);
-  border: 1px solid var(--ki-status-neutral-border);
-}
-
-.ki-live-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 9px;
-  border-radius: var(--ki-radius-pill);
-  border: 1px solid var(--ki-status-ok-border);
-  background-color: var(--ki-status-ok-subtle);
-  font-size: var(--ki-fs-xs);
-  font-weight: var(--ki-fw-medium);
-  color: var(--ki-status-ok-text);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.ki-live-pill--online {
-  border-color: var(--ki-status-warn-border);
-  background-color: var(--ki-status-warn-subtle);
-  color: var(--ki-status-warn-text);
-}
-
-.ki-live-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: var(--ki-radius-pill);
-  background-color: currentcolor;
-}
-
-.ki-bell {
-  display: inline-flex;
 }
 
 .ki-user-trigger {
@@ -741,7 +628,7 @@ onMounted(async () => {
   flex-direction: column;
   gap: 3px;
   padding: 8px 14px 10px;
-  min-width: 230px;
+  min-width: 220px;
 }
 
 .ki-user-card b {
@@ -778,7 +665,6 @@ onMounted(async () => {
   }
 
   .ki-search-trigger,
-  .ki-live-pill,
   .ki-toolbar-sep,
   .ki-user-who {
     display: none;

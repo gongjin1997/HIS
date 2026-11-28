@@ -1,64 +1,54 @@
-export interface ProblemDetail {
-  type?: string
-  title?: string
-  status?: number
-  detail?: string
+export interface ErrorBody {
   code?: string
+  message?: string
+  detail?: string
   traceId?: string
-  suggestion?: string
+  title?: string
 }
 
 export class APIError extends Error {
   status: number
   code: string
   traceId: string
-  suggestion: string
-  problem: ProblemDetail
+  detail: string
 
-  constructor(status: number, problem: ProblemDetail) {
-    super(problem.title || problem.detail || `HTTP ${status}`)
+  constructor(status: number, body: ErrorBody) {
+    super(body.message || body.title || body.detail || `HTTP ${status}`)
     this.status = status
-    this.code = problem.code || 'KI-API-0001'
-    this.traceId = problem.traceId || ''
-    this.suggestion = problem.suggestion || ''
-    this.problem = problem
+    this.code = body.code || 'API_ERROR'
+    this.traceId = body.traceId || ''
+    this.detail = body.detail || ''
   }
 }
 
-function genIdempotencyKey(): string {
-  const bytes = new Uint8Array(12)
-  crypto.getRandomValues(bytes)
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
-  return `idem_${Date.now().toString(36)}_${hex}`
+export interface SSELogLine {
+  seq: number
+  timestamp: string
+  stream: string
+  level: string
+  message: string
+  done?: boolean
+  status?: string
 }
 
 function baseHeaders(extra?: Record<string, string>): Record<string, string> {
   const token = localStorage.getItem('kinstall.token') || ''
-  const lang = localStorage.getItem('kinstall.lang') || 'zh-CN'
+  const wsId = localStorage.getItem('kinstall.workspaceId') || ''
   const headers: Record<string, string> = {
-    'Accept-Language': lang,
     ...(extra || {}),
   }
   if (token) headers.Authorization = `Bearer ${token}`
+  if (wsId) headers['X-Workspace-Id'] = wsId
   return headers
 }
 
 export async function apiRequest<T>(
   method: string,
   path: string,
-  opts?: {
-    body?: unknown
-    headers?: Record<string, string>
-    idempotent?: boolean
-    etag?: string
-  }
-): Promise<{ data: T; etag: string }> {
+  opts?: { body?: unknown; headers?: Record<string, string> }
+): Promise<{ data: T }> {
   const headers = baseHeaders({ Accept: 'application/json', ...(opts?.headers || {}) })
   if (opts?.body !== undefined) headers['Content-Type'] = 'application/json'
-  if (opts?.idempotent && ['POST', 'PUT', 'PATCH'].includes(method.toUpperCase())) {
-    headers['Idempotency-Key'] = genIdempotencyKey()
-  }
-  if (opts?.etag) headers['If-Match'] = opts.etag
 
   const resp = await fetch(path, {
     method,
@@ -67,81 +57,20 @@ export async function apiRequest<T>(
     body: opts?.body !== undefined ? JSON.stringify(opts.body) : undefined,
   })
 
-  const etag = resp.headers.get('ETag') || ''
   if (resp.status === 204) {
-    return { data: undefined as unknown as T, etag }
+    return { data: undefined as unknown as T }
   }
   const text = await resp.text()
   let parsed: unknown = null
   try {
     parsed = text ? JSON.parse(text) : null
   } catch {
-    parsed = { detail: text }
+    parsed = { message: text }
   }
   if (!resp.ok) {
-    throw new APIError(resp.status, (parsed as ProblemDetail) || { title: resp.statusText })
+    throw new APIError(resp.status, (parsed as ErrorBody) || { message: resp.statusText })
   }
-  return { data: parsed as T, etag }
-}
-
-export async function apiRequestText(method: string, path: string): Promise<string> {
-  const resp = await fetch(path, {
-    method,
-    credentials: 'same-origin',
-    headers: baseHeaders({ Accept: 'application/yaml, text/plain, */*' }),
-  })
-  const text = await resp.text()
-  if (!resp.ok) {
-    let parsed: ProblemDetail = { title: resp.statusText, detail: text }
-    try {
-      parsed = JSON.parse(text) as ProblemDetail
-    } catch {
-      // keep raw text detail
-    }
-    throw new APIError(resp.status, parsed)
-  }
-  return text
-}
-
-export async function apiDownload(
-  method: 'GET' | 'POST',
-  path: string,
-  defaultFilename: string,
-  body?: unknown
-): Promise<{ filename: string; sha256: string; size: number }> {
-  const headers = baseHeaders()
-  if (body !== undefined) headers['Content-Type'] = 'application/json'
-  const resp = await fetch(path, {
-    method,
-    credentials: 'same-origin',
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  })
-  if (!resp.ok) {
-    const text = await resp.text()
-    let parsed: ProblemDetail = { title: resp.statusText, detail: text }
-    try {
-      parsed = JSON.parse(text) as ProblemDetail
-    } catch {
-      // keep raw text detail
-    }
-    throw new APIError(resp.status, parsed)
-  }
-  const blob = await resp.blob()
-  const cd = resp.headers.get('Content-Disposition') || ''
-  const m = cd.match(/filename="?([^";]+)"?/i)
-  const filename = m?.[1] || defaultFilename
-  const sha256 = resp.headers.get('X-Evidence-SHA256') || ''
-
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  URL.revokeObjectURL(url)
-  return { filename, sha256, size: blob.size }
+  return { data: parsed as T }
 }
 
 export async function apiUpload<T>(path: string, formData: FormData): Promise<T> {
@@ -156,10 +85,67 @@ export async function apiUpload<T>(path: string, formData: FormData): Promise<T>
   try {
     parsed = text ? JSON.parse(text) : null
   } catch {
-    parsed = { detail: text }
+    parsed = { message: text }
   }
   if (!resp.ok) {
-    throw new APIError(resp.status, (parsed as ProblemDetail) || { title: resp.statusText })
+    throw new APIError(resp.status, (parsed as ErrorBody) || { message: resp.statusText })
   }
   return parsed as T
+}
+
+export async function apiDownload(path: string, defaultFilename: string): Promise<void> {
+  const resp = await fetch(path, {
+    method: 'GET',
+    credentials: 'same-origin',
+    headers: baseHeaders(),
+  })
+  if (!resp.ok) {
+    const text = await resp.text()
+    let parsed: ErrorBody = { message: resp.statusText, detail: text }
+    try {
+      parsed = JSON.parse(text) as ErrorBody
+    } catch {
+      // keep raw text
+    }
+    throw new APIError(resp.status, parsed)
+  }
+  const blob = await resp.blob()
+  const cd = resp.headers.get('Content-Disposition') || ''
+  const m = cd.match(/filename="?([^";]+)"?/i)
+  const filename = m?.[1] || defaultFilename
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+export function openSSEStream(
+  topic: string,
+  onLine: (line: SSELogLine) => void,
+  onEnd?: () => void
+): () => void {
+  const token = localStorage.getItem('kinstall.token') || ''
+  const url = `/api/v1/stream/${encodeURIComponent(topic)}?token=${encodeURIComponent(token)}`
+  const es = new EventSource(url)
+  es.addEventListener('log', (ev) => {
+    try {
+      const parsed = JSON.parse((ev as MessageEvent).data) as SSELogLine
+      onLine(parsed)
+      if (parsed.done) {
+        es.close()
+        onEnd?.()
+      }
+    } catch {
+      // ignore malformed frame
+    }
+  })
+  es.onerror = () => {
+    es.close()
+    onEnd?.()
+  }
+  return () => es.close()
 }

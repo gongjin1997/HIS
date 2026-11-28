@@ -1,7 +1,0 @@
-package: gen
-output: pkg/client/gen/client.gen.go
-generate:
-  models: true
-  client: true
-output-options:
-  skip-prune: true

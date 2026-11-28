@@ -1,8 +1,19 @@
 package migrations
 
-import "embed"
+import (
+	"embed"
+	"io/fs"
 
-// FS embeds forward-only goose SQL migrations for both SQLite and PostgreSQL (D2 §1.3, G1 §6.3).
-//
+	"github.com/kinstall/kinstall/pkg/platform/db"
+)
+
 //go:embed sqlite/*.sql postgres/*.sql
-var FS embed.FS
+var rawFS embed.FS
+
+// ForDialect returns the embedded migration sub-filesystem for the given SQL dialect.
+func ForDialect(d db.Dialect) (fs.FS, error) {
+	if d == db.DialectPostgres {
+		return fs.Sub(rawFS, "postgres")
+	}
+	return fs.Sub(rawFS, "sqlite")
+}

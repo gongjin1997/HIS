@@ -5,289 +5,376 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/kinstall/kinstall/internal/domain"
+	"github.com/kinstall/kinstall/pkg/platform/id"
 )
 
-// EnsureDefaults idempotently seeds enterprise bk-cmdb / VeOps / NetBox built-in meta-models,
-// attribute schemas, model relations, service templates, dual topology roots, sample rack & IPAM prefix.
-func (s *Service) EnsureDefaults(ctx context.Context, projectID string) error {
-	if projectID == "" {
-		return nil
-	}
-	var existing int
-	if err := s.readDB.ScanRaw(ctx, `SELECT COUNT(1) FROM cmdb_models WHERE project_id = ?`, []any{projectID}, &existing); err == nil && existing > 0 {
-		return nil
-	}
+func nowISO() string {
+	return time.Now().UTC().Format(time.RFC3339)
+}
 
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+func mustJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+// EnsureSeeded populates the built-in dynamic CMDB meta-models, dual topology, starter CIs, 42U rack, and IPAM prefix.
+func (s *Service) EnsureSeeded(ctx context.Context, wsID string) error {
+	var cnt int
+	if err := s.store.QueryRow(ctx, `SELECT COUNT(1) FROM cmdb_models WHERE workspace_id = ?`, wsID).Scan(&cnt); err != nil {
+		return err
+	}
+	if cnt > 0 {
+		return nil
+	}
+	now := nowISO()
 
 	groups := []struct {
 		code, name string
-		sort       int
+		order      int
 	}{
-		{"t_biz", "业务与组织拓扑", 1},
-		{"t_host", "计算与主机资产", 2},
-		{"t_mid", "数据库与中间件", 3},
-		{"t_net", "网络设备与域名", 4},
-		{"t_dcim", "机房与基础设施", 5},
-		{"t_app", "应用与进程实例", 6},
+		{"compute", "计算与主机资源", 10},
+		{"database", "数据库与存储", 20},
+		{"middleware", "中间件与缓存", 30},
+		{"application", "业务应用与服务", 40},
+		{"network", "机房与网络设施", 50},
+		{"security", "域名与安全证书", 60},
 	}
 	for _, g := range groups {
-		_, _ = s.writeDB.ExecRaw(ctx,
-			`INSERT INTO cmdb_model_groups (id, project_id, code, name, sort_order, is_builtin, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (project_id, code) DO NOTHING`,
-			domain.NewID("mgrp"), projectID, g.code, g.name, g.sort, true, now,
+		_, _ = s.store.Exec(ctx,
+			`INSERT INTO cmdb_model_groups(id, workspace_id, code, name, sort_order, created_at) VALUES(?,?,?,?,?,?)`,
+			id.New("mgrp"), wsID, g.code, g.name, g.order, now,
 		)
 	}
 
 	models := []struct {
 		group, code, name, icon, desc string
 		x, y                          float64
-		mainline                      bool
-		parent                        string
 	}{
-		{"t_biz", "m_biz", "业务系统", "Building2", "企业级核心业务域（如 HIS 门诊、急诊、支付核心）", 60, 40, true, ""},
-		{"t_biz", "m_set", "集群环境", "Layers", "业务下属集群/环境划分（如 prod-az1、uat-core）", 320, 40, true, "m_biz"},
-		{"t_biz", "m_module", "服务模块", "Boxes", "微服务或组件逻辑模块，支持绑定标准化服务模板", 580, 40, true, "m_set"},
-		{"t_host", "m_host", "主机节点", "Server", "物理机/虚拟机/国产信创主机，支持 SSH 与 Agent 双模采集", 580, 230, false, ""},
-		{"t_app", "m_process", "服务进程", "Cpu", "运行在主机上的守护进程、监听端口与启停定义", 860, 230, false, ""},
-		{"t_mid", "m_database", "数据库实例", "Database", "PostgreSQL / MySQL / 达梦 / OpenGauss 等核心数据库 CI", 320, 410, false, ""},
-		{"t_mid", "m_middleware", "中间件服务", "Workflow", "Valkey / Kafka / Nginx / OpenSearch 等中间件资产", 580, 410, false, ""},
-		{"t_net", "m_domain", "域名与证书", "Globe", "外部/内网业务域名、TLS 证书到期日与上游映射", 860, 40, false, ""},
-		{"t_dcim", "m_site", "机房数据中心", "Landmark", "IDC 数据中心物理站点与地区归属", 60, 230, false, ""},
-		{"t_dcim", "m_rack", "物理机柜", "HardDrive", "标准 42U 物理机柜，支持 U 位立面图与功率监控", 320, 230, false, ""},
-		{"t_net", "m_switch", "网络交换机", "Network", "核心/接入交换机、防火墙与负载均衡网络设备", 60, 410, false, ""},
+		{"network", "m_datacenter", "数据中心/机房", "building", "物理机房与园区设施", 60, 40},
+		{"network", "m_rack", "机柜 (42U)", "server", "机房物理机柜与供电单元", 300, 40},
+		{"network", "m_network_dev", "网络设备", "network", "核心交换机/防火墙/负载均衡器", 560, 40},
+		{"compute", "m_host", "主机节点", "cpu", "统一计算主机资产（支持 Agent/SSH 双模执行与遥测）", 300, 210},
+		{"compute", "m_k8s_cluster", "K8s 集群", "layers", "容器编排集群与工作节点池", 580, 210},
+		{"database", "m_database", "数据库实例", "database", "PostgreSQL / MySQL / Oracle 等关系型数据库", 120, 390},
+		{"middleware", "m_middleware", "中间件服务", "boxes", "Valkey / Kafka / OpenSearch / Nginx", 360, 390},
+		{"database", "m_storage", "对象/块存储", "hard-drive", "MinIO / Ceph / SAN 存储池", 610, 390},
+		{"application", "m_app", "业务应用服务", "app-window", "核心微服务与业务应用系统", 240, 560},
+		{"security", "m_domain", "域名/入口路由", "globe", "DNS 域名与 Ingress 网关入口", 500, 560},
+		{"security", "m_cert", "TLS 证书", "shield-check", "HTTPS 证书与过期巡检台账", 750, 560},
 	}
 	for _, m := range models {
-		_, _ = s.writeDB.ExecRaw(ctx,
-			`INSERT INTO cmdb_models (id, project_id, group_code, code, name, icon, description, pos_x, pos_y, is_builtin, is_mainline, mainline_parent_code, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (project_id, code) DO NOTHING`,
-			domain.NewID("mdl"), projectID, m.group, m.code, m.name, m.icon, m.desc, m.x, m.y, true, m.mainline, m.parent, now, now,
+		_, _ = s.store.Exec(ctx,
+			`INSERT INTO cmdb_models(id, workspace_id, group_code, code, name, icon, description, is_builtin, pos_x, pos_y, created_at, updated_at)
+			 VALUES(?,?,?,?,?,?,?,1,?,?,?,?)`,
+			id.New("mdl"), wsID, m.group, m.code, m.name, m.icon, m.desc, m.x, m.y, now, now,
 		)
 	}
 
-	type attrSeed struct {
-		model, group, propID, propName string
-		ft                             FieldType
-		unit                           string
-		req, ro, uniq                  bool
-		enums                          []string
-		source, collector              string
-	}
-	attrs := []attrSeed{
-		// m_biz
-		{"m_biz", "基础属性", "biz_code", "业务编码", FieldString, "", true, false, true, nil, "manual", ""},
-		{"m_biz", "基础属性", "sla_tier", "SLA 等级", FieldEnum, "", true, false, false, []string{"Tier-0 核心", "Tier-1 重要", "Tier-2 常规"}, "manual", ""},
-		{"m_biz", "运维属性", "dept", "归属部门", FieldString, "", false, false, false, nil, "manual", ""},
+	attrs := []struct {
+		model, key, name, ftype, grp, def string
+		req, uniq                         int
+		opts                              []string
+		order                             int
+	}{
 		// m_host
-		{"m_host", "网络与定位", "inner_ip", "内网 IP", FieldIP, "", true, false, true, nil, "collect", "os_info"},
-		{"m_host", "硬件规格", "os_distro", "操作系统", FieldString, "", false, false, false, nil, "collect", "os_info"},
-		{"m_host", "硬件规格", "cpu_cores", "CPU 核数", FieldInt, "vCPU", false, false, false, nil, "collect", "cpu_info"},
-		{"m_host", "硬件规格", "mem_gb", "内存容量", FieldDouble, "GiB", false, false, false, nil, "collect", "mem_info"},
-		{"m_host", "硬件规格", "disk_gb", "系统盘容量", FieldInt, "GiB", false, false, false, nil, "collect", "disk_info"},
-		{"m_host", "物理位置", "arch", "CPU 架构", FieldEnum, "", false, false, false, []string{"amd64", "arm64", "loong64"}, "collect", "os_info"},
-		{"m_host", "物理位置", "rack_slot", "机柜 U 位", FieldString, "", false, false, false, nil, "manual", ""},
+		{"m_host", "ip", "管理 IP", "ip", "网络与连接", "", 1, 1, nil, 10},
+		{"m_host", "zone", "可用区/安全域", "enum", "网络与连接", "prod-core", 0, 0, []string{"prod-core", "dmz-edge", "staging-zone", "dr-backup"}, 20},
+		{"m_host", "os", "操作系统", "string", "系统规格", "Ubuntu 24.04 LTS", 0, 0, nil, 30},
+		{"m_host", "arch", "CPU 架构", "enum", "系统规格", "amd64", 0, 0, []string{"amd64", "arm64"}, 40},
+		{"m_host", "cpu_cores", "CPU 核数", "int", "系统规格", "8", 0, 0, nil, 50},
+		{"m_host", "mem_gb", "内存 (GB)", "int", "系统规格", "32", 0, 0, nil, 60},
+		{"m_host", "sn", "资产序列号", "string", "维保资产", "", 0, 0, nil, 70},
 		// m_database
-		{"m_database", "基础属性", "engine", "数据库引擎", FieldEnum, "", true, false, false, []string{"PostgreSQL", "MySQL", "MariaDB", "OpenGauss", "MongoDB", "DM8"}, "manual", ""},
-		{"m_database", "基础属性", "version", "版本号", FieldString, "", true, false, false, nil, "manual", ""},
-		{"m_database", "网络属性", "endpoint", "连接地址", FieldString, "", true, false, true, nil, "manual", ""},
-		{"m_database", "网络属性", "port", "监听端口", FieldInt, "", true, false, false, nil, "manual", ""},
-		{"m_database", "高可用", "ha_mode", "部署架构", FieldEnum, "", false, false, false, []string{"standalone", "primary-replica", "patroni-ha", "cluster"}, "manual", ""},
+		{"m_database", "engine", "数据库引擎", "enum", "运行规格", "PostgreSQL", 1, 0, []string{"PostgreSQL", "MySQL", "Oracle", "TiDB", "MongoDB"}, 10},
+		{"m_database", "version", "版本号", "string", "运行规格", "16.4", 0, 0, nil, 20},
+		{"m_database", "port", "监听端口", "int", "运行规格", "5432", 1, 0, nil, 30},
+		{"m_database", "role", "主从角色", "enum", "高可用", "primary", 0, 0, []string{"primary", "replica", "standalone"}, 40},
+		{"m_database", "endpoint", "连接地址", "string", "运行规格", "", 0, 0, nil, 50},
 		// m_middleware
-		{"m_middleware", "基础属性", "product", "组件类型", FieldEnum, "", true, false, false, []string{"Nginx", "Valkey/Redis", "Kafka", "RabbitMQ", "OpenSearch", "MinIO", "Harbor"}, "manual", ""},
-		{"m_middleware", "基础属性", "version", "版本号", FieldString, "", false, false, false, nil, "manual", ""},
-		{"m_middleware", "网络属性", "endpoint", "访问端点", FieldString, "", true, false, false, nil, "manual", ""},
-		{"m_middleware", "高可用", "deploy_target", "部署形态", FieldEnum, "", false, false, false, []string{"host-binary", "host-container", "kubernetes"}, "manual", ""},
+		{"m_middleware", "kind", "组件类型", "enum", "运行规格", "Valkey", 1, 0, []string{"Valkey", "Redis", "Kafka", "Nginx", "OpenSearch", "RabbitMQ"}, 10},
+		{"m_middleware", "version", "版本号", "string", "运行规格", "8.0", 0, 0, nil, 20},
+		{"m_middleware", "port", "服务端口", "int", "运行规格", "6379", 1, 0, nil, 30},
+		{"m_middleware", "cluster_mode", "集群形态", "enum", "高可用", "sentinel", 0, 0, []string{"standalone", "sentinel", "cluster", "kraft"}, 40},
+		// m_app
+		{"m_app", "language", "技术栈", "enum", "应用属性", "Java", 0, 0, []string{"Java", "Go", "Node.js", "Python", ".NET"}, 10},
+		{"m_app", "version", "发布版本", "string", "应用属性", "v2.4.0", 0, 0, nil, 20},
+		{"m_app", "port", "服务端口", "int", "应用属性", "8080", 0, 0, nil, 30},
+		{"m_app", "sla_tier", "SLA 等级", "enum", "业务属性", "P0", 0, 0, []string{"P0", "P1", "P2"}, 40},
+		// m_network_dev
+		{"m_network_dev", "vendor", "厂商", "enum", "设备规格", "Huawei", 0, 0, []string{"Huawei", "H3C", "Cisco", "Ruijie", "F5"}, 10},
+		{"m_network_dev", "mgmt_ip", "管理 IP", "ip", "网络属性", "", 1, 1, nil, 20},
+		{"m_network_dev", "role", "设备角色", "enum", "设备规格", "ToR 接入交换机", 0, 0, []string{"核心交换机", "ToR 接入交换机", "下一代防火墙", "负载均衡器"}, 30},
 		// m_domain
-		{"m_domain", "基础属性", "fqdn", "完整域名", FieldString, "", true, false, true, nil, "manual", ""},
-		{"m_domain", "证书治理", "tls_enabled", "启用 HTTPS", FieldBool, "", false, false, false, nil, "manual", ""},
-		{"m_domain", "证书治理", "cert_expire_date", "证书到期日", FieldDate, "", false, false, false, nil, "manual", ""},
-		{"m_domain", "网络属性", "upstream_vip", "上游 VIP/网关", FieldIP, "", false, false, false, nil, "manual", ""},
-		// m_switch
-		{"m_switch", "基础属性", "mgmt_ip", "管理 IP", FieldIP, "", true, false, true, nil, "manual", ""},
-		{"m_switch", "基础属性", "vendor", "设备厂商", FieldEnum, "", false, false, false, []string{"Huawei", "H3C", "Cisco", "Ruijie", "Arista"}, "manual", ""},
-		{"m_switch", "物理属性", "ports_count", "端口数量", FieldInt, "口", false, false, false, nil, "manual", ""},
-		// m_process
-		{"m_process", "运行属性", "binary_name", "进程名", FieldString, "", true, false, false, nil, "scan", "process_scan"},
-		{"m_process", "运行属性", "listen_port", "监听端口", FieldInt, "", false, false, false, nil, "scan", "ports_scan"},
-		{"m_process", "运行属性", "run_user", "运行账号", FieldString, "", false, false, false, nil, "scan", "os_users"},
-		// m_site / m_rack
-		{"m_site", "位置属性", "city", "所在城市", FieldString, "", true, false, false, nil, "manual", ""},
-		{"m_site", "位置属性", "tier", "机房等级", FieldEnum, "", false, false, false, []string{"T3+", "T3", "T2", "边缘机房"}, "manual", ""},
-		{"m_rack", "物理属性", "site_name", "所属机房", FieldString, "", true, false, false, nil, "manual", ""},
-		{"m_rack", "物理属性", "u_height", "总 U 高", FieldInt, "U", false, false, false, nil, "manual", ""},
+		{"m_domain", "fqdn", "完整域名", "string", "域名配置", "", 1, 1, nil, 10},
+		{"m_domain", "target_vip", "解析 VIP", "ip", "域名配置", "", 0, 0, nil, 20},
+		{"m_domain", "tls_enabled", "启用 HTTPS", "bool", "安全属性", "true", 0, 0, nil, 30},
 	}
-	for i, a := range attrs {
-		enumsB, _ := json.Marshal(a.enums)
-		if len(a.enums) == 0 {
-			enumsB = []byte("[]")
+	for _, a := range attrs {
+		opts := a.opts
+		if opts == nil {
+			opts = make([]string, 0)
 		}
-		_, _ = s.writeDB.ExecRaw(ctx,
-			`INSERT INTO cmdb_model_attributes (id, project_id, model_code, attr_group, prop_id, prop_name, field_type, unit, required, readonly, is_unique, display, enum_options_json, default_value, source_kind, collector_plugin_id, sort_order)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?) ON CONFLICT (project_id, model_code, prop_id) DO NOTHING`,
-			domain.NewID("mattr"), projectID, a.model, a.group, a.propID, a.propName, string(a.ft), a.unit, a.req, a.ro, a.uniq, true, string(enumsB), a.source, a.collector, i+1,
+		_, _ = s.store.Exec(ctx,
+			`INSERT INTO cmdb_model_attrs(id, workspace_id, model_code, attr_key, name, field_type, group_name, required, readonly, is_unique, default_value, options_json, sort_order, created_at)
+			 VALUES(?,?,?,?,?,?,?,?,0,?,?,?,?,?)`,
+			id.New("attr"), wsID, a.model, a.key, a.name, a.ftype, a.grp, a.req, a.uniq, a.def, mustJSON(opts), a.order, now,
 		)
 	}
 
-	rels := []struct{ src, tgt, rtype, label, kind string }{
-		{"m_biz", "m_set", "contains", "包含集群", "1:N"},
-		{"m_set", "m_module", "contains", "包含模块", "1:N"},
-		{"m_module", "m_host", "runs_on", "部署主机", "N:N"},
-		{"m_host", "m_process", "hosts", "运行进程", "1:N"},
-		{"m_site", "m_rack", "contains", "容纳机柜", "1:N"},
-		{"m_rack", "m_host", "mounted_in", "上架主机", "1:N"},
-		{"m_rack", "m_switch", "mounted_in", "上架网元", "1:N"},
-		{"m_database", "m_host", "runs_on", "运行于", "N:N"},
-		{"m_middleware", "m_host", "runs_on", "运行于", "N:N"},
-		{"m_domain", "m_module", "routes_to", "路由至", "N:N"},
+	rels := []struct {
+		src, dst, code, name, card string
+	}{
+		{"m_rack", "m_datacenter", "located_in", "部署于机房", "N:1"},
+		{"m_host", "m_rack", "mounted_in", "上架于机柜", "N:1"},
+		{"m_host", "m_network_dev", "uplink_to", "上联至网络设备", "N:M"},
+		{"m_database", "m_host", "runs_on", "运行于主机", "N:1"},
+		{"m_middleware", "m_host", "runs_on", "运行于主机", "N:1"},
+		{"m_storage", "m_host", "runs_on", "运行于主机", "N:1"},
+		{"m_app", "m_host", "runs_on", "运行于主机", "N:M"},
+		{"m_app", "m_database", "depends_on", "依赖数据库", "N:M"},
+		{"m_app", "m_middleware", "depends_on", "依赖中间件", "N:M"},
+		{"m_domain", "m_app", "routes_to", "路由至应用", "N:M"},
+		{"m_domain", "m_cert", "protected_by", "绑定证书", "N:1"},
 	}
 	for _, r := range rels {
-		_, _ = s.writeDB.ExecRaw(ctx,
-			`INSERT INTO cmdb_model_relations (id, project_id, source_model, target_model, relation_type, label, mapping_kind, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (project_id, source_model, target_model, relation_type) DO NOTHING`,
-			domain.NewID("mrel"), projectID, r.src, r.tgt, r.rtype, r.label, r.kind, now,
+		_, _ = s.store.Exec(ctx,
+			`INSERT INTO cmdb_model_relations(id, workspace_id, source_model, target_model, relation_code, relation_name, cardinality, created_at)
+			 VALUES(?,?,?,?,?,?,?,?)`,
+			id.New("mrel"), wsID, r.src, r.dst, r.code, r.name, r.card, now,
 		)
 	}
 
-	// Default Service Templates (bk-cmdb style)
-	tpl1Proc, _ := json.Marshal([]ServiceTemplateProcess{
-		{Name: "nginx-gateway", Binary: "/usr/sbin/nginx", User: "www-data", BindPort: 80, Protocol: "TCP", HealthCheck: "http://127.0.0.1/healthz"},
-	})
-	tpl2Proc, _ := json.Marshal([]ServiceTemplateProcess{
-		{Name: "postgresql-primary", Binary: "/usr/lib/postgresql/bin/postgres", User: "postgres", BindPort: 5432, Protocol: "TCP", HealthCheck: "pg_isready -p 5432"},
-		{Name: "pgbouncer-pool", Binary: "/usr/bin/pgbouncer", User: "postgres", BindPort: 6432, Protocol: "TCP"},
-	})
-	_, _ = s.writeDB.ExecRaw(ctx,
-		`INSERT INTO cmdb_service_templates (id, project_id, name, category, description, processes_json, ports_json, default_params_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (project_id, name) DO NOTHING`,
-		domain.NewID("stpl"), projectID, "标准 Web 接入网关模板", "接入层", "统一 Nginx / OpenResty 80/443 接入进程与健康探针基线", string(tpl1Proc), `[80,443]`, `{"worker_processes":"auto"}`, now, now,
+	// Seed 2 Service Templates
+	tplJavaID := id.New("stpl")
+	tplPgID := id.New("stpl")
+	_, _ = s.store.Exec(ctx,
+		`INSERT INTO cmdb_service_templates(id, workspace_id, code, name, category, ports_json, processes_json, env_defaults_json, description, created_at, updated_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		tplJavaID, wsID, "his-java-svc", "HIS 核心 Java 微服务模板", "application",
+		mustJSON([]int{8080, 9100}), mustJSON([]string{"java -jar his-core.jar", "node_exporter"}),
+		mustJSON(map[string]string{"SPRING_PROFILES_ACTIVE": "prod", "JVM_XMX": "4g"}),
+		"标准 Spring Boot 业务微服务进程与端口规范", now, now,
 	)
-	_, _ = s.writeDB.ExecRaw(ctx,
-		`INSERT INTO cmdb_service_templates (id, project_id, name, category, description, processes_json, ports_json, default_params_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (project_id, name) DO NOTHING`,
-		domain.NewID("stpl"), projectID, "核心 PostgreSQL 高可用服务模板", "数据层", "PostgreSQL 主库 + PgBouncer 连接池进程标准模板", string(tpl2Proc), `[5432,6432]`, `{"max_connections":500}`, now, now,
+	_, _ = s.store.Exec(ctx,
+		`INSERT INTO cmdb_service_templates(id, workspace_id, code, name, category, ports_json, processes_json, env_defaults_json, description, created_at, updated_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		tplPgID, wsID, "pg-ha-cluster", "PostgreSQL 高可用数据库模板", "database",
+		mustJSON([]int{5432, 9187}), mustJSON([]string{"postgres", "patroni", "postgres_exporter"}),
+		mustJSON(map[string]string{"PG_MAX_CONNECTIONS": "500", "PG_SHARED_BUFFERS": "4GB"}),
+		"主从流复制 + Patroni 自动故障切换标准模板", now, now,
 	)
 
-	// Default Dual Topology starter tree (Business Mainline + Resource Infrastructure)
-	var topoCnt int
-	_ = s.readDB.ScanRaw(ctx, `SELECT COUNT(1) FROM cmdb_topology_nodes WHERE project_id = ?`, []any{projectID}, &topoCnt)
-	if topoCnt == 0 {
-		bizID := domain.NewID("topo")
-		setProdID := domain.NewID("topo")
-		modWebID := domain.NewID("topo")
-		modDBID := domain.NewID("topo")
-		siteID := domain.NewID("topo")
-		zoneCoreID := domain.NewID("topo")
-		zoneDMZID := domain.NewID("topo")
+	// Seed BlueKing Dual Topology Trees
+	bizID := id.New("topo")
+	setCoreID := id.New("topo")
+	modHisID := id.New("topo")
+	modDbID := id.New("topo")
+	modCacheID := id.New("topo")
 
-		nodes := []struct {
-			id, kind, parent, model, name string
-			sort                          int
-		}{
-			{bizID, "business", "", "m_biz", "核心业务域 (Core)", 1},
-			{setProdID, "business", bizID, "m_set", "生产主集群 (prod-az1)", 1},
-			{modWebID, "business", setProdID, "m_module", "前端网关与接入模块", 1},
-			{modDBID, "business", setProdID, "m_module", "核心数据库与缓存模块", 2},
-			{siteID, "resource", "", "m_site", "北京亦庄主数据中心 (BJ-IDC-01)", 1},
-			{zoneCoreID, "resource", siteID, "m_rack", "核心数据区 · A01 机柜", 1},
-			{zoneDMZID, "resource", siteID, "m_rack", "DMZ 接入区 · B02 机柜", 2},
+	orgID := id.New("topo")
+	regEastID := id.New("topo")
+	zoneProdID := id.New("topo")
+	zoneDmzID := id.New("topo")
+
+	topoNodes := []struct {
+		id, tree, parent, ntype, name, code, tpl string
+		order                                    int
+	}{
+		{bizID, "business", "", "biz", "智慧医院核心平台 (HIS)", "biz-his", "", 10},
+		{setCoreID, "business", bizID, "set", "门急诊与临床核心集群", "set-clinical", "", 20},
+		{modHisID, "business", setCoreID, "module", "核心业务交易模块", "mod-his-app", tplJavaID, 30},
+		{modDbID, "business", setCoreID, "module", "核心数据库主从模块", "mod-his-db", tplPgID, 40},
+		{modCacheID, "business", setCoreID, "module", "分布式缓存与消息模块", "mod-his-cache", "", 50},
+
+		{orgID, "resource", "", "org", "总院基础设施部", "org-infra", "", 10},
+		{regEastID, "resource", orgID, "region", "华东主数据中心", "reg-east-01", "", 20},
+		{zoneProdID, "resource", regEastID, "zone", "生产核心安全域 (Core)", "zone-prod-core", "", 30},
+		{zoneDmzID, "resource", regEastID, "zone", "边界接入区 (DMZ)", "zone-dmz-edge", "", 40},
+	}
+	for _, n := range topoNodes {
+		_, _ = s.store.Exec(ctx,
+			`INSERT INTO cmdb_topology_nodes(id, workspace_id, tree_type, parent_id, node_type, name, code, service_template_id, labels_json, sort_order, created_at, updated_at)
+			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+			n.id, wsID, n.tree, n.parent, n.ntype, n.name, n.code, n.tpl, "{}", n.order, now, now,
+		)
+	}
+
+	// Seed Starter Unified CIs (Host = m_host CI + cmdb_host_endpoints!)
+	hostApp1, _ := s.UpsertHostCI(ctx, wsID, "system", UpsertCIRequest{
+		ModelCode: "m_host",
+		UniqueKey: "10.20.10.11",
+		Name:      "his-app-prod-01",
+		Env:       "prod",
+		Status:    "active",
+		Owner:     "SRE 核心组",
+		Tags:      []string{"prod", "his-app", "core"},
+		Data: map[string]any{
+			"ip": "10.20.10.11", "zone": "prod-core", "os": "Ubuntu 24.04 LTS",
+			"arch": "amd64", "cpu_cores": 16, "mem_gb": 64, "sn": "SN-DELL-R760-0011",
+		},
+		Host: &HostEndpoint{
+			IP: "10.20.10.11", SSHPort: 22, SSHUser: "root", ExecMode: "auto",
+			AgentStatus: "OFFLINE", OSFamily: "ubuntu", OSVersion: "24.04 LTS", Kernel: "6.8.0-generic",
+			Arch: "amd64", CPUCores: 16, MemMB: 65536, DiskGB: 1000, LoadAvg: "0.42 0.38 0.35",
+			CPUUsagePct: 24.5, MemUsagePct: 48.2,
+		},
+	})
+	hostDb1, _ := s.UpsertHostCI(ctx, wsID, "system", UpsertCIRequest{
+		ModelCode: "m_host",
+		UniqueKey: "10.20.10.21",
+		Name:      "his-pg-prod-01",
+		Env:       "prod",
+		Status:    "active",
+		Owner:     "DBA 团队",
+		Tags:      []string{"prod", "database", "ssd"},
+		Data: map[string]any{
+			"ip": "10.20.10.21", "zone": "prod-core", "os": "Rocky Linux 9.4",
+			"arch": "amd64", "cpu_cores": 32, "mem_gb": 128, "sn": "SN-H3C-R4900-0021",
+		},
+		Host: &HostEndpoint{
+			IP: "10.20.10.21", SSHPort: 22, SSHUser: "root", ExecMode: "auto",
+			AgentStatus: "OFFLINE", OSFamily: "rocky", OSVersion: "9.4", Kernel: "5.14.0-427",
+			Arch: "amd64", CPUCores: 32, MemMB: 131072, DiskGB: 4000, LoadAvg: "1.15 1.02 0.96",
+			CPUUsagePct: 36.8, MemUsagePct: 62.4,
+		},
+	})
+	hostEdge1, _ := s.UpsertHostCI(ctx, wsID, "system", UpsertCIRequest{
+		ModelCode: "m_host",
+		UniqueKey: "10.20.10.31",
+		Name:      "his-gw-dmz-01",
+		Env:       "prod",
+		Status:    "active",
+		Owner:     "网络与安全组",
+		Tags:      []string{"prod", "dmz", "arm64"},
+		Data: map[string]any{
+			"ip": "10.20.10.31", "zone": "dmz-edge", "os": "Kylin V10 SP3",
+			"arch": "arm64", "cpu_cores": 8, "mem_gb": 32, "sn": "SN-KP920-0031",
+		},
+		Host: &HostEndpoint{
+			IP: "10.20.10.31", SSHPort: 22, SSHUser: "root", ExecMode: "auto",
+			AgentStatus: "OFFLINE", OSFamily: "kylin", OSVersion: "V10 SP3", Kernel: "4.19.90-52",
+			Arch: "arm64", CPUCores: 8, MemMB: 32768, DiskGB: 500, LoadAvg: "0.21 0.19 0.18",
+			CPUUsagePct: 14.2, MemUsagePct: 31.0,
+		},
+	})
+
+	dbCI, _ := s.CreateCI(ctx, wsID, "system", UpsertCIRequest{
+		ModelCode: "m_database",
+		UniqueKey: "pg-his-core-primary",
+		Name:      "HIS 主账务 PostgreSQL 16",
+		Env:       "prod",
+		Status:    "active",
+		Owner:     "DBA 团队",
+		Tags:      []string{"p0", "ha-primary"},
+		Data:      map[string]any{"engine": "PostgreSQL", "version": "16.4", "port": 5432, "role": "primary", "endpoint": "10.20.10.21:5432"},
+	})
+	cacheCI, _ := s.CreateCI(ctx, wsID, "system", UpsertCIRequest{
+		ModelCode: "m_middleware",
+		UniqueKey: "valkey-his-session",
+		Name:      "HIS 分布式会话 Valkey 8",
+		Env:       "prod",
+		Status:    "active",
+		Owner:     "中间件组",
+		Tags:      []string{"cache", "sentinel"},
+		Data:      map[string]any{"kind": "Valkey", "version": "8.0", "port": 6379, "cluster_mode": "sentinel"},
+	})
+	appCI, _ := s.CreateCI(ctx, wsID, "system", UpsertCIRequest{
+		ModelCode: "m_app",
+		UniqueKey: "his-clinical-gateway",
+		Name:      "门急诊核心交易网关",
+		Env:       "prod",
+		Status:    "active",
+		Owner:     "临床研发中心",
+		Tags:      []string{"p0", "spring-boot"},
+		Data:      map[string]any{"language": "Java", "version": "v3.2.1", "port": 8080, "sla_tier": "P0"},
+	})
+	netCI, _ := s.CreateCI(ctx, wsID, "system", UpsertCIRequest{
+		ModelCode: "m_network_dev",
+		UniqueKey: "sw-core-ce6865-01",
+		Name:      "华东核心交换机 CE6865-01",
+		Env:       "prod",
+		Status:    "active",
+		Owner:     "网络与安全组",
+		Tags:      []string{"core-switch", "100g"},
+		Data:      map[string]any{"vendor": "Huawei", "mgmt_ip": "10.20.10.1", "role": "核心交换机"},
+	})
+
+	// Bind starter hosts into both Business & Resource topology trees
+	if hostApp1 != nil {
+		_ = s.BindCIToTopoNode(ctx, wsID, hostApp1.ID, modHisID)
+		_ = s.BindCIToTopoNode(ctx, wsID, hostApp1.ID, zoneProdID)
+	}
+	if hostDb1 != nil {
+		_ = s.BindCIToTopoNode(ctx, wsID, hostDb1.ID, modDbID)
+		_ = s.BindCIToTopoNode(ctx, wsID, hostDb1.ID, zoneProdID)
+	}
+	if hostEdge1 != nil {
+		_ = s.BindCIToTopoNode(ctx, wsID, hostEdge1.ID, modCacheID)
+		_ = s.BindCIToTopoNode(ctx, wsID, hostEdge1.ID, zoneDmzID)
+	}
+
+	// Build real multi-hop CI lineage edges
+	if appCI != nil && hostApp1 != nil {
+		_, _ = s.CreateCIRelation(ctx, wsID, appCI.ID, hostApp1.ID, "runs_on", "部署运行于生产应用主机")
+	}
+	if dbCI != nil && hostDb1 != nil {
+		_, _ = s.CreateCIRelation(ctx, wsID, dbCI.ID, hostDb1.ID, "runs_on", "运行于数据库物理机")
+	}
+	if cacheCI != nil && hostEdge1 != nil {
+		_, _ = s.CreateCIRelation(ctx, wsID, cacheCI.ID, hostEdge1.ID, "runs_on", "运行于边缘缓存节点")
+	}
+	if appCI != nil && dbCI != nil {
+		_, _ = s.CreateCIRelation(ctx, wsID, appCI.ID, dbCI.ID, "depends_on", "核心账务强依赖")
+	}
+	if appCI != nil && cacheCI != nil {
+		_, _ = s.CreateCIRelation(ctx, wsID, appCI.ID, cacheCI.ID, "depends_on", "会话与号源缓存依赖")
+	}
+	if hostApp1 != nil && netCI != nil {
+		_, _ = s.CreateCIRelation(ctx, wsID, hostApp1.ID, netCI.ID, "uplink_to", "双 25GE 上联")
+	}
+
+	// Seed Starter Dynamic Group
+	_, _ = s.CreateDynamicGroup(ctx, wsID, "生产核心 Linux 主机池", "m_host", []DynamicCondition{
+		{Field: "env", Op: "eq", Value: "prod"},
+		{Field: "zone", Op: "eq", Value: "prod-core"},
+	}, "自动匹配生产核心安全域下的全部主机资产，可直接作为批量作业目标")
+
+	// Seed Starter 42U DCIM Rack & Mounted Devices
+	rack, err := s.CreateRack(ctx, wsID, "华东主数据中心 (IDC-SH01)", "A 区 302 机房", "RACK-A01", 42, 12.0, "核心 HIS 生产机柜（双路 UPS）")
+	if err == nil && rack != nil {
+		if netCI != nil {
+			_, _ = s.MountRackUnit(ctx, wsID, rack.ID, netCI.ID, netCI.Name, "m_network_dev", 41, 2, "front", 320, "info")
 		}
-		for _, n := range nodes {
-			_, _ = s.writeDB.ExecRaw(ctx,
-				`INSERT INTO cmdb_topology_nodes (id, project_id, topo_kind, parent_id, model_code, name, service_template_id, metadata_json, sort_order, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, '', '{}', ?, ?)`,
-				n.id, projectID, n.kind, n.parent, n.model, n.name, n.sort, now,
-			)
+		if hostApp1 != nil {
+			_, _ = s.MountRackUnit(ctx, wsID, rack.ID, hostApp1.ID, hostApp1.Name, "m_host", 28, 2, "front", 550, "primary")
+		}
+		if hostDb1 != nil {
+			_, _ = s.MountRackUnit(ctx, wsID, rack.ID, hostDb1.ID, hostDb1.Name, "m_host", 22, 4, "front", 850, "warn")
+		}
+		if hostEdge1 != nil {
+			_, _ = s.MountRackUnit(ctx, wsID, rack.ID, hostEdge1.ID, hostEdge1.Name, "m_host", 16, 2, "front", 380, "ok")
 		}
 	}
 
-	// Default Starter Rack (42U) & IPAM Prefix so DCIM/IPAM view renders richly out of the box
-	var rackCnt int
-	_ = s.readDB.ScanRaw(ctx, `SELECT COUNT(1) FROM dcim_racks WHERE project_id = ?`, []any{projectID}, &rackCnt)
-	if rackCnt == 0 {
-		rackID := domain.NewID("rack")
-		_, _ = s.writeDB.ExecRaw(ctx,
-			`INSERT INTO dcim_racks (id, project_id, site_name, room_name, name, u_height, power_kw, status, notes, created_at)
-			 VALUES (?, ?, ?, ?, ?, 42, 10.0, 'active', '默认核心业务机柜（支持点击空 U 位直接上架设备）', ?)`,
-			rackID, projectID, "BJ-IDC-01", "A区主机房", "A01-CORE", now,
-		)
-		starterUnits := []struct {
-			name, role, color     string
-			startU, uSize, powerW int
-		}{
-			{"TOR-SW-A01-01 (万兆核心)", "switch", "accent", 41, 2, 320},
-			{"FW-DMZ-01 (下一代防火墙)", "firewall", "warn", 38, 2, 280},
-			{"k8s-ctrl-01 (管理控制面)", "server", "primary", 30, 2, 550},
-			{"pg-ha-primary-01 (核心数据库)", "server", "ok", 26, 4, 920},
-			{"san-storage-01 (全闪存阵列)", "storage", "info", 10, 4, 1200},
+	// Seed Starter IPAM CIDR Prefix & Allocated IPs
+	pfx, err := s.CreatePrefix(ctx, wsID, "10.20.10.0/24", 1020, "IDC-SH01", "vrf-prod", "10.20.10.1", "生产核心业务与数据库网段")
+	if err == nil && pfx != nil {
+		if netCI != nil {
+			_, _ = s.AllocateIP(ctx, wsID, pfx.ID, "10.20.10.1", "reserved", netCI.ID, "gw.prod.his.local", "网络与安全组", "核心网关 VIP")
 		}
-		for _, u := range starterUnits {
-			_, _ = s.writeDB.ExecRaw(ctx,
-				`INSERT INTO dcim_rack_units (id, project_id, rack_id, ci_id, device_name, device_role, start_u, u_size, power_w, status, color_tag, created_at)
-				 VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, 'active', ?, ?)`,
-				domain.NewID("ru"), projectID, rackID, u.name, u.role, u.startU, u.uSize, u.powerW, u.color, now,
-			)
+		if hostApp1 != nil {
+			_, _ = s.AllocateIP(ctx, wsID, pfx.ID, "10.20.10.11", "active", hostApp1.ID, "his-app-prod-01.his.local", "SRE 核心组", "核心应用主机")
+		}
+		if hostDb1 != nil {
+			_, _ = s.AllocateIP(ctx, wsID, pfx.ID, "10.20.10.21", "active", hostDb1.ID, "his-pg-prod-01.his.local", "DBA 团队", "PostgreSQL 主库")
+		}
+		if hostEdge1 != nil {
+			_, _ = s.AllocateIP(ctx, wsID, pfx.ID, "10.20.10.31", "active", hostEdge1.ID, "his-gw-dmz-01.his.local", "网络与安全组", "DMZ 接入网关")
 		}
 	}
 
-	var pfxCnt int
-	_ = s.readDB.ScanRaw(ctx, `SELECT COUNT(1) FROM ipam_prefixes WHERE project_id = ?`, []any{projectID}, &pfxCnt)
-	if pfxCnt == 0 {
-		pfxID := domain.NewID("pfx")
-		_, _ = s.writeDB.ExecRaw(ctx,
-			`INSERT INTO ipam_prefixes (id, project_id, cidr, vlan_id, vrf, site_name, gateway, role, description, created_at)
-			 VALUES (?, ?, '10.20.10.0/24', 110, 'prod-core', 'BJ-IDC-01', '10.20.10.1', 'business', '核心业务内网生产网段', ?)`,
-			pfxID, projectID, now,
-		)
-		starterIPs := []struct{ ip, st, host, desc string }{
-			{"10.20.10.1", "reserved", "gw-vlan110", "核心网关 VIP"},
-			{"10.20.10.10", "active", "k8s-ctrl-01", "控制面节点 01"},
-			{"10.20.10.20", "active", "pg-ha-primary-01", "核心 PostgreSQL 主库"},
-		}
-		for _, ip := range starterIPs {
-			_, _ = s.writeDB.ExecRaw(ctx,
-				`INSERT INTO ipam_addresses (id, project_id, prefix_id, ip_address, status, ci_id, host_id, hostname, mac_address, description, updated_at)
-				 VALUES (?, ?, ?, ?, ?, '', '', ?, '', ?, ?)`,
-				domain.NewID("ip"), projectID, pfxID, ip.ip, ip.st, ip.host, ip.desc, now,
-			)
-		}
-	}
-
-	// Default sample CI instances + lineage relations so CI graph works immediately
-	var ciCnt int
-	_ = s.readDB.ScanRaw(ctx, `SELECT COUNT(1) FROM cmdb_ci_instances WHERE project_id = ?`, []any{projectID}, &ciCnt)
-	if ciCnt == 0 {
-		bizCI := domain.NewID("ci")
-		hostCI := domain.NewID("ci")
-		dbCI := domain.NewID("ci")
-		domCI := domain.NewID("ci")
-		samples := []struct {
-			id, model, name, ukey, env, owner, attrs string
-		}{
-			{bizCI, "m_biz", "核心交易与门户系统", "biz-core-01", "prod", "platform-sre", `{"biz_code":"BIZ-CORE-01","sla_tier":"Tier-0 核心","dept":"基础架构部"}`},
-			{hostCI, "m_host", "prod-node-01", "10.20.10.10", "prod", "infra-ops", `{"inner_ip":"10.20.10.10","os_distro":"Ubuntu 24.04 LTS","cpu_cores":16,"mem_gb":64,"disk_gb":500,"arch":"amd64","rack_slot":"A01-U30"}`},
-			{dbCI, "m_database", "pg-core-prod", "10.20.10.20:5432", "prod", "dba-team", `{"engine":"PostgreSQL","version":"18.7","endpoint":"10.20.10.20:5432","port":5432,"ha_mode":"patroni-ha"}`},
-			{domCI, "m_domain", "portal.internal.corp", "portal.internal.corp", "prod", "net-ops", `{"fqdn":"portal.internal.corp","tls_enabled":true,"cert_expire_date":"2027-06-30","upstream_vip":"10.20.10.10"}`},
-		}
-		for _, c := range samples {
-			_, _ = s.writeDB.ExecRaw(ctx,
-				`INSERT INTO cmdb_ci_instances (id, project_id, model_code, name, unique_key, status, env, owner, attrs_json, version, created_by, created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, 1, 'system', ?, ?)`,
-				c.id, projectID, c.model, c.name, c.ukey, c.env, c.owner, c.attrs, now, now,
-			)
-		}
-		_, _ = s.writeDB.ExecRaw(ctx,
-			`INSERT INTO cmdb_ci_relations (id, project_id, source_ci_id, target_ci_id, relation_type, label, created_at) VALUES (?, ?, ?, ?, 'depends_on', '依赖数据库', ?)`,
-			domain.NewID("cirel"), projectID, bizCI, dbCI, now,
-		)
-		_, _ = s.writeDB.ExecRaw(ctx,
-			`INSERT INTO cmdb_ci_relations (id, project_id, source_ci_id, target_ci_id, relation_type, label, created_at) VALUES (?, ?, ?, ?, 'runs_on', '运行于主机', ?)`,
-			domain.NewID("cirel"), projectID, dbCI, hostCI, now,
-		)
-		_, _ = s.writeDB.ExecRaw(ctx,
-			`INSERT INTO cmdb_ci_relations (id, project_id, source_ci_id, target_ci_id, relation_type, label, created_at) VALUES (?, ?, ?, ?, 'routes_to', '入口流量路由', ?)`,
-			domain.NewID("cirel"), projectID, domCI, bizCI, now,
-		)
-	}
 	return nil
 }
