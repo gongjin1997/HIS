@@ -2,7 +2,6 @@
 import { onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  Activity,
   Building2,
   CheckCircle2,
   Gauge,
@@ -20,11 +19,8 @@ import { useScopeStore } from '@/stores/scope'
 
 interface OverviewData {
   probes: {
-    role: string
     version: string
     pid: string
-    started: boolean
-    draining: boolean
     db: boolean
     ready: boolean
     timeUtc: string
@@ -45,13 +41,11 @@ interface OverviewData {
     routes: number
   }
   routeVersion: number
-  auditChain: { valid: boolean; total: number; brokenAt: number }
+  auditChain: { valid: boolean; total: number }
   recentJobs: Array<{
     job_id: string
     name: string
     state: string
-    version: number
-    last_seq: number
     created_by: string
     created_at: string
   }>
@@ -61,6 +55,22 @@ const router = useRouter()
 const scope = useScopeStore()
 const loading = ref(false)
 const overview = ref<OverviewData | null>(null)
+
+function stateLabel(st: string) {
+  const map: Record<string, string> = {
+    SUCCEEDED: '已完成',
+    RUNNING: '执行中',
+    PENDING: '等待中',
+    FAILED: '执行失败',
+    CANCELLED: '已取消',
+  }
+  return map[st] || st
+}
+
+function fmtTime(iso: string) {
+  if (!iso) return '-'
+  return new Date(iso).toLocaleString('zh-CN', { hour12: false })
+}
 
 async function load() {
   loading.value = true
@@ -80,161 +90,131 @@ watch(() => [scope.tenantId, scope.appId], load)
   <div class="ks-page">
     <KsBanner
       title="平台运行总览"
-      description="LiveOps 企业级多租户底座与 KubeSphere 三级治理控制台：实时探活、核心资源计量、防篡改审计链与作业收敛态势。"
+      description="实时掌握全局企业空间、主机节点、资产台账、配置服务与近期发布任务运行状态。"
       :icon="Gauge"
-      :badge="overview?.probes?.ready ? 'Probes Ready' : 'Checking'"
+      :badge="overview?.probes?.ready ? '服务正常' : '检测中'"
     >
       <template #actions>
         <el-button :loading="loading" @click="load">
           <RefreshCw :size="14" />
-          <span class="ks-btn-gap">刷新态势</span>
+          <span class="ks-gap">刷新数据</span>
         </el-button>
         <el-button type="primary" @click="router.push('/project/jobs')">
           <Workflow :size="14" />
-          <span class="ks-btn-gap">前往 DAG 部署</span>
+          <span class="ks-gap">进入发布编排</span>
         </el-button>
       </template>
     </KsBanner>
 
-    <!-- Primary KubeSphere KPI Ribbon -->
     <div class="ks-kpi-grid">
       <div class="ks-kpi-card" @click="router.push('/platform/tenants')">
-        <div class="ks-kpi-card__icon ks-kpi-card__icon--ok"><Building2 :size="18" /></div>
+        <div class="ks-kpi-card__icon ks-icon--ok"><Building2 :size="18" /></div>
         <div>
           <div class="ks-kpi-card__val ki-num">{{ overview?.counts.tenants ?? 0 }}</div>
-          <div class="ks-kpi-card__label">企业空间 (Tenants)</div>
+          <div class="ks-kpi-card__label">企业空间</div>
         </div>
       </div>
 
       <div class="ks-kpi-card" @click="router.push('/platform/nodes')">
-        <div class="ks-kpi-card__icon ks-kpi-card__icon--blue"><Server :size="18" /></div>
+        <div class="ks-kpi-card__icon ks-icon--blue"><Server :size="18" /></div>
         <div>
           <div class="ks-kpi-card__val ki-num">
             {{ overview?.counts.nodesOnline ?? 0 }}<span class="ks-kpi-card__sub">/{{ overview?.counts.nodes ?? 0 }}</span>
           </div>
-          <div class="ks-kpi-card__label">在线零信任节点</div>
+          <div class="ks-kpi-card__label">在线主机节点</div>
         </div>
       </div>
 
       <div class="ks-kpi-card" @click="router.push('/project/assets')">
-        <div class="ks-kpi-card__icon ks-kpi-card__icon--ok"><GitFork :size="18" /></div>
+        <div class="ks-kpi-card__icon ks-icon--ok"><GitFork :size="18" /></div>
         <div>
           <div class="ks-kpi-card__val ki-num">{{ overview?.counts.cmdbAssets ?? 0 }}</div>
-          <div class="ks-kpi-card__label">CMDB 纳管资产 ({{ overview?.counts.cmdbModels ?? 0 }} 模型)</div>
+          <div class="ks-kpi-card__label">CMDB 纳管资产（{{ overview?.counts.cmdbModels ?? 0 }} 类模型）</div>
         </div>
       </div>
 
       <div class="ks-kpi-card" @click="router.push('/project/configs')">
-        <div class="ks-kpi-card__icon ks-kpi-card__icon--blue"><KeyRound :size="18" /></div>
+        <div class="ks-kpi-card__icon ks-icon--blue"><KeyRound :size="18" /></div>
         <div>
           <div class="ks-kpi-card__val ki-num">{{ overview?.counts.configs ?? 0 }}</div>
-          <div class="ks-kpi-card__label">KMS 配置集 ({{ overview?.counts.envs ?? 0 }} 环境)</div>
+          <div class="ks-kpi-card__label">应用配置集（{{ overview?.counts.envs ?? 0 }} 套环境）</div>
         </div>
       </div>
 
       <div class="ks-kpi-card" @click="router.push('/platform/gateway')">
-        <div class="ks-kpi-card__icon ks-kpi-card__icon--ok"><Network :size="18" /></div>
+        <div class="ks-kpi-card__icon ks-icon--ok"><Network :size="18" /></div>
         <div>
           <div class="ks-kpi-card__val ki-num">{{ overview?.counts.routes ?? 0 }}</div>
-          <div class="ks-kpi-card__label">动态路由 (v{{ overview?.routeVersion ?? 1 }})</div>
+          <div class="ks-kpi-card__label">活跃路由规则</div>
         </div>
       </div>
 
       <div class="ks-kpi-card" @click="router.push('/platform/audit')">
-        <div class="ks-kpi-card__icon ks-kpi-card__icon--ok"><ShieldCheck :size="18" /></div>
+        <div class="ks-kpi-card__icon ks-icon--ok"><ShieldCheck :size="18" /></div>
         <div>
           <div class="ks-kpi-card__val ki-num">{{ overview?.auditChain.total ?? 0 }}</div>
-          <div class="ks-kpi-card__label">
-            审计链 {{ overview?.auditChain.valid ? '验签通过' : '待校验' }}
-          </div>
+          <div class="ks-kpi-card__label">操作审计记录（{{ overview?.auditChain.valid ? '完整可信' : '待核验' }}）</div>
         </div>
       </div>
     </div>
 
-    <!-- Two-Column Runtime Health & LiveOps Foundation Guarantees -->
     <div class="ks-two-col">
       <div class="ki-card">
         <div class="ki-card__title">
-          <span>控制面健康探针 (K8s Probes)</span>
-          <span class="ki-badge ks-pill-ok">
-            <CheckCircle2 :size="13" />
-            <span>{{ overview?.probes?.ready ? 'READY' : 'INIT' }}</span>
-          </span>
+          <span>核心服务状态</span>
+          <span class="ki-badge ks-pill-ok"><CheckCircle2 :size="12" /><span>全部健康</span></span>
         </div>
-        <div class="kv-grid">
-          <div class="k">控制面角色</div>
-          <div class="ki-mono">{{ overview?.probes?.role || 'liveops-api' }}</div>
-          <div class="k">底座版本</div>
-          <div class="ki-mono">{{ overview?.probes?.version || 'liveops-foundation/1.0.0' }}</div>
-          <div class="k">进程 PID</div>
-          <div class="ki-mono">{{ overview?.probes?.pid || '-' }}</div>
-          <div class="k">数据库连通</div>
-          <div class="ki-text-ok">{{ overview?.probes?.db ? 'Healthy (WAL / RLS)' : 'Disconnected' }}</div>
-          <div class="k">探针端点</div>
-          <div class="full ki-mono">/startupz · /livez · /readyz · /healthy</div>
+        <div class="ks-svc-list">
+          <div class="ks-svc-row">
+            <div>
+              <div class="ks-svc-row__name">平台控制面服务</div>
+              <div class="ks-svc-row__sub">提供身份认证、多租户隔离与业务接口服务</div>
+            </div>
+            <span class="ki-badge ks-pill-ok">运行正常</span>
+          </div>
+          <div class="ks-svc-row">
+            <div>
+              <div class="ks-svc-row__name">元数据与事务存储引擎</div>
+              <div class="ks-svc-row__sub">保障资产台账、配置快照与作业状态强一致持久化</div>
+            </div>
+            <span class="ki-badge ks-pill-ok">{{ overview?.probes?.db ? '已连接' : '异常' }}</span>
+          </div>
+          <div class="ks-svc-row">
+            <div>
+              <div class="ks-svc-row__name">后台调度与健康巡检引擎</div>
+              <div class="ks-svc-row__sub">异步调度多阶段发布任务与节点心跳超时监测</div>
+            </div>
+            <span class="ki-badge ks-pill-ok">巡检中</span>
+          </div>
         </div>
       </div>
 
       <div class="ki-card">
         <div class="ki-card__title">
-          <span>LiveOps 底座不变量基线 (40/40 Verified)</span>
-          <span class="ki-badge ks-pill-blue">Hexagonal Clean Arch</span>
+          <span>近期发布记录</span>
+          <el-button size="small" @click="router.push('/project/jobs')">全部作业</el-button>
         </div>
-        <div class="ks-guarantee-list">
-          <div class="ks-guarantee-item">
-            <Activity :size="15" class="ks-g-icon" />
-            <div>
-              <div class="ks-g-title">D01–D19 作业与租约并发不变量</div>
-              <div class="ks-g-desc">Idempotency-Key 幂等重放、Kahn 成环检测、lease_epoch 围栏、Diamond Join 唯一解锁、Downstream SKIPPED 剪枝</div>
-            </div>
-          </div>
-          <div class="ks-guarantee-item">
-            <GitFork :size="15" class="ks-g-icon" />
-            <div>
-              <div class="ks-g-title">S01–S07 租户隔离、CMDB 双拓扑与配置锁</div>
-              <div class="ks-g-desc">Composite (tenant_id, app_id) 外键隔离、单父无环树、If-Match 428/412 强乐观锁与原子历史快照</div>
-            </div>
-          </div>
-          <div class="ks-guarantee-item">
-            <ShieldCheck :size="15" class="ks-g-icon" />
-            <div>
-              <div class="ks-g-title">G01–G05 &amp; U01–U09 网关原子切换与严格 SSE 游标</div>
-              <div class="ks-g-desc">默认路由单实例锁、制品 VERIFIED 晋升门禁、409/400/410 严格 Last-Event-ID 游标控制</div>
-            </div>
-          </div>
-        </div>
+        <el-table :data="overview?.recentJobs || []" size="small" empty-text="暂无发布作业记录">
+          <el-table-column prop="name" label="发布名称" min-width="180" />
+          <el-table-column label="状态" width="100">
+            <template #default="{ row }">
+              <span class="ki-badge" :class="row.state === 'SUCCEEDED' ? 'ks-pill-ok' : row.state === 'FAILED' ? 'ks-pill-danger' : 'ks-pill-blue'">
+                {{ stateLabel(row.state) }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="created_by" label="发起人" width="90" />
+          <el-table-column label="创建时间" width="160">
+            <template #default="{ row }"><span class="ki-muted">{{ fmtTime(row.created_at) }}</span></template>
+          </el-table-column>
+        </el-table>
       </div>
-    </div>
-
-    <!-- Recent Deploy Jobs -->
-    <div class="ki-card ks-mt">
-      <div class="ki-card__title">
-        <span>最近 DAG 部署作业 ({{ scope.appId }})</span>
-        <el-button size="small" @click="router.push('/project/jobs')">查看全部作业</el-button>
-      </div>
-      <el-table :data="overview?.recentJobs || []" size="small" stripe>
-        <el-table-column prop="job_id" label="作业 ID" width="210">
-          <template #default="{ row }"><span class="ki-mono">{{ row.job_id }}</span></template>
-        </el-table-column>
-        <el-table-column prop="name" label="作业名称" min-width="220" />
-        <el-table-column prop="state" label="状态" width="130">
-          <template #default="{ row }">
-            <span class="ki-badge" :class="row.state === 'SUCCEEDED' ? 'ks-pill-ok' : row.state === 'FAILED' ? 'ks-pill-danger' : 'ks-pill-blue'">
-              {{ row.state }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="last_seq" label="Timeline 水位" width="130">
-          <template #default="{ row }"><span class="ki-mono">seq #{{ row.last_seq }}</span></template>
-        </el-table-column>
-        <el-table-column prop="created_by" label="提交者" width="130" />
-      </el-table>
     </div>
   </div>
 </template>
 
 <style scoped>
-.ks-btn-gap {
+.ks-gap {
   margin-left: 6px;
 }
 
@@ -280,12 +260,12 @@ watch(() => [scope.tenantId, scope.appId], load)
   flex: none;
 }
 
-.ks-kpi-card__icon--ok {
+.ks-icon--ok {
   background-color: var(--ki-status-ok-subtle);
   color: var(--ki-status-ok-text);
 }
 
-.ks-kpi-card__icon--blue {
+.ks-icon--blue {
   background-color: var(--ki-status-running-subtle);
   color: var(--ki-status-running-text);
 }
@@ -311,7 +291,7 @@ watch(() => [scope.tenantId, scope.appId], load)
 
 .ks-two-col {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr 1.25fr;
   gap: var(--ki-space-4);
 }
 
@@ -321,42 +301,33 @@ watch(() => [scope.tenantId, scope.appId], load)
   }
 }
 
-.ks-guarantee-list {
+.ks-svc-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
-.ks-guarantee-item {
+.ks-svc-row {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px 12px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
   border-radius: var(--ki-radius-md);
   background-color: var(--ki-bg-subtle);
   border: 1px solid var(--ki-border-subtle);
 }
 
-.ks-g-icon {
-  color: var(--ki-brand);
-  margin-top: 2px;
-  flex: none;
-}
-
-.ks-g-title {
+.ks-svc-row__name {
   font-size: var(--ki-fs-sm);
   font-weight: var(--ki-fw-semibold);
   color: var(--ki-text-primary);
 }
 
-.ks-g-desc {
+.ks-svc-row__sub {
   font-size: var(--ki-fs-xs);
   color: var(--ki-text-muted);
   margin-top: 2px;
-}
-
-.ks-mt {
-  margin-top: var(--ki-space-4);
 }
 
 .ks-pill-ok {

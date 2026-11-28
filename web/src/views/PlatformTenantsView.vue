@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowRight, Building2, Plus, RefreshCw } from 'lucide-vue-next'
@@ -10,9 +10,18 @@ import { useScopeStore, type TenantItem } from '@/stores/scope'
 const router = useRouter()
 const scope = useScopeStore()
 const tenants = ref<TenantItem[]>([])
+const keyword = ref('')
 const loading = ref(false)
 const dialogOpen = ref(false)
 const form = ref({ code: '', name: '', description: '' })
+
+const filtered = computed(() => {
+  const q = keyword.value.trim().toLowerCase()
+  if (!q) return tenants.value
+  return tenants.value.filter(
+    (t) => t.name.toLowerCase().includes(q) || t.code.toLowerCase().includes(q) || t.description.toLowerCase().includes(q)
+  )
+})
 
 async function load() {
   loading.value = true
@@ -27,7 +36,7 @@ async function load() {
 async function submitCreate() {
   try {
     await api.post('/api/v1/iam/tenants', form.value)
-    ElMessage.success('企业空间已创建并自动初始化默认应用与 CMDB 元模型')
+    ElMessage.success('企业空间已创建')
     dialogOpen.value = false
     form.value = { code: '', name: '', description: '' }
     await Promise.all([load(), scope.refreshMe()])
@@ -47,8 +56,8 @@ onMounted(load)
 <template>
   <div class="ks-page">
     <KsBanner
-      title="企业空间 / 多租户管理"
-      description="对齐 KubeSphere 企业空间模型与 LiveOps Composite (tenant_id, app_id) 物理隔离边界，每个空间独立隔离 CMDB、配置集与部署作业。"
+      title="企业空间管理"
+      description="按院区、事业部或研发团队划分企业空间，每个空间独立管理所属应用、项目成员与运维资源。"
       :icon="Building2"
       :badge="`${tenants.length} 个空间`"
     >
@@ -58,20 +67,24 @@ onMounted(load)
       </template>
     </KsBanner>
 
+    <div class="ks-toolbar">
+      <el-input v-model="keyword" placeholder="按空间名称或标识搜索..." clearable style="max-width: 320px" />
+    </div>
+
     <div class="ks-ws-grid">
-      <div v-for="t in tenants" :key="t.tenant_id" class="ki-card ks-ws-card">
+      <div v-for="t in filtered" :key="t.tenant_id" class="ki-card ks-ws-card">
         <div class="ks-ws-card__head">
           <div class="ks-ws-card__icon"><Building2 :size="20" /></div>
           <div class="ks-ws-card__title-wrap">
             <div class="ks-ws-card__name">{{ t.name }}</div>
-            <div class="ks-ws-card__code ki-mono">{{ t.tenant_id }} · {{ t.code }}</div>
+            <div class="ks-ws-card__code ki-mono">{{ t.code }}</div>
           </div>
-          <span class="ki-badge ks-pill-ok">{{ t.status }}</span>
+          <span class="ki-badge ks-pill-ok">{{ t.status === 'ACTIVE' ? '运行中' : '已停用' }}</span>
         </div>
         <p class="ks-ws-card__desc">{{ t.description || '独立多租户隔离企业空间' }}</p>
         <div class="ks-ws-card__foot">
-          <span class="ks-ws-card__active" v-if="t.tenant_id === scope.tenantId">当前活跃空间</span>
-          <span v-else class="ki-muted">RLS 物理隔离</span>
+          <span v-if="t.tenant_id === scope.tenantId" class="ks-ws-card__active">当前所在空间</span>
+          <span v-else class="ki-muted">独立资源与权限隔离</span>
           <el-button size="small" type="primary" @click="enterWorkspace(t.tenant_id)">
             <span>进入空间</span>
             <ArrowRight :size="13" class="ks-gap" />
@@ -80,16 +93,16 @@ onMounted(load)
       </div>
     </div>
 
-    <el-dialog v-model="dialogOpen" title="创建企业空间 (Tenant)" width="460px">
+    <el-dialog v-model="dialogOpen" title="创建企业空间" width="460px">
       <el-form label-position="top">
-        <el-form-item label="空间编码 (唯一标识)" required>
+        <el-form-item label="空间标识" required>
           <el-input v-model="form.code" placeholder="例如: east-campus" />
         </el-form-item>
         <el-form-item label="空间名称" required>
           <el-input v-model="form.name" placeholder="例如: 东院区临床业务空间" />
         </el-form-item>
-        <el-form-item label="描述">
-          <el-input v-model="form.description" type="textarea" :rows="2" />
+        <el-form-item label="备注说明">
+          <el-input v-model="form.description" type="textarea" :rows="2" placeholder="说明该空间承载的业务范围" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -103,6 +116,10 @@ onMounted(load)
 <style scoped>
 .ks-gap {
   margin-left: 6px;
+}
+
+.ks-toolbar {
+  margin-bottom: var(--ki-space-3);
 }
 
 .ks-ws-grid {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { KeyRound, Lock, ShieldCheck, User, Workflow } from 'lucide-vue-next'
+import { GitFork, KeyRound, Lock, ShieldCheck, User } from 'lucide-vue-next'
 import { useScopeStore } from '@/stores/scope'
 import { ApiError } from '@/api/client'
 
@@ -21,10 +21,10 @@ async function onSubmit() {
     await scope.login(username.value.trim(), password.value)
     const target = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/')
       ? route.query.redirect
-      : '/platform/overview'
+      : '/home'
     await router.push(target)
   } catch (e) {
-    errMsg.value = e instanceof ApiError ? `${e.code}: ${e.message}` : String(e)
+    errMsg.value = e instanceof ApiError ? e.message : String(e)
   } finally {
     loading.value = false
   }
@@ -37,34 +37,34 @@ async function onSubmit() {
       <div class="ks-login__hero-inner">
         <div class="ks-login__badge">
           <span class="ks-login__badge-dot" />
-          <span>LiveOps Foundation v1 · KubeDesign Console</span>
+          <span>LiveOps Enterprise Platform</span>
         </div>
 
-        <h1 class="ks-login__headline">企业级多租户<br />云原生运维治理底座</h1>
+        <h1 class="ks-login__headline">企业级多租户<br />运维与交付控制平台</h1>
         <p class="ks-login__lead">
-          严格贯彻六边形干净架构、Composite (tenant_id, app_id) 物理隔离、KMS v2 双算法信封加密、DAG 事务级作业调度与零信任外联节点底座。
+          面向核心业务集群打造的一体化运维底座，统一纳管企业空间、资产拓扑、加密配置、零信任节点与高可靠发布流程。
         </p>
 
         <div class="ks-login__pillars">
           <div class="ks-pillar">
             <ShieldCheck :size="18" class="ks-pillar__icon" />
             <div>
-              <div class="ks-pillar__title">多租户隔离与 HMAC 防篡改审计</div>
-              <div class="ks-pillar__desc">Default-Deny RBAC + 渐进登录锁定 + 全链 HMAC-SHA256 验签</div>
+              <div class="ks-pillar__title">多租户隔离与精细权限治理</div>
+              <div class="ks-pillar__desc">平台、企业空间、项目三级隔离，关键操作全程留痕防篡改</div>
+            </div>
+          </div>
+          <div class="ks-pillar">
+            <GitFork :size="18" class="ks-pillar__icon" />
+            <div>
+              <div class="ks-pillar__title">业务与资源双视角 CMDB</div>
+              <div class="ks-pillar__desc">树形资产目录、拓扑可视化追踪及 Excel 批量维护</div>
             </div>
           </div>
           <div class="ks-pillar">
             <KeyRound :size="18" class="ks-pillar__icon" />
             <div>
-              <div class="ks-pillar__title">CMDB 双拓扑 &amp; KMS 配置快照</div>
-              <div class="ks-pillar__desc">单父无环业务/资源树、If-Match 强版本锁、AES-256/SM4 密文审计揭示</div>
-            </div>
-          </div>
-          <div class="ks-pillar">
-            <Workflow :size="18" class="ks-pillar__icon" />
-            <div>
-              <div class="ks-pillar__title">40 项核心事务不变量 (D01–U09)</div>
-              <div class="ks-pillar__desc">Idempotency-Key 幂等、lease_epoch 围栏、严格 Last-Event-ID SSE 流</div>
+              <div class="ks-pillar__title">高可靠配置中心与发布编排</div>
+              <div class="ks-pillar__desc">国密与信封加密保护、版本差异回滚与实时流水线观测</div>
             </div>
           </div>
         </div>
@@ -76,14 +76,14 @@ async function onSubmit() {
         <div class="ks-login__brand">
           <span class="ks-login__mark" />
           <div>
-            <div class="ks-login__brand-name">LiveOps 控制台</div>
-            <div class="ks-login__brand-sub">Platform · Workspace · Project 三级治理</div>
+            <div class="ks-login__brand-name">登录 LiveOps 控制台</div>
+            <div class="ks-login__brand-sub">请输入您的企业平台账号密码</div>
           </div>
         </div>
 
         <form class="ks-login__form" @submit.prevent="onSubmit">
           <div class="ks-field">
-            <label for="ks-username">账号</label>
+            <label for="ks-username">用户名</label>
             <div class="ks-input-wrap">
               <User :size="15" class="ks-input-icon" />
               <input
@@ -91,7 +91,7 @@ async function onSubmit() {
                 v-model="username"
                 type="text"
                 autocomplete="username"
-                placeholder="输入用户名"
+                placeholder="请输入用户名"
                 required
               />
             </div>
@@ -106,7 +106,7 @@ async function onSubmit() {
                 v-model="password"
                 type="password"
                 autocomplete="current-password"
-                placeholder="输入登录密码"
+                placeholder="请输入密码"
                 required
               />
             </div>
@@ -115,21 +115,21 @@ async function onSubmit() {
           <div v-if="errMsg" class="ks-login__error" role="alert">{{ errMsg }}</div>
 
           <button type="submit" class="ks-submit-btn" :disabled="loading" data-testid="login-submit">
-            {{ loading ? '安全认证中...' : '登录控制台' }}
+            {{ loading ? '登录中...' : '立即登录' }}
           </button>
         </form>
 
         <div class="ks-login__hint">
           <div class="ks-login__hint-row">
-            <span>平台超管</span>
+            <span>平台管理员</span>
             <code class="ki-mono">admin / LiveOps#2026!</code>
           </div>
           <div class="ks-login__hint-row">
-            <span>空间运维</span>
+            <span>运维工程师</span>
             <code class="ki-mono">operator / Operator#2026!</code>
           </div>
           <div class="ks-login__hint-row">
-            <span>合规审计</span>
+            <span>安全审计员</span>
             <code class="ki-mono">auditor / Auditor#2026!</code>
           </div>
         </div>
@@ -176,7 +176,7 @@ async function onSubmit() {
 
 .ks-login__hero-inner {
   position: relative;
-  max-width: 540px;
+  max-width: 520px;
 }
 
 .ks-login__badge {

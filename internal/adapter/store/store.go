@@ -183,8 +183,8 @@ func (r *Repo) Seed(ctx context.Context) error {
 
 		// 2. Seed Two Multi-Tenant Workspaces (KubeSphere Enterprise Workspaces)
 		tenants := []struct{ id, code, name, desc string }{
-			{"default-tenant", "core-hq", "总部核心企业空间", "承载 HIS 核心临床业务与平台底座治理的主企业空间"},
-			{"clinical-tenant", "clinical-rd", "临床研发企业空间", "独立租户隔离空间，验证 Composite (tenant_id, app_id) 物理隔离"},
+			{"default-tenant", "core-hq", "总部核心企业空间", "承载院区核心临床业务与统一基础设施治理的主企业空间"},
+			{"clinical-tenant", "clinical-rd", "临床研发企业空间", "面向临床研发与预发布演练团队的独立业务隔离空间"},
 		}
 		for _, t := range tenants {
 			if _, err := tx.Exec(ctx,
@@ -354,7 +354,7 @@ func (r *Repo) Seed(ctx context.Context) error {
 		}
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO cfg_configurations (tenant_id, app_id, cfg_id, project_id, name, format, description, entries_json, version, deleted, created_by, updated_by, created_at, updated_at)
-			 VALUES ('default-tenant','his-core','cfg-his-db','prod-clinical','his-postgres-base','kv','HIS 核心数据库基础配置（含 KMS 密文）',?,1,0,'usr-admin','usr-admin',?,?)`,
+			 VALUES ('default-tenant','his-core','cfg-his-db','prod-clinical','his-postgres-base','kv','HIS 核心数据库基础连接与加密凭证配置',?,1,0,'usr-admin','usr-admin',?,?)`,
 			marshalJSON(dbEntries), now, now,
 		); err != nil {
 			return err

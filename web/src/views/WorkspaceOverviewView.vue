@@ -16,31 +16,31 @@ async function openProject(pid: string) {
 <template>
   <div class="ks-page">
     <KsBanner
-      :title="`企业空间：${scope.currentTenant?.name || scope.tenantId}`"
-      description="对齐 KubeSphere 企业空间层级，集中统筹空间下的应用中心 (AppCenter)、双轨 AppKey 与多项目工作台。"
+      :title="scope.currentTenant?.name || '企业空间'"
+      description="统一管理当前企业空间下的应用集群、接入密钥以及各环境项目工作台。"
       :icon="Compass"
-      :badge="`Scope v${scope.context?.scopeVersion || 1}`"
+      :badge="`${scope.apps.length} 个应用 · ${scope.projects.length} 个项目`"
     >
       <template #actions>
-        <el-button @click="router.push('/workspace/apps')"><Boxes :size="14" /><span class="ks-gap">管理应用与 AppKey</span></el-button>
-        <el-button type="primary" @click="router.push('/workspace/projects')"><FolderKanban :size="14" /><span class="ks-gap">管理项目授权</span></el-button>
+        <el-button @click="router.push('/workspace/apps')"><Boxes :size="14" /><span class="ks-gap">应用管理</span></el-button>
+        <el-button type="primary" @click="router.push('/workspace/projects')"><FolderKanban :size="14" /><span class="ks-gap">项目管理</span></el-button>
       </template>
     </KsBanner>
 
     <div class="ks-two-col">
       <div class="ki-card">
         <div class="ki-card__title">
-          <span>空间应用列表 ({{ scope.apps.length }})</span>
-          <el-button size="small" @click="router.push('/workspace/apps')">全部应用</el-button>
+          <span>空间应用 ({{ scope.apps.length }})</span>
+          <el-button size="small" @click="router.push('/workspace/apps')">管理应用</el-button>
         </div>
         <div class="ks-list">
           <div v-for="a in scope.apps" :key="a.app_id" class="ks-list-row">
             <div>
               <div class="ks-list-row__name">{{ a.name }}</div>
-              <div class="ks-list-row__sub ki-mono">{{ a.app_id }} · {{ a.description }}</div>
+              <div class="ks-list-row__sub">{{ a.description || a.code }}</div>
             </div>
-            <el-button size="small" @click="scope.switchApp(a.app_id)">
-              {{ a.app_id === scope.appId ? '当前应用' : '切换' }}
+            <el-button size="small" :type="a.app_id === scope.appId ? 'primary' : 'default'" @click="scope.switchApp(a.app_id)">
+              {{ a.app_id === scope.appId ? '当前选中' : '切换' }}
             </el-button>
           </div>
         </div>
@@ -48,14 +48,14 @@ async function openProject(pid: string) {
 
       <div class="ki-card">
         <div class="ki-card__title">
-          <span>当前应用下的项目 ({{ scope.projects.length }})</span>
-          <el-button size="small" @click="router.push('/workspace/projects')">项目治理</el-button>
+          <span>所属项目 ({{ scope.projects.length }})</span>
+          <el-button size="small" @click="router.push('/workspace/projects')">管理项目</el-button>
         </div>
         <div class="ks-list">
           <div v-for="p in scope.projects" :key="p.project_id" class="ks-list-row">
             <div>
               <div class="ks-list-row__name">{{ p.name }}</div>
-              <div class="ks-list-row__sub ki-mono">{{ p.project_id }} · permVer v{{ p.permission_version }}</div>
+              <div class="ks-list-row__sub">{{ p.description || p.code }}</div>
             </div>
             <el-button size="small" type="primary" @click="openProject(p.project_id)">
               <Layers :size="12" /><span class="ks-gap-xs">进入工作台</span><ArrowRight :size="12" class="ks-gap-xs" />

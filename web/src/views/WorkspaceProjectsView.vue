@@ -14,16 +14,16 @@ interface ProjectRole {
   permissions: string[]
 }
 
-const ALL_PROJECT_PERMS = [
-  'assets:read',
-  'assets:write',
-  'config:read',
-  'config:write',
-  'config:secret:reveal',
-  'deploy.job.read',
-  'deploy.job.submit',
-  'deploy.job.observe',
-  'deploy.job.cancel',
+const PROJECT_PERMS = [
+  { code: 'assets:read', label: '资产库查看' },
+  { code: 'assets:write', label: '资产与拓扑维护' },
+  { code: 'config:read', label: '配置集查看' },
+  { code: 'config:write', label: '配置版本发布' },
+  { code: 'config:secret:reveal', label: '敏感密文查阅' },
+  { code: 'deploy.job.read', label: '发布记录查看' },
+  { code: 'deploy.job.submit', label: '发起发布作业' },
+  { code: 'deploy.job.observe', label: '实时日志观测' },
+  { code: 'deploy.job.cancel', label: '中止运行作业' },
 ]
 
 const router = useRouter()
@@ -73,17 +73,17 @@ async function savePerms() {
       { ifMatch: permVer.value }
     )
     permVer.value = data.permissionVersion
-    ElMessage.success(`项目角色权限已原子全量替换 (If-Match CAS -> permissionVersion v${data.permissionVersion})`)
+    ElMessage.success('项目角色权限已更新并立即生效')
     await loadProjects()
   } catch (e) {
-    ElMessage.error(e instanceof ApiError ? `${e.code}: ${e.message}` : String(e))
+    ElMessage.error(e instanceof ApiError ? e.message : String(e))
   }
 }
 
 async function createProject() {
   try {
     await api.post('/api/v1/iam/projects', form.value)
-    ElMessage.success('项目已创建')
+    ElMessage.success('项目创建成功')
     createDlg.value = false
     form.value = { code: '', name: '', description: '' }
     await Promise.all([loadProjects(), scope.refreshMe()])
@@ -104,8 +104,8 @@ watch(() => [scope.tenantId, scope.appId], loadProjects)
 <template>
   <div class="ks-page">
     <KsBanner
-      title="项目治理与原子权限编排"
-      description="对齐 LiveOps 企业/项目级授权模型：通过 If-Match 携带 permissionVersion 对项目角色权限执行全量原子替换，并递增全局 scopeVersion。"
+      title="项目管理"
+      description="按环境或业务子域划分独立项目工作台，精细配置各项目角色的操作权限范围。"
       :icon="FolderKanban"
       :badge="`${projects.length} 个项目`"
     >
@@ -117,12 +117,15 @@ watch(() => [scope.tenantId, scope.appId], loadProjects)
 
     <div class="ks-two-col">
       <div class="ki-card">
-        <div class="ki-card__title"><span>项目列表 ({{ scope.appId }})</span></div>
-        <el-table :data="projects" size="small" stripe highlight-current-row @row-click="selectProject">
-          <el-table-column prop="name" label="项目名称" min-width="140" />
-          <el-table-column prop="code" label="编码" width="130"><template #default="{ row }"><span class="ki-mono">{{ row.code }}</span></template></el-table-column>
-          <el-table-column label="权限版本" width="90"><template #default="{ row }"><span class="ki-mono">v{{ row.permission_version }}</span></template></el-table-column>
-          <el-table-column label="操作" width="110">
+        <div class="ki-card__title"><span>项目列表</span></div>
+        <el-table :data="projects" size="small" highlight-current-row @row-click="selectProject">
+          <el-table-column label="项目名称" min-width="170">
+            <template #default="{ row }">
+              <div class="ks-cell-main">{{ row.name }}</div>
+              <div class="ks-cell-sub ki-mono">{{ row.code }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="120">
             <template #default="{ row }">
               <el-button size="small" type="primary" @click.stop="enterProject(row.project_id)">进入工作台</el-button>
             </template>
@@ -132,21 +135,21 @@ watch(() => [scope.tenantId, scope.appId], loadProjects)
 
       <div class="ki-card">
         <div class="ki-card__title">
-          <span>项目角色权限 CAS 编排 ({{ selectedProject?.name || '-' }})</span>
-          <span class="ki-badge ks-pill-blue ki-mono">If-Match: "{{ permVer }}"</span>
+          <span>角色权限配置（{{ selectedProject?.name || '-' }}）</span>
+          <span class="ki-badge ks-pill-blue">版本 v{{ permVer }}</span>
         </div>
         <div v-if="roles.length > 0" class="ks-perm-box">
           <div class="ks-perm-role">
             <ShieldCheck :size="15" />
-            <span>{{ roles[0].role_name }} ({{ roles[0].role_id }})</span>
+            <span>{{ roles[0].role_name }}</span>
           </div>
           <el-checkbox-group v-model="editPerms" class="ks-check-grid">
-            <el-checkbox v-for="pc in ALL_PROJECT_PERMS" :key="pc" :value="pc">
-              <span class="ki-mono">{{ pc }}</span>
+            <el-checkbox v-for="item in PROJECT_PERMS" :key="item.code" :value="item.code">
+              {{ item.label }}
             </el-checkbox>
           </el-checkbox-group>
           <div class="ks-perm-foot">
-            <el-button type="primary" @click="savePerms">原子替换权限 (CAS)</el-button>
+            <el-button type="primary" @click="savePerms">保存权限配置</el-button>
           </div>
         </div>
         <div v-else class="ki-muted">请选择左侧项目查看角色权限</div>
@@ -155,13 +158,13 @@ watch(() => [scope.tenantId, scope.appId], loadProjects)
 
     <el-dialog v-model="createDlg" title="新建项目" width="440px">
       <el-form label-position="top">
-        <el-form-item label="项目编码" required><el-input v-model="form.code" placeholder="例如: dr-standby" /></el-form-item>
+        <el-form-item label="项目标识" required><el-input v-model="form.code" placeholder="例如: dr-standby" /></el-form-item>
         <el-form-item label="项目名称" required><el-input v-model="form.name" placeholder="例如: 异地容灾区" /></el-form-item>
-        <el-form-item label="描述"><el-input v-model="form.description" /></el-form-item>
+        <el-form-item label="说明"><el-input v-model="form.description" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="createDlg = false">取消</el-button>
-        <el-button type="primary" @click="createProject">创建项目</el-button>
+        <el-button type="primary" @click="createProject">确认创建</el-button>
       </template>
     </el-dialog>
   </div>
@@ -174,7 +177,7 @@ watch(() => [scope.tenantId, scope.appId], loadProjects)
 
 .ks-two-col {
   display: grid;
-  grid-template-columns: 1.15fr 1fr;
+  grid-template-columns: 1.1fr 1fr;
   gap: var(--ki-space-4);
 }
 
@@ -182,6 +185,16 @@ watch(() => [scope.tenantId, scope.appId], loadProjects)
   .ks-two-col {
     grid-template-columns: 1fr;
   }
+}
+
+.ks-cell-main {
+  font-weight: var(--ki-fw-semibold);
+  color: var(--ki-text-primary);
+}
+
+.ks-cell-sub {
+  font-size: var(--ki-fs-xs);
+  color: var(--ki-text-muted);
 }
 
 .ks-perm-box {
@@ -201,13 +214,13 @@ watch(() => [scope.tenantId, scope.appId], loadProjects)
 .ks-check-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
 }
 
 .ks-perm-foot {
   display: flex;
   justify-content: flex-end;
-  padding-top: 10px;
+  padding-top: 12px;
   border-top: 1px solid var(--ki-border-subtle);
 }
 

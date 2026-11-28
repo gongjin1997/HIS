@@ -124,7 +124,22 @@ html[data-theme] {
 }
 
 .el-button {
-  font-weight: var(--ki-fw-medium);
+  font-weight: var(--ki-fw-semibold);
+  border-radius: var(--ki-radius-pill);
+  padding-inline: 16px;
+}
+
+.el-button--small {
+  padding-inline: 12px;
+}
+
+.el-button.is-circle {
+  padding-inline: 0;
+}
+
+.el-input__wrapper,
+.el-select__wrapper {
+  border-radius: var(--ki-radius-md);
 }
 
 .el-table {
@@ -141,14 +156,15 @@ html[data-theme] {
 }
 
 .el-table th.el-table__cell {
-  height: var(--ki-table-header-h);
-  font-size: var(--ki-fs-sm);
+  height: 42px;
+  font-size: var(--ki-fs-xs);
   font-weight: var(--ki-fw-semibold);
+  letter-spacing: 0.01em;
 }
 
 .el-table td.el-table__cell {
-  height: var(--ki-row-h);
-  padding-block: var(--ki-space-2);
+  height: 48px;
+  padding-block: 10px;
 }
 
 .el-table .ki-row-danger td.el-table__cell:first-child {

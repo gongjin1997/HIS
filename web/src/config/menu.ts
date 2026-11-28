@@ -4,8 +4,6 @@ export interface KsNavItem {
   path: string
   label: string
   icon: string
-  badge?: string
-  perm?: string
 }
 
 export interface KsNavGroup {
@@ -19,19 +17,19 @@ export const TIER_META: Record<
 > = {
   platform: {
     title: '平台管理',
-    subtitle: '多租户底座、零信任节点、动态网关与审计链',
+    subtitle: '节点基础设施、企业空间、访问控制与操作审计',
     defaultPath: '/platform/overview',
     icon: 'LayoutGrid',
   },
   workspace: {
     title: '企业空间',
-    subtitle: '应用中心、双轨 AppKey 与多项目治理',
+    subtitle: '应用中心、密钥凭据与项目团队治理',
     defaultPath: '/workspace/overview',
     icon: 'Building2',
   },
   project: {
     title: '项目工作台',
-    subtitle: 'CMDB 双拓扑、KMS 配置环境与 DAG 发布编排',
+    subtitle: 'CMDB 资产拓扑、配置中心与发布编排',
     defaultPath: '/project/overview',
     icon: 'Layers',
   },
@@ -40,52 +38,52 @@ export const TIER_META: Record<
 export const TIER_MENUS: Record<ConsoleTier, KsNavGroup[]> = {
   platform: [
     {
-      title: '平台概览',
-      items: [{ path: '/platform/overview', label: '平台运行总览', icon: 'Gauge' }],
+      title: '概览',
+      items: [{ path: '/platform/overview', label: '运行总览', icon: 'Gauge' }],
     },
     {
-      title: '多租户与访问控制',
+      title: '多租户与权限',
       items: [
-        { path: '/platform/tenants', label: '企业空间 / 租户', icon: 'Building2' },
-        { path: '/platform/access', label: '账号、角色与策略', icon: 'ShieldCheck' },
+        { path: '/platform/tenants', label: '企业空间', icon: 'Building2' },
+        { path: '/platform/access', label: '访问控制', icon: 'ShieldCheck' },
       ],
     },
     {
-      title: '基础设施底座',
+      title: '基础设施',
       items: [
-        { path: '/platform/nodes', label: '零信任节点池', icon: 'Server' },
-        { path: '/platform/gateway', label: '动态网关与制品', icon: 'Network' },
+        { path: '/platform/nodes', label: '节点管理', icon: 'Server' },
+        { path: '/platform/gateway', label: '网关与制品', icon: 'Network' },
       ],
     },
     {
-      title: '合规与可观测',
-      items: [{ path: '/platform/audit', label: '防篡改审计链', icon: 'FileCheck2' }],
+      title: '安全与合规',
+      items: [{ path: '/platform/audit', label: '操作审计', icon: 'FileCheck2' }],
     },
   ],
   workspace: [
     {
-      title: '空间总览',
-      items: [{ path: '/workspace/overview', label: '企业空间概览', icon: 'Compass' }],
+      title: '空间概览',
+      items: [{ path: '/workspace/overview', label: '基本概况', icon: 'Compass' }],
     },
     {
       title: '应用与项目',
       items: [
-        { path: '/workspace/apps', label: '应用中心与 AppKey', icon: 'Boxes' },
-        { path: '/workspace/projects', label: '项目治理与授权', icon: 'FolderKanban' },
+        { path: '/workspace/apps', label: '应用管理', icon: 'Boxes' },
+        { path: '/workspace/projects', label: '项目管理', icon: 'FolderKanban' },
       ],
     },
   ],
   project: [
     {
-      title: '工作台概览',
-      items: [{ path: '/project/overview', label: '项目应用概览', icon: 'Activity' }],
+      title: '项目概览',
+      items: [{ path: '/project/overview', label: '应用概况', icon: 'Activity' }],
     },
     {
-      title: 'LiveOps 核心底座',
+      title: '运维与交付',
       items: [
-        { path: '/project/assets', label: 'CMDB 资产与双拓扑', icon: 'GitFork' },
-        { path: '/project/configs', label: '配置中心与环境合集', icon: 'KeyRound' },
-        { path: '/project/jobs', label: 'DAG 部署与 SSE 流', icon: 'Workflow' },
+        { path: '/project/assets', label: '资产库 (CMDB)', icon: 'GitFork' },
+        { path: '/project/configs', label: '配置中心', icon: 'KeyRound' },
+        { path: '/project/jobs', label: '发布编排', icon: 'Workflow' },
       ],
     },
   ],

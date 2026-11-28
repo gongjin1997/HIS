@@ -34,41 +34,41 @@ watch(() => [scope.tenantId, scope.appId, scope.projectId], load)
 <template>
   <div class="ks-page">
     <KsBanner
-      :title="`项目工作台：${scope.currentProject?.name || scope.projectId || scope.appId}`"
-      description="LiveOps 核心项目交付工作台：统一管理 CMDB 元模型与双拓扑、KMS 加密配置与环境合集，以及强幂等 DAG 部署编排。"
+      :title="scope.currentProject?.name || scope.currentApp?.name || '项目工作台'"
+      description="统一管理当前项目的 CMDB 业务与资源资产、多环境加密配置集及并发发布流水线。"
       :icon="Activity"
-      :badge="`${scope.tenantId} / ${scope.appId}`"
+      :badge="scope.currentApp?.name || scope.appId"
     />
 
     <div class="ks-hub-grid">
       <div class="ki-card ks-hub-card" @click="router.push('/project/assets')">
         <div class="ks-hub-card__head">
-          <div class="ks-hub-card__icon ks-hub-card__icon--ok"><GitFork :size="20" /></div>
+          <div class="ks-hub-card__icon ks-icon--ok"><GitFork :size="20" /></div>
           <span class="ki-num ks-hub-card__metric">{{ stats.assets }}</span>
         </div>
-        <div class="ks-hub-card__title">CMDB 资产与双视角拓扑</div>
-        <p class="ks-hub-card__desc">{{ stats.models }} 类元模型、单父无环业务/资源双树、If-Match 乐观锁与原生 .xlsx 批导</p>
-        <div class="ks-hub-card__cta"><span>进入 CMDB</span><ArrowRight :size="14" /></div>
+        <div class="ks-hub-card__title">配置管理数据库 (CMDB)</div>
+        <p class="ks-hub-card__desc">已内置 {{ stats.models }} 类标准模型，支持业务/资源双树目录、自定义拓扑与 Excel 批量导入</p>
+        <div class="ks-hub-card__cta"><span>管理资产与拓扑</span><ArrowRight :size="14" /></div>
       </div>
 
       <div class="ki-card ks-hub-card" @click="router.push('/project/configs')">
         <div class="ks-hub-card__head">
-          <div class="ks-hub-card__icon ks-hub-card__icon--blue"><KeyRound :size="20" /></div>
+          <div class="ks-hub-card__icon ks-icon--blue"><KeyRound :size="20" /></div>
           <span class="ki-num ks-hub-card__metric">{{ stats.configs }}</span>
         </div>
-        <div class="ks-hub-card__title">配置中心与环境冲突预检</div>
-        <p class="ks-hub-card__desc">{{ stats.envs }} 套环境合集、v2 KMS 信封加密、审计揭示明文与不可变历史快照</p>
-        <div class="ks-hub-card__cta"><span>管理配置</span><ArrowRight :size="14" /></div>
+        <div class="ks-hub-card__title">配置中心与环境管理</div>
+        <p class="ks-hub-card__desc">管理 {{ stats.envs }} 套环境配置合集，提供加密凭证受控查阅、版本 Diff 对比与一键回滚</p>
+        <div class="ks-hub-card__cta"><span>管理配置与环境</span><ArrowRight :size="14" /></div>
       </div>
 
       <div class="ki-card ks-hub-card" @click="router.push('/project/jobs')">
         <div class="ks-hub-card__head">
-          <div class="ks-hub-card__icon ks-hub-card__icon--ok"><Workflow :size="20" /></div>
+          <div class="ks-hub-card__icon ks-icon--ok"><Workflow :size="20" /></div>
           <span class="ki-num ks-hub-card__metric">{{ stats.jobs }}</span>
         </div>
-        <div class="ks-hub-card__title">DAG 部署编排与 SSE 实时流</div>
-        <p class="ks-hub-card__desc">Idempotency-Key 幂等提交、Kahn 成环拦截、lease_epoch 围栏与严格 Last-Event-ID 订阅</p>
-        <div class="ks-hub-card__cta"><span>提交与观测</span><ArrowRight :size="14" /></div>
+        <div class="ks-hub-card__title">发布与作业编排</div>
+        <p class="ks-hub-card__desc">支持多阶段并发发布流水线可视化追踪、实时日志流与异常分支隔离保护</p>
+        <div class="ks-hub-card__cta"><span>发起与追踪发布</span><ArrowRight :size="14" /></div>
       </div>
     </div>
   </div>
@@ -110,12 +110,12 @@ watch(() => [scope.tenantId, scope.appId, scope.projectId], load)
   justify-content: center;
 }
 
-.ks-hub-card__icon--ok {
+.ks-icon--ok {
   background-color: var(--ki-status-ok-subtle);
   color: var(--ki-status-ok-text);
 }
 
-.ks-hub-card__icon--blue {
+.ks-icon--blue {
   background-color: var(--ki-status-running-subtle);
   color: var(--ki-status-running-text);
 }
